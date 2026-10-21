@@ -696,12 +696,11 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         await _json(writer, 200, {"filas": filas})
     elif ruta == "/api/registro":
         fuente = _valor(qs, "fuente", "detector")
-        cursor_crudo = _valor(qs, "cursor")
+        cursor = _valor(qs, "cursor") or None   # opaco: registro.leer() lo valida
         try:
             limite = min(int(_valor(qs, "limite", "400")), 1000)
-            cursor = int(cursor_crudo) if cursor_crudo else None
         except ValueError:
-            await _json(writer, 400, {"error": "limite/cursor invalido"})
+            await _json(writer, 400, {"error": "limite invalido"})
             return
         try:
             resultado = await app.a_hilo(

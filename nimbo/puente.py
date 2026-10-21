@@ -64,6 +64,9 @@ ARCHIVO_EVENTOS = os.path.join(DIR_ESTADO, "eventos_detector.jsonl")
 # sentido mirar mas seguido que lo que el mismo cambia.
 INTERVALO_ESTADO = 2.0
 ESPERA_DETECTOR = 0.5   # reintento mientras el otro -s todavia no cargo
+# Mismo tope que TOPE_BYTES_BARRIDO de registro.py: un .jsonl entero
+# siempre entra en un barrido completo.
+MAX_EVENTOS = 8 * 1024 * 1024
 
 
 def _log(mensaje):
@@ -107,6 +110,11 @@ class _Eventos:
                     "prefijo": prefijo, "mensaje": resto}
             linea = json.dumps(fila, ensure_ascii=False)
             with self._lock:
+                try:
+                    if os.path.getsize(self.ruta) > MAX_EVENTOS:
+                        os.replace(self.ruta, self.ruta + ".1")
+                except OSError:
+                    pass
                 with open(self.ruta, "a", encoding="utf-8") as f:
                     f.write(linea + "\n")
         except OSError:

@@ -128,7 +128,13 @@ de diseño central del repo.
   `estado\supervisor.json` cada 5s.
 
 Los dos reenvían además sus loggers (`"detector"` / `"supervisor"`) a
-`estado\eventos_*.jsonl`, en append y sin rotación.
+`estado\eventos_*.jsonl`. `motor.py` hace lo mismo con el stdout de sus
+dos hijos y sus propios avisos, en `estado\eventos_motor.jsonl`. Los tres
+rotan por tamaño a los 8 MB (`MAX_EVENTOS`, duplicado en los tres
+módulos a propósito — mismo motivo que la duplicación de "Los dos
+puentes" más abajo) con un único archivo viejo de sufijo `.1`;
+`registro.py` sabe cruzar del actual al `.1` sin perder ni repetir
+filas.
 
 **Nunca importar `detectar_m3u8.py` desde el proceso de Nimbo.** Ese módulo
 termina en `else: addons = [Detector()]`, así que cualquier import que no
@@ -159,6 +165,7 @@ En git van los `.py` y `grabar.txt`; **no** van `ffmpeg.exe`,
 | `nucleo\scripts\activos.txt` | solo el detector | nadie en Nimbo |
 | `estado\detector.json` | `puente.py` | Nimbo |
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
+| `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
@@ -318,9 +325,11 @@ copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
   Chromium frena los timers del hilo principal cuando la ventana pierde el
   foco, y la previa tiene que seguir refrescando en segundo plano.
   `vista_registro.js` usa `setInterval` normal justo por lo contrario.
-- **`registro.py`** nunca lee los `.jsonl` enteros: va al final del archivo
-  y retrocede en bloques de 64 KB; el `cursor` que devuelve es un offset en
-  bytes.
+- **`registro.py`** nunca lee los `.jsonl` enteros: va al final del
+  archivo actual y retrocede en bloques de 64 KB, cruzando al `.1` si
+  hace falta; el `cursor` que devuelve es `"<idx>:<offset>"` (0 = actual,
+  1 = el `.1`), opaco para quien lo pide — `servidor.py` y
+  `vista_registro.js` solo lo mandan de vuelta tal cual.
 - Nada está clavado a una letra de unidad: la raíz se calcula desde la
   ubicación de `ajustes.py`.
 

@@ -37,6 +37,7 @@ y se mira si su padre sigue vivo -- en vez de confiar en la autocuracion
 de _Tunel, que solo cubre el caso de que se le muera el hijo propio.
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -79,6 +80,10 @@ ESPERA_RENDIDO = 900.0
 # Vivo mas de esto = el arranque funciono; la proxima caida empieza el
 # backoff de cero en vez de gastar el ultimo intento del presupuesto.
 ESTABLE_S = 120.0
+# Mismo tope que TOPE_BYTES_BARRIDO de registro.py: asi un archivo entero
+# siempre entra en un barrido completo y un filtro por nivel no se rinde
+# a mitad de camino.
+MAX_EVENTOS = 8 * 1024 * 1024
 # mitmdump no suelta el puerto en el mismo instante en que muere.
 ESPERA_PUERTO_LIBRE = 20.0
 
@@ -296,6 +301,9 @@ class Motor:
         self._proximo = {"detector": 0.0, "supervisor": 0.0}  # time.time()
         self._rendido = set()
         self._vivo_desde = {}          # "detector"/"supervisor" -> monotonic
+        # -- persistencia del log propio, ver "Los logs del motor" --------
+        self._ruta_eventos = os.path.join(ajustes.dir_estado, "eventos_motor.jsonl")
+        self._lock_eventos = threading.Lock()   # propio: no el de arranque/parada
         threading.Thread(target=self._bucle_vigilancia, daemon=True,
                          name="nimbo-vigilancia").start()
 
@@ -328,9 +336,32 @@ class Motor:
         datos = {"texto": texto}
         datos.update(extra)
         self._en_evento("aviso", datos)
+        self._persistir((extra.get("nivel") or "info").upper(), "motor", texto)
 
     def _emitir_log(self, proceso, linea):
         self._en_evento("log", {"proceso": proceso, "linea": linea})
+        self._persistir("INFO", proceso, linea)
+
+    def _persistir(self, nivel, prefijo, mensaje):
+        """Vuelca una linea a estado\\eventos_motor.jsonl, mismo esquema que
+        los _Eventos de puente.py / lanzador_supervisor.py (ver
+        registro.py:_parsear). Perder un evento nunca tira el hilo que
+        llama -- el lector de stdout o el que avisa."""
+        fila = {"t": time.time(), "nivel": nivel, "prefijo": prefijo,
+                "mensaje": mensaje}
+        try:
+            linea = json.dumps(fila, ensure_ascii=False)
+            with self._lock_eventos:
+                try:
+                    if os.path.getsize(self._ruta_eventos) > MAX_EVENTOS:
+                        os.replace(self._ruta_eventos, self._ruta_eventos + ".1")
+                except OSError:
+                    pass   # no existe todavia, o no se pudo rotar: se sigue igual
+                os.makedirs(os.path.dirname(self._ruta_eventos), exist_ok=True)
+                with open(self._ruta_eventos, "a", encoding="utf-8") as f:
+                    f.write(linea + "\n")
+        except OSError:
+            pass
 
     # -- arranque --------------------------------------------------------
 

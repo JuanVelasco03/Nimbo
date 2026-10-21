@@ -1,5 +1,6 @@
 // Pestana "Registro": historial completo de estado\eventos_detector.jsonl
-// / eventos_supervisor.jsonl, via /api/registro (ver nimbo/registro.py).
+// / eventos_supervisor.jsonl / eventos_motor.jsonl, via /api/registro (ver
+// nimbo/registro.py).
 // Distinto de la consola del footer (registro.js): esta no se toca --
 // sigue mostrando solo las ultimas lineas en vivo por SSE. Esta pestana
 // lee el historial de disco, con filtro y paginado "cargar mas antiguas".

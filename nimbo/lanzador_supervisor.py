@@ -57,6 +57,9 @@ ARCHIVO_EVENTOS = os.path.join(DIR_ESTADO, "eventos_supervisor.jsonl")
 HEADLESS = os.environ.get("NIMBO_VER", "").strip() not in ("1", "si", "true")
 
 INTERVALO_ESTADO = 5.0   # igual que INTERVALO_LISTA del supervisor original
+# Mismo tope que TOPE_BYTES_BARRIDO de registro.py: un .jsonl entero
+# siempre entra en un barrido completo.
+MAX_EVENTOS = 8 * 1024 * 1024
 
 
 def _log(mensaje):
@@ -94,6 +97,11 @@ class _Eventos:
             fila = {"t": record.created, "nivel": record.levelname,
                     "prefijo": prefijo, "mensaje": resto}
             with self._lock:
+                try:
+                    if os.path.getsize(self.ruta) > MAX_EVENTOS:
+                        os.replace(self.ruta, self.ruta + ".1")
+                except OSError:
+                    pass
                 with open(self.ruta, "a", encoding="utf-8") as f:
                     f.write(json.dumps(fila, ensure_ascii=False) + "\n")
         except OSError:
