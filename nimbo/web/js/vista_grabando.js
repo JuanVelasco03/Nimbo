@@ -24,6 +24,16 @@ function construirTarjeta(nombre, det, sup, enVpn) {
     texto = "GRABANDO";
     detalle = [det.elegida || det.mejor || "", formatoDuracion(det.inicio), formatoMB(det.bytes)]
       .filter(Boolean).join(" · ");
+  } else if (det && det.estado === "detectado") {
+    // ya entran segmentos pero el detector todavia no elige variante
+    // (ventana de @espera) -- mismo hueco que vista_modelos.js tapa con
+    // "CONECTANDO" en el badge chico; aca usamos otro texto para no
+    // repetir el "CONECTANDO" que ya significa otra cosa mas abajo
+    // (pagina abierta + video reproduciendo, antes de que llegue nada
+    // al detector).
+    clase = "online";
+    texto = "ELIGIENDO CALIDAD";
+    detalle = "ya llegan segmentos, decidiendo que variante grabar...";
   } else if (det && det.privado) {
     clase = "privado";
     texto = "SHOW PRIVADO";

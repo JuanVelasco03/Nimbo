@@ -161,7 +161,7 @@ En git van los `.py` y `grabar.txt`; **no** van `ffmpeg.exe`,
 
 | Archivo | Lo escribe | Lo lee |
 |---|---|---|
-| `nucleo\scripts\grabar.txt` | solo Nimbo (`lista.py`) | detector (cada 2s), supervisor (cada 5s) |
+| `nucleo\scripts\grabar.txt` | solo Nimbo (`lista.py`) | detector (cada 2s), supervisor (cada 1s, acortado por `lanzador_supervisor.py` desde los 5s originales) |
 | `nucleo\scripts\activos.txt` | solo el detector | nadie en Nimbo |
 | `estado\detector.json` | `puente.py` | Nimbo |
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |

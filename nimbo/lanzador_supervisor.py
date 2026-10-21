@@ -3,25 +3,28 @@
     python lanzador_supervisor.py
 
 Corre con el Python de sistema (el que tiene Playwright instalado, NO el
-que trae empaquetado mitmdump). Hace tres cosas que supervisor.py no
+que trae empaquetado mitmdump). Hace cuatro cosas que supervisor.py no
 ofrece por su cuenta:
 
-  1. Estado por modelo (estado/supervisor.json cada 5s, misma cadencia que
-     INTERVALO_LISTA del propio supervisor). El dict de Emision es local a
-     supervisar() (no se puede leer desde fuera), asi que se intercepta con
-     una subclase que se anota sola en un registro al construirse --
-     "supervisor.Emision = _EmisionVigilada" antes de llamar a
-     supervisor.supervisar(): como esa funcion busca "Emision" en el
-     namespace del propio modulo en cada llamada (no la trae "congelada" en
-     una variable local al definirse), el cambio se aplica sin tocar el
-     archivo original. Patron de monkeypatch estandar de Python, no un
-     truco fragil.
+  1. Estado por modelo (estado/supervisor.json cada INTERVALO_ESTADO). El
+     dict de Emision es local a supervisar() (no se puede leer desde
+     fuera), asi que se intercepta con una subclase que se anota sola en
+     un registro al construirse -- "supervisor.Emision = _EmisionVigilada"
+     antes de llamar a supervisor.supervisar(): como esa funcion busca
+     "Emision" en el namespace del propio modulo en cada llamada (no la
+     trae "congelada" en una variable local al definirse), el cambio se
+     aplica sin tocar el archivo original. Patron de monkeypatch estandar
+     de Python, no un truco fragil.
   2. Reenvia los eventos del logger "supervisor" a un .jsonl, igual que
      puente.py hace con el logger "detector".
   3. Parada ordenada: una orden por stdin cancela la tarea de
      supervisar(), lo que dispara su propio 'finally' (cierra cada pestana
      y el contexto de Chromium). Matar el proceso a lo bruto deja Chromium
      huerfano y el perfil con cerrojos -- el arranque siguiente fallaria.
+  4. Acorta supervisor.INTERVALO_LISTA (mismo patron de monkeypatch que
+     "Emision" arriba): 5s de latencia entre tocar "grabar" en la UI y que
+     se abra la pestana era mucho para algo que solo re-statea un archivo
+     local. Ver el comentario junto a la asignacion mas abajo.
 
 Variables de entorno:
   NIMBO_SCRIPTS   carpeta nucleo\\scripts\\ (obligatoria)
@@ -56,7 +59,8 @@ ARCHIVO_ESTADO = os.path.join(DIR_ESTADO, "supervisor.json")
 ARCHIVO_EVENTOS = os.path.join(DIR_ESTADO, "eventos_supervisor.jsonl")
 HEADLESS = os.environ.get("NIMBO_VER", "").strip() not in ("1", "si", "true")
 
-INTERVALO_ESTADO = 5.0   # igual que INTERVALO_LISTA del supervisor original
+INTERVALO_ESTADO = 2.0   # cadencia propia de supervisor.json, independiente
+                          # de INTERVALO_LISTA (ver mas abajo)
 # Mismo tope que TOPE_BYTES_BARRIDO de registro.py: un .jsonl entero
 # siempre entra en un barrido completo.
 MAX_EVENTOS = 8 * 1024 * 1024
@@ -126,11 +130,49 @@ _registro_lock = threading.Lock()
 class _EmisionVigilada(supervisor.Emision):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
+        self._primera_consulta = True
         with _registro_lock:
             _registro[self.nombre] = self
 
+    async def consultar(self):
+        # El goto es lo unico que la grabacion necesita: el detector arranca
+        # cuando el reproductor pide el master, no cuando abrir() vuelve.
+        # paso_estado() (supervisor.py) serializa consultar() -> abrir(),
+        # regalando el round-trip HTTP de la consulta (0.5-2s) antes de
+        # emitir la navegacion. Solo en la primera consulta de esta Emision,
+        # y solo si no es @vpn= (para no pisar la ventana exclusiva de
+        # con_vpn), la lanzamos en paralelo con abrir(): si la consulta dice
+        # que esta offline, paso_estado() cierra la pagina al toque --
+        # PEGAJOSO es False en Nimbo y sin VPN no hay rama pegajosa -- asi
+        # que el costo de equivocarse es una pagina abierta de mas por 1-2s.
+        # necesita_vpn ya esta seteado para cuando esto corre: supervisar()
+        # lo asigna de forma sincrona antes de que la tarea de bucle() llegue
+        # a su primer await.
+        if (self._primera_consulta and not self.necesita_vpn
+                and not self.pagina):
+            self._primera_consulta = False
+            abriendo = asyncio.create_task(self.abrir())
+            try:
+                return await super().consultar()
+            finally:
+                await abriendo   # nunca dos new_page() a la vez
+        return await super().consultar()
+
 
 supervisor.Emision = _EmisionVigilada
+
+# El bucle maestro de supervisar() solo nota nombres nuevos (o bajas) de
+# grabar.txt en su tick, y lee INTERVALO_LISTA como global del modulo en
+# cada iteracion del "await asyncio.sleep(INTERVALO_LISTA)" -- mismo
+# patron de monkeypatch que Emision arriba. 5s era hasta 5s de latencia
+# entre tocar "grabar" en la UI y que se abra la pestana; el tick solo
+# hace os.stat() + compara (mtime, size) (Lista.actual), reparseando
+# grabar.txt/activos.txt unicamente si cambio -- no cuesta red ni CPU
+# medible a 1s. No se bajo mas (p.ej. a 0.2s): el mismo tick tambien
+# cierra pestanas de nombres que salieron de la lista, y un editor no
+# atomico (no es el caso de Nimbo, que escribe .part + os.replace) podria
+# dejar ver un grabar.txt a medio escribir con mas frecuencia.
+supervisor.INTERVALO_LISTA = 1.0
 
 # Lista propia para saber quien sigue en grabar.txt AHORA: si una modelo se
 # quita, su Emision puede seguir viva un rato en el registro de arriba (el

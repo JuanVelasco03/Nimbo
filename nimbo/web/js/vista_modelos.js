@@ -29,6 +29,11 @@ export function fusionarFavoritas(estado) {
     const s = streamPorNombre.get(clave);
     return {
       grabando: !!(s && s.grabando), privadoDetector: !!(s && s.privado),
+      // ya entran segmentos de esta modelo pero el detector todavia no
+      // elige variante (ventana de @espera, detectar_m3u8.py) -- sin esto
+      // el badge salta de "EN LISTA" a "REC" de golpe al cabo de @espera
+      // segundos, como si no hubiera pasado nada mientras tanto.
+      detectado: !!(s && !s.grabando && s.estado === "detectado"),
       // sesion viva de verdad en disco (datos\streams\...) -- lo que
       // habilita el boton "ver en vivo" del modal de previa, distinto de
       // "grabando" (que tarda en confirmarse: ver @espera/@cambio del
@@ -132,6 +137,7 @@ export function estadoDeFila(fila) {
 export function grabacionDeFila(fila) {
   if (fila.grabando) return { clase: "grabando", texto: "REC" };
   if (fila.privadoDetector) return { clase: "privado", texto: "GUARDADO" };
+  if (fila.detectado) return { clase: "espera", texto: "CONECTANDO" };
   if (fila.enLista) return { clase: "espera", texto: "EN LISTA" };
   return null;
 }
