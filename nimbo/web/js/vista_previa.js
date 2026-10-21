@@ -25,7 +25,7 @@
 // pestana sin foco, el latido tiene que seguir llegando o el servidor
 // cierra la vista sola a los 30s (ver vivo_temporal.cosechar).
 
-import { enviar, obtener } from "./api.js";
+import { enviar, obtener, enviarWS } from "./api.js";
 import { crearReproductor } from "./reproductor_vivo.js";
 import { urlImagenProxy } from "./sitio.js";
 import { fusionarFavoritas, estadoDeFila, grabacionDeFila } from "./vista_modelos.js";
@@ -41,7 +41,11 @@ relojImagen.onmessage = (ev) => {
 const relojLatido = new Worker(new URL("./temporizador_previa.worker.js", import.meta.url));
 relojLatido.onmessage = (ev) => {
   if (ev.data === "tick" && nombreAbierto && esTemporal) {
-    enviar("/api/vivo/latido", { nombre: nombreAbierto }).catch(() => {});
+    // Por el WebSocket, no un POST: el cierre de ESTA conexion ya es
+    // senal de que el navegador se fue, mas precisa que esperar los 30s
+    // de vivo_temporal.cosechar() (ver CLAUDE.md, seccion "Servidor y
+    // frontend").
+    enviarWS({ tipo: "latido", nombre: nombreAbierto });
   }
 };
 

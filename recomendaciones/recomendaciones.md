@@ -56,39 +56,61 @@ drops/corrupción de timestamps y disparar una reconexión antes de que
 termine el stream, en vez de descubrir un archivo roto recién al
 reproducirlo.
 
-## 5. Pasar de `ThreadingHTTPServer` a asyncio con websockets
+## 5. Pasar de `ThreadingHTTPServer` a asyncio con websockets — IMPLEMENTADO
 
-El SSE actual es unidireccional y por hilo; para soportar push
-bidireccional real (ej. cancelar un refresco de imagen en curso,
-multiplexar más eventos sin saturar hilos) hay que reescribir
-`servidor.py` sobre un loop asyncio, tocando motor/SSE/API a la vez —
-es el cambio de mayor superficie de los cinco.
+~~El SSE actual es unidireccional y por hilo...~~ Hecho:
+`nimbo\servidor.py` es ahora un solo `asyncio.start_server`, con `/ws`
+demultiplexado hacia `websockets.server.ServerProtocol` (la capa
+sans-I/O de la librería, re-alimentada con los mismos bytes crudos del
+handshake) y el HTTP de siempre escrito a mano porque esa librería no
+sabe transmitir un cuerpo en bloques (`_servir_video` sigue mandando
+`.mp4` de varios GB sin cargarlos en memoria). Todo lo síncrono —los
+`threading.Lock` que ya tenían `lista.py`/`sesion.py`/`sitio.py`/etc,
+subprocess, red saliente— pasa por un `ThreadPoolExecutor` propio
+(`Aplicacion.a_hilo`); `Motor` sigue avisando desde sus hilos de
+siempre, cruzando al loop con `call_soon_threadsafe`.
 
-## 6. Cerrar el traversal de `_archivo_estatico` en `servidor.py`
+El beneficio real terminó siendo más la recomendación 10 (de abajo) que
+la bidireccionalidad en sí: `/ws` empuja el estado por **secciones**,
+solo lo que cambió (`servidor.py:_bucle_estado`, firmas baratas en vez
+de reparsear todo cada vez), y el refresco de "Modelos" contra el sitio
+real se movió del cliente (un `setInterval` por pestaña, sin forma de
+cancelarlo) a una tarea del servidor (`_bucle_sitio`) que se apaga sola
+si nadie mira esa pestaña — eso sí es la cancelación de verdad que
+pedía este punto, no un `AbortController` del lado del navegador. Se
+aprovechó la reescritura de `_archivo_estatico` para cerrar también el
+traversal de la recomendación 6 (ver abajo). Verificado con QA de
+navegador real: WebSocket conectando, `estado_inicial` + deltas
+llegando, cero polling de `/api/estado`, y la suscripción/cancelación
+del canal `sitio` disparándose sola al entrar/salir de "Modelos". Ver
+`CLAUDE.md`, sección "Servidor y frontend", para el detalle completo.
 
-`Handler._archivo_estatico` filtra los componentes con
-`[p for p in ruta_rel.split("/") if p and p != ".."]` y arma la ruta con
-`os.path.join(self.app.dir_web, *partes)` — pero parte **solo por `/`**,
-y `self.path` nunca se desescapa ni se normaliza. En Windows eso deja
-pasar un componente entero con barras invertidas adentro: un
-`GET /..\..\sesion.json` llega como UN componente (que no es `".."`), se
-une a `nimbo\web\` y resuelve a `<raiz>\sesion.json`. Probado contra el
-servidor real: devuelve `200` con el archivo completo. Y esa ruta **no
-pide token** — `necesita_token` solo cubre `/`, `/index.html`,
-`/eventos` y `/api/`, justamente porque los estáticos se piden con URL
-relativa sin `?t=` — así que cualquier proceso local sin privilegios se
-baja `sesion.json`, que según su propio docstring "equivale en la
-práctica a la contraseña de la cuenta", más `config.json` e
-`instancia.json` (puerto + token, o sea el resto de la API).
+## 6. Cerrar el traversal de `_archivo_estatico` en `servidor.py` — IMPLEMENTADO
 
-El arreglo es barato y ya está escrito dos veces en el repo: aplicar el
-mismo patrón de `grabaciones.py:_resolver` y `vivo.py:_resolver`
-(`os.path.realpath` + `os.path.commonpath([base, destino]) != base`),
-más `unquote()` sobre el path y rechazar cualquier componente que traiga
-`\` o `:`. La decisión de fondo que vale discutir aparte es si los
-estáticos tienen que seguir sin token: hoy la única barrera real para
-`js/`, `app.css` e `index.html` es que escuchás en `127.0.0.1`, y el
-Chromium del supervisor corre en la misma máquina.
+~~`Handler._archivo_estatico` filtra los componentes...~~ Se arregló de
+paso al reescribir la función para la recomendación 5
+(`_resolver_estatico`, con el mismo `realpath`+`commonpath` que ya usaban
+`grabaciones.py`/`vivo.py`, más el rechazo explícito de `\` y `:` en
+cualquier componente). Probado contra el servidor real:
+`GET /..\..\sesion.json` y su forma percent-encoded dan `404`, no `200`
+con el archivo. Los estáticos **siguen sin token** a propósito — esa
+discusión de fondo (la decisión que vale discutir aparte, de abajo)
+sigue abierta, no era parte de este arreglo.
+
+La falla original, para que quede el porqué escrito: la version anterior
+de `_archivo_estatico` filtraba los componentes con
+`[p for p in ruta_rel.split("/") if p and p != ".."]`, pero partía
+**solo por `/`** y `self.path` nunca se desescapaba — en Windows eso
+dejaba pasar un componente entero con barras invertidas adentro (un
+`GET /..\..\sesion.json` llegaba como UN componente que no era `".."`,
+se unía a `nimbo\web\` y resolvía a `<raiz>\sesion.json`), y esa ruta no
+pedía token. `sesion.json` "equivale en la práctica a la contraseña de
+la cuenta" según su propio docstring; también quedaban expuestos
+`config.json` e `instancia.json` (puerto + token, el resto de la API).
+La decisión de fondo que sigue sin resolverse es si los estáticos tienen
+que seguir sin token: hoy la única barrera real para `js/`, `app.css` e
+`index.html` es que escuchás en `127.0.0.1`, y el Chromium del
+supervisor corre en la misma máquina.
 
 ## 7. Recolector de basura para `datos\streams\`
 
@@ -145,8 +167,10 @@ decirlo en el aviso para que no parezca que se perdió la grabación.
 ## 9. Los logs del motor no quedan en ninguna parte
 
 `Motor._leer_salida` lee el stdout de los dos hijos y lo manda a
-`_emitir_log`, que termina en `_Suscriptores.publicar` — una cola por
-pestaña abierta, `maxsize=200`, y nada más. No hay backlog: si nadie
+`_emitir_log`, que termina en `Aplicacion._publicar` (antes
+`_Suscriptores.publicar`, renombrada al pasar `servidor.py` a asyncio —
+ver recomendación 5) — una cola por pestaña abierta, `maxsize=200`, y
+nada más. No hay backlog: si nadie
 está suscrito (el caso normal, porque `arrancar_al_abrir` arranca el
 motor antes de que la ventana cargue, y además la ventana se cierra
 cuando querés y el servidor sigue), esas líneas **se tiran a la
@@ -172,29 +196,24 @@ ambos hijos (y el aviso de muerte con su `returncode`), y rotación por
 tamaño con sufijo `.1` en los dos `_Eventos`, con `registro.leer()`
 sabiendo saltar al archivo anterior en vez de cortar en seco.
 
-## 10. Matar el poll de 2 segundos: el estado ya tiene por dónde empujarse
+## 10. Matar el poll de 2 segundos: el estado ya tiene por dónde empujarse — IMPLEMENTADO
 
-`main.js` hace `setInterval(refrescar, 2000)` **además** de mantener el
-SSE abierto, y el SSE hoy se usa para una sola cosa útil: el
-`estado_inicial` del primer mensaje (de ahí en más solo llegan `log` y
-`aviso`). Así que cada 2 segundos, por cada pestaña abierta,
-`Aplicacion.estado_completo()` hace `shutil.disk_usage`, parsea tres
-JSON (`detector.json`, `supervisor.json`, `siguiendo.json`), relee
-`grabar.txt` entero con `lista.leer()` (que a propósito no cachea nada)
-y recorre `datos\streams\` con `vivo.sesiones_vivas()`. Encima
-`ThreadingHTTPServer` levanta un hilo por pedido, y con el modal de
-previa abierto a eso se le suman un `/api/sitio/imagen` por segundo
-(`ESPERA_ENTRE_IMAGENES_MS`, con un `urllib` saliente real adentro, sin
-cache) y hasta nueve pedidos por tick del reproductor en vivo.
+~~`main.js` hace `setInterval(refrescar, 2000)`...~~ Se resolvió de
+arriba, como efecto directo de la recomendación 5: `servidor.py` ganó un
+`_bucle_estado` que calcula `estado_completo()` una vez (no por
+pestaña) y publica por el canal `estado` del WebSocket solo las
+secciones que cambiaron desde el tick anterior — usando exactamente
+`Lista.firma()` para `grabar.txt` (la pieza que este punto señalaba como
+"ya existe y no la llama nadie") y el contenido ya parseado de
+`detector.json`/`supervisor.json`/`siguiendo.json` para el resto.
+`main.js` borró el `setInterval` entero; `refrescar()` quedó solo como
+reconciliación puntual (primera pintada antes de que conecte el
+WebSocket, y después de cada acción que muta algo). Verificado con QA de
+navegador real: un solo `GET /api/estado` en toda la carga de la pestaña,
+ninguno más en los 8 segundos siguientes, y el delta llegando solo
+cuando `grabar.txt` cambió de verdad.
 
-Lo bueno es que no hace falta cambiar de transporte para arreglarlo (eso
-es la recomendación 5, y es mucho más caro): alcanza con que el hilo que
-hoy existe para otra cosa — `_bucle_cosecha` — calcule
-`estado_completo()` una sola vez por tick, lo publique por
-`_Suscriptores` solo si cambió respecto del anterior, y que `main.js`
-borre el `setInterval` y se quede con un `refrescar()` de reconciliación
-cuando el `EventSource` dispara `onerror`. El trabajo de verdad está en
-abaratar el cálculo: `Lista.firma()` ya existe para esto exacto —
-devuelve `(mtime, size)` para no reparsear `grabar.txt` — y hoy **no la
-llama nadie**; lo mismo vale para los tres JSON de estado y para un
-`ETag`/`304` en `/api/estado` para quien siga pidiéndolo a mano.
+El `/api/sitio/imagen` por segundo del modal de previa y los pedidos del
+reproductor en vivo (`reproductor_vivo.js`) **no** se tocaron — son pull
+deliberado contra contenido que cambia en vivo (snapshot, segmentos
+CMAF), no el polling de estado que este punto señalaba.

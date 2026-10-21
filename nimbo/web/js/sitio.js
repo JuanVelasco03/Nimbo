@@ -1,10 +1,14 @@
 // Miniaturas y datos en vivo del sitio real (sitio.py del lado del
-// servidor). cacheSitio: nombre en minuscula -> {avatar, online}. Se
-// llena en segundo plano (ver actualizarCacheSitio); si el sitio cambio
-// su endpoint de busqueda esto se queda vacio y todo cae a la inicial
-// como antes -- nunca rompe nada, solo deja de verse tan lindo.
+// servidor). cacheSitio: nombre en minuscula -> {avatar, online, estado}.
+// Ya no lo llena este modulo pidiendo /api/sitio/* por su cuenta: el
+// servidor corre ese refresco el mismo (canal "sitio" del WebSocket, ver
+// servidor.py:_bucle_sitio) y aplicarSitio() solo mezcla lo que llega --
+// main.js suscribe/desuscribe ese canal al entrar/salir de "Modelos". Si
+// el sitio cambio su endpoint de busqueda, el canal no manda nada y la
+// vista se queda en la inicial como antes -- nunca rompe nada, solo deja
+// de verse tan lindo.
 
-import { obtener, conToken } from "./api.js";
+import { conToken } from "./api.js";
 import { inicialDe } from "./formato.js";
 
 export const cacheSitio = {};
@@ -26,34 +30,12 @@ export function construirMiniatura(nombre) {
   return inicialDe(nombre);
 }
 
-// Busca cada nombre contra /api/sitio/buscar y actualiza cacheSitio con
-// lo que haya exacto. No toca el DOM ni sabe de "estado" -- quien llama
-// decide cuando volver a pintar con los datos frescos.
-export async function actualizarCacheSitio(nombres) {
-  await Promise.allSettled(nombres.map(async (nombre) => {
-    const r = await obtener("/api/sitio/buscar?q=" + encodeURIComponent(nombre));
-    const exacto = r.resultados.find(
-      m => m.username.toLowerCase() === nombre.toLowerCase());
-    if (exacto) {
-      const clave = nombre.toLowerCase();
-      cacheSitio[clave] = { ...cacheSitio[clave], avatar: exacto.avatar, online: exacto.online };
-    }
-  }));
-}
-
-// El buscador no trae "status" (public/private/p2p/...), asi que una
-// favorita puramente local -- sin dato de "siguiendo" ni de supervisor --
-// no tiene de donde sacarlo salvo pidiendolo puntual. Quien llama decide
-// a cuales nombres les falta el dato (ver main.js: solo los que no vienen
-// ya resueltos por estado.siguiendo o estado.supervisor).
-export async function actualizarEstadosSitio(nombres) {
-  await Promise.allSettled(nombres.map(async (nombre) => {
-    const clave = nombre.toLowerCase();
-    try {
-      const r = await obtener("/api/sitio/estado?nombre=" + encodeURIComponent(nombre));
-      cacheSitio[clave] = { ...cacheSitio[clave], estado: r.estado || "" };
-    } catch (err) {
-      // sin dato -- la fila se queda en "SIN DATO" hasta el proximo intento
-    }
-  }));
+// Mezcla lo que llego por el canal "sitio" del WebSocket -- {nombre:
+// {avatar?, online?, estado?}}, una entrada por cada favorita o modelo
+// sin estado que el servidor pudo resolver en esa vuelta (ver
+// servidor.py:_refrescar_sitio) -- sin pisar los campos que ya estaban.
+export function aplicarSitio(datos) {
+  for (const [clave, info] of Object.entries(datos || {})) {
+    cacheSitio[clave] = { ...cacheSitio[clave], ...info };
+  }
 }

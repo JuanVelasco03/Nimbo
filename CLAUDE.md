@@ -158,30 +158,86 @@ lectores (`_leer_json`) tragan `OSError`/`ValueError` y devuelven `None`.
 
 ### Servidor y frontend
 
-`nimbo\servidor.py` es un `ThreadingHTTPServer` con todas las rutas en un
-único `Handler.do_GET`/`do_POST` (sin framework). Solo escucha en
-`127.0.0.1` y exige `?t=<token>` — un `secrets.token_urlsafe(24)` nuevo por
-arranque — en `/`, `/eventos` y todo `/api/*`. Los estáticos (`app.css`,
-`js\*.js`) **no** llevan token a propósito: los imports del navegador usan
-URLs relativas sin query y quedarían en 403.
+`nimbo\servidor.py` es un solo `asyncio.start_server` en `127.0.0.1`,
+sin framework: una corutina por conexión (`_atender`) que lee el
+preámbulo HTTP y demultiplexa. Si trae `Upgrade: websocket` y el destino
+es `/ws`, esos mismos bytes crudos se re-alimentan a
+`websockets.server.ServerProtocol` (la capa *sans-I/O* de la librería:
+solo entiende bytes y eventos, no abre sockets) para el framing; si no,
+se atiende como HTTP común (`_manejar_get`/`_manejar_post`). El HTTP es
+propio a propósito: `websockets.asyncio.server.serve()` no sabe
+transmitir un cuerpo en bloques, y `_servir_video` tiene que poder mandar
+un `.mp4` de varios GB sin cargarlo entero en memoria. Exige `?t=<token>`
+— un `secrets.token_urlsafe(24)` nuevo por arranque — en `/`, todo
+`/api/*` y en la query del handshake de `/ws`. Los estáticos (`app.css`,
+`js\*.js`) **no** llevan token a propósito: los imports del navegador
+usan URLs relativas sin query y quedarían en 403.
 
-- `/eventos` es SSE: una cola por pestaña (`_Suscriptores`), con descarte
-  del mensaje más viejo si un cliente se cuelga, y latido cada 15s. El
-  primer mensaje es el estado completo para que la pestaña pinte de una.
+No hay ningún hilo bloqueado por conexión (`ThreadingHTTPServer` lo
+tenía: un hilo por SSE abierto, para siempre). Todo lo síncrono —
+disco, subprocess, red saliente, los `threading.Lock` que ya tienen
+`lista.py`/`sesion.py`/`sitio.py`/etc — pasa por
+`Aplicacion.a_hilo()`, que lo corre en un `ThreadPoolExecutor` propio
+(tope `EJECUTOR_HILOS`); nunca se llama un módulo de `nimbo\` directo
+desde una corutina. `Motor` sigue avisando desde sus propios hilos (el
+de vigilancia, los lectores de stdout) — `Aplicacion._en_evento` cruza
+al loop con `loop.call_soon_threadsafe` antes de publicar nada, mismo
+patrón que ya usa `lanzador_supervisor.py` con su hilo de stdin.
+
+- `/ws` reemplaza al `/eventos` de SSE: un canal bidireccional por
+  pestaña, con canales suscribibles (`estado`, `motor`, `sitio`) y una
+  cola por conexión (`_Conexion.cola`) que descarta el mensaje más viejo
+  si el cliente se cuelga — nunca bloquea a quien publica, nunca una
+  pestaña colgada afecta a otra. Al conectar manda `estado_inicial` (la
+  foto completa); de ahí en más solo manda **deltas** (`tipo: "estado"`,
+  solo las secciones que cambiaron) — `servidor.py:_bucle_estado` es
+  quien decide qué cambió, comparando firmas baratas (`Lista.firma()`
+  para `grabar.txt`; el contenido ya parseado para `detector.json`, cuyo
+  `mtime` es un latido que se reescribe igual aunque no cambie nada). El
+  ping/pong del WebSocket es manual (`_ws_escritor`): `ServerProtocol` es
+  sans-I/O puro, no lo hace solo.
+- El refresco de "Modelos" contra el sitio real (`sitio.buscar`,
+  `sitio.estado_cacheado`) es una tarea del servidor
+  (`servidor.py:_bucle_sitio`), no de cada pestaña: corre cada 15s
+  mientras alguien esté suscrito al canal `sitio` y se apaga sola si no
+  hay nadie. La pestaña se suscribe/desuscribe al entrar/salir de
+  "Modelos" (`main.js`, mensajes `{tipo:"suscribir"}` /
+  `{tipo:"cancelar"}`) — eso es lo que de verdad cancela el lote, no un
+  `AbortController` del lado del cliente (no hay ninguno en el repo).
 - Lo que tarda (`/api/motor/arrancar`, `/api/motor/parar`,
-  `/api/sesion/actualizar`) responde **202** y lanza un hilo; el progreso
-  real llega por SSE. Nunca dejar colgada una respuesta HTTP esperando al
-  motor.
+  `/api/sesion/actualizar`) sigue respondiendo **202** y lanzando una
+  tarea (`_lanzar_tarea`, con dedupe: dos POST seguidos no duplican el
+  trabajo); el progreso real llega por el canal `motor` del WebSocket.
+  Nunca dejar colgada una respuesta HTTP esperando al motor.
 - Tres formas distintas de servir bytes, no intercambiables:
-  `_archivo_estatico`, `_servir_video` (con `Range`/206, para saltar dentro
-  de un `.mp4` de varios GB) y `_servir_bytes` (`Accept-Ranges: none` — un
-  init o segmento CMAF se appendea entero a un `SourceBuffer` y una 206
-  parcial rompe `appendBuffer`).
+  `_servir_estatico`, `_servir_video` (con `Range`/206, para saltar
+  dentro de un `.mp4` de varios GB, en bloques de 1 MiB) y
+  `_servir_bytes` (`Accept-Ranges: none` — un init o segmento CMAF se
+  appendea entero a un `SourceBuffer` y una 206 parcial rompe
+  `appendBuffer`). `_resolver_estatico` cierra el traversal por
+  Windows (`\` o `:` en un componente se rechaza antes del `join`) con
+  el mismo patrón que `grabaciones.py:_resolver`/`vivo.py:_resolver`
+  (`realpath` + `commonpath`).
+- `websockets` (sin dependencias propias) es la única dependencia
+  **obligatoria** de `requirements.txt` — a diferencia de
+  `pystray`/`Pillow`, que son opcionales (sin ellas Nimbo cae a modo sin
+  bandeja). `app.py` envuelve su propio import en un `try/except
+  ImportError` para fallar con un mensaje claro en vez de un traceback.
 
 El frontend son módulos ES nativos sin build (`nimbo\web\js\`): `main.js`
-orquesta y cada `vista_*.js` se pinta sola. El CSS sí pasa por Tailwind v4
-configurado en el propio `tailwind.css` (`@theme`, `@source`), compilado a
-`app.css`, que **se versiona** — el runtime no necesita Node.
+orquesta y cada `vista_*.js` se pinta sola. `api.js:conectarWS` reemplaza
+al `EventSource` de antes — WebSocket no reconecta solo, así que el
+backoff (0.5s → 5s tope) es a mano. `main.js` ya no tiene ningún
+`setInterval` pidiendo `/api/estado`: `conMensaje()` mezcla cada delta
+sobre `ultimoEstado` (`{...ultimoEstado, ...msg.datos}`) antes de
+repintar, así los seis `render*` de `pintarEstado()` no sabían ni saben
+que la mitad de las veces el objeto les llega incompleto a propósito.
+`api.js:enviarWS` es el único canal de salida que un módulo lejano
+(`vista_previa.js`, el latido de "ver en vivo" temporal) necesita sin
+que `main.js` le pase el cliente WebSocket a mano por cada import. El
+CSS sí pasa por Tailwind v4 configurado en el propio `tailwind.css`
+(`@theme`, `@source`), compilado a `app.css`, que **se versiona** — el
+runtime no necesita Node.
 
 ### Reproductor en vivo
 

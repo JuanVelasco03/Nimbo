@@ -3,9 +3,9 @@
 // del estado completo. Cada pestana sabe pintarse sola (ver vista_*.js);
 // esto solo orquesta.
 
-import { obtener, enviar, conToken } from "./api.js";
+import { obtener, enviar, conectarWS } from "./api.js";
 import { agregarLog, mostrarError } from "./registro.js";
-import { actualizarCacheSitio, actualizarEstadosSitio } from "./sitio.js";
+import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
 import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros } from "./vista_modelos.js";
 import { renderDirectivas, cargarPreferencias } from "./vista_ajustes.js";
@@ -15,6 +15,7 @@ import { iniciarRegistro, entrarARegistro, salirDeRegistro } from "./vista_regis
 import { iniciarGrabaciones, entrarAGrabaciones, salirDeGrabaciones } from "./vista_grabaciones.js";
 
 let ultimoEstado = null;
+let ws = null;
 
 function renderMotor(estado) {
   const m = estado.motor;
@@ -59,6 +60,10 @@ function pintarEstado(estado) {
   renderDirectivas(estado.lista.directivas || {});
 }
 
+// Reconciliacion puntual: ya no hay un setInterval corriendo esto cada
+// 2s (el estado llega por push, ver conMensaje), pero sigue sirviendo
+// como primera pintada antes de que el WebSocket conecte y como
+// respaldo despues de cada accion que muta algo.
 async function refrescar() {
   try {
     ultimoEstado = await obtener("/api/estado");
@@ -69,55 +74,51 @@ async function refrescar() {
   }
 }
 
-function conectarSSE() {
-  const es = new EventSource(conToken("/eventos"));
-  es.onmessage = (ev) => {
-    const msg = JSON.parse(ev.data);
-    if (msg.tipo === "estado_inicial") {
-      ultimoEstado = msg.datos;
-      pintarEstado(ultimoEstado);
-    } else if (msg.tipo === "log") {
-      agregarLog("linea-" + msg.datos.proceso, "[" + msg.datos.proceso + "] " + msg.datos.linea);
-    } else if (msg.tipo === "aviso") {
-      agregarLog("linea-aviso", msg.datos.texto);
-    }
-  };
-  es.onerror = () => {
-    document.getElementById("punto-estado").className = "punto mal";
-  };
+// Reemplaza al /eventos de SSE: un solo canal bidireccional. "estado_inicial"
+// y "estado" (delta, solo las secciones que cambiaron) se mezclan sobre
+// ultimoEstado en vez de pisarlo entero -- asi los render* de abajo no
+// necesitan saber que la mitad de las veces el objeto esta incompleto a
+// proposito.
+function conMensaje(msg) {
+  if (msg.tipo === "estado_inicial") {
+    ultimoEstado = msg.datos;
+    pintarEstado(ultimoEstado);
+  } else if (msg.tipo === "estado") {
+    if (!ultimoEstado) return;   // todavia no llego el inicial: se ignora, ya viene completo
+    ultimoEstado = { ...ultimoEstado, ...msg.datos };
+    pintarEstado(ultimoEstado);
+  } else if (msg.tipo === "sitio") {
+    aplicarSitio(msg.datos);
+    if (ultimoEstado) renderFavoritas(ultimoEstado);
+  } else if (msg.tipo === "log") {
+    agregarLog("linea-" + msg.datos.proceso, "[" + msg.datos.proceso + "] " + msg.datos.linea);
+  } else if (msg.tipo === "aviso") {
+    agregarLog("linea-aviso", msg.datos.texto);
+  }
+}
+
+function conEstadoConexion(conectado) {
+  if (!conectado) document.getElementById("punto-estado").className = "punto mal";
 }
 
 // -- navegacion entre pestanas -------------------------------------------
-// Al entrar a "Modelos" se refresca la cache de miniaturas/online del
-// sitio en segundo plano; al salir se corta, no tiene sentido pedirla
-// si nadie la esta mirando.
+// Al entrar a "Modelos" se suscribe al canal "sitio" del WebSocket --
+// el servidor es quien corre el refresco contra el sitio real ahora (ver
+// servidor.py:_bucle_sitio); al salir se cancela, no tiene sentido
+// seguir pidiendolo si nadie lo esta mirando. Mismo criterio con
+// visibilitychange: la ventana sin foco tampoco necesita el refresco.
 
-let intervaloSitio = null;
-
-// Nombres de favoritas locales que no traen status por ningun otro lado
-// (ni de "siguiendo" -- la cuenta real -- ni del supervisor, que vigila
-// todo lo de grabar.txt): a esos, y solo a esos, se les pide
-// /api/sitio/estado -- es el unico tramo de esta pantalla que agrega
-// pedidos salientes nuevos contra el sitio real.
-function nombresSinEstado(estado) {
-  const conDato = new Set();
-  for (const m of (estado.siguiendo && estado.siguiendo.modelos) || []) {
-    if (m.username) conDato.add(m.username.toLowerCase());
-  }
-  for (const e of (estado.supervisor && estado.supervisor.emisiones) || []) {
-    if (e.nombre && e.estado) conDato.add(e.nombre.toLowerCase());
-  }
-  return (estado.favoritas || []).filter(n => !conDato.has(n.toLowerCase()));
+function enVistaModelos() {
+  const vista = document.getElementById("vista-modelos");
+  return vista && !vista.classList.contains("oculta");
 }
 
-async function actualizarFavoritasConSitio() {
-  if (!ultimoEstado) return;
-  await Promise.all([
-    actualizarCacheSitio(ultimoEstado.favoritas || []),
-    actualizarEstadosSitio(nombresSinEstado(ultimoEstado)),
-  ]);
-  renderFavoritas(ultimoEstado);
-}
+document.addEventListener("visibilitychange", () => {
+  if (!enVistaModelos()) return;
+  ws.enviar(document.hidden
+    ? { tipo: "cancelar", lote: "sitio" }
+    : { tipo: "suscribir", canales: ["sitio"] });
+});
 
 function iniciarNavegacion() {
   for (const boton of document.querySelectorAll("nav button")) {
@@ -127,13 +128,12 @@ function iniciarNavegacion() {
       boton.classList.add("activa");
       document.getElementById("vista-" + boton.dataset.vista).classList.remove("oculta");
 
-      if (intervaloSitio) { clearInterval(intervaloSitio); intervaloSitio = null; }
+      ws.enviar({ tipo: "cancelar", lote: "sitio" });
       salirDeRegistro();
       salirDeGrabaciones();
 
       if (boton.dataset.vista === "modelos") {
-        actualizarFavoritasConSitio();
-        intervaloSitio = setInterval(actualizarFavoritasConSitio, 15000);
+        ws.enviar({ tipo: "suscribir", canales: ["sitio"] });
       } else if (boton.dataset.vista === "registro") {
         entrarARegistro();
       } else if (boton.dataset.vista === "grabaciones") {
@@ -255,7 +255,6 @@ iniciarRegistro();
 iniciarGrabaciones();
 
 refrescar();
-setInterval(refrescar, 2000);
-conectarSSE();
+ws = conectarWS(conMensaje, conEstadoConexion);
 revisarPreflight();
 cargarPreferencias();

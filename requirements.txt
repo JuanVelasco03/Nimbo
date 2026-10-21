@@ -1,8 +1,16 @@
 # Dependencias de nimbo/app.py (el proceso que abre la ventana y el icono
-# de la bandeja). Opcionales en el sentido de que si faltan, Nimbo sigue
-# funcionando: cae a un modo sin bandeja (ver app.py: ejecutar_sin_bandeja).
+# de la bandeja).
 #
 # NO tiene nada que ver con el Python que corre el supervisor del grabador
 # (ese necesita Playwright y lo busca Nimbo solo -- ver README.md).
+
+# websockets NO es opcional: servidor.py la usa para el framing de /ws
+# (ver CLAUDE.md, seccion "Servidor y frontend") y sin ella no hay
+# interfaz -- app.py falla rapido y claro si falta (ver su import de
+# servidor), en vez de dejar que explote mas adelante.
+websockets
+
+# Estas si son opcionales: sin ellas Nimbo cae a un modo sin bandeja
+# (ver app.py: ejecutar_sin_bandeja).
 pystray
 Pillow

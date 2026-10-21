@@ -21,8 +21,18 @@ import threading
 import time
 
 import ajustes as ajustes_mod
-import servidor as servidor_mod
 import vivo_temporal as vivo_temporal_mod
+
+try:
+    import servidor as servidor_mod
+except ImportError as e:
+    # A diferencia de pystray/Pillow (opcionales: sin ellas se cae a modo
+    # sin bandeja, ver ejecutar_sin_bandeja), websockets no es opcional --
+    # sin ella no hay servidor ni interfaz. Mejor este mensaje claro que
+    # un traceback crudo al abrir Nimbo.
+    print("[NIMBO] falta instalar una dependencia obligatoria:", e)
+    print("[NIMBO] ejecuta: pip install -r requirements.txt")
+    sys.exit(1)
 
 ARCHIVO_INSTANCIA = os.path.join(ajustes_mod.RAIZ, "instancia.json")
 DIR_PERFIL_VENTANA = os.path.join(ajustes_mod.RAIZ, "perfil_ventana")
@@ -109,11 +119,14 @@ def _icono_nimbo():
 
 
 def _resumen_estado(app) -> str:
-    try:
-        estado = app.estado_completo()
-    except Exception:
+    # app.estado es la cache que mantiene servidor.py:_bucle_estado --
+    # tiene hasta 4s de atraso, no hace falta recalcular nada solo para
+    # el tooltip de la bandeja (eso era justo lo caro de la version con
+    # SSE: un estado_completo() entero cada 4s).
+    estado = app.estado
+    if not estado:
         return "Nimbo"
-    m = estado["motor"]
+    m = estado.get("motor") or {}
     if m["parando"]:
         return "Nimbo -- deteniendo..."
     if not (m["detector_vivo"] and m["supervisor_vivo"]):
@@ -192,10 +205,13 @@ def main():
                       (existente["puerto"], existente["token"]))
         return 0
 
-    httpd, app, url = servidor_mod.crear_servidor(a, ajustes_mod.DIR_WEB)
-    _guardar_instancia(httpd.server_address[1], app.token)
-    threading.Thread(target=httpd.serve_forever, daemon=True, name="nimbo-http").start()
-    _log("servidor en " + url)
+    # Aplicacion() ya existe en este punto (el constructor de Servidor la
+    # crea sincronico, antes de levantar el loop) -- se puede purgar
+    # grabar.txt ANTES de arrancar() para que la primera foto de estado
+    # (la que arrancar() siembra en app.estado) ya salga limpia, en vez de
+    # mostrar por un instante una modelo que esta misma purga va a sacar.
+    servidor = servidor_mod.Servidor(a, ajustes_mod.DIR_WEB)
+    app = servidor.app
 
     # una corrida anterior que murio a mitad (cerrado de un ctrl+c, por
     # ejemplo) puede haber dejado una modelo pegada en grabar.txt por una
@@ -204,6 +220,11 @@ def main():
     n = vivo_temporal_mod.purgar(app.lista, a.dir_estado)
     if n:
         _log("%d vista(s) en vivo temporal(es) sin cerrar de la corrida anterior" % n)
+
+    servidor.arrancar()      # no vuelve hasta que el socket esta escuchando
+    url = "http://127.0.0.1:%d/?t=%s" % (servidor.puerto, servidor.token)
+    _guardar_instancia(servidor.puerto, servidor.token)
+    _log("servidor en " + url)
 
     if a["arrancar_al_abrir"]:
         threading.Thread(target=app.motor.arrancar, daemon=True).start()
@@ -222,7 +243,7 @@ def main():
         _log("cerrando Nimbo -- parada ordenada (puede tardar si hay "
              "una grabacion uniendose)")
         app.motor.parar()
-        httpd.shutdown()
+        servidor.parar()
         _borrar_instancia()
         _log("listo")
 
