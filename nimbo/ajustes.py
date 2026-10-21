@@ -69,6 +69,7 @@ DEFECTOS = {
     "arrancar_al_abrir": True,
     "bandeja": True,
     "ver_navegador": False,
+    "dias_segmentos": 1,
 }
 
 # Los tres archivos que tienen que estar en nucleo\scripts\ para poder

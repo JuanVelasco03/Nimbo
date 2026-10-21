@@ -13,8 +13,10 @@
 import { obtener, enviar, conToken } from "./api.js";
 import { formatoMB, formatoGB, formatoHMS, formatoFechaArchivo } from "./formato.js";
 import { construirMiniatura } from "./sitio.js";
+import { mostrarError } from "./registro.js";
 
 let ultimoListado = null;
+let ultimoStreams = null;
 let intervaloRefresco = null;
 let filtro = "";
 let orden = "recientes";
@@ -119,6 +121,44 @@ async function cargar() {
   renderGrabaciones();
 }
 
+// -- resumen de datos\streams\ y el boton "Limpiar segmentos" ------------
+// Recorte aparte del de /api/grabaciones: el escaneo de streams\ no es
+// gratis, asi que se pide solo al entrar a la pestana y despues de un
+// barrido manual, nunca dentro del setInterval de 4s de arriba.
+
+function renderStreams() {
+  const boton = document.getElementById("streams-limpiar");
+  const span = document.getElementById("streams-resumen");
+  if (!ultimoStreams) { span.textContent = ""; boton.disabled = true; return; }
+  const s = ultimoStreams;
+  span.textContent = s.sesiones + " sesion" + (s.sesiones === 1 ? "" : "es")
+    + " sin limpiar (" + formatoGB(s.bytes) + ")";
+  boton.disabled = s.bytes_borrables === 0;
+  boton.textContent = s.bytes_borrables > 0
+    ? "Limpiar segmentos (" + formatoGB(s.bytes_borrables) + ")"
+    : "Limpiar segmentos";
+}
+
+async function cargarStreams() {
+  try {
+    ultimoStreams = await obtener("/api/streams");
+  } catch (err) {
+    ultimoStreams = null;
+  }
+  renderStreams();
+}
+
+async function limpiarStreams() {
+  const boton = document.getElementById("streams-limpiar");
+  boton.disabled = true;
+  try {
+    await enviar("/api/streams/limpiar", {});
+  } catch (err) {
+    mostrarError(err);
+  }
+  await cargarStreams();
+}
+
 // -- modal de reproduccion -----------------------------------------------
 // Un <video> nativo no puede concatenar varios .mp4 en una sola
 // reproduccion continua sin MediaSource (fuera de alcance para "basico")
@@ -195,6 +235,8 @@ export function iniciarGrabaciones() {
     renderGrabaciones();
   });
 
+  document.getElementById("streams-limpiar").addEventListener("click", limpiarStreams);
+
   document.getElementById("grabaciones-lista").addEventListener("click", async (ev) => {
     const boton = ev.target.closest("[data-accion]");
     if (!boton) return;
@@ -239,6 +281,7 @@ export function iniciarGrabaciones() {
 
 export function entrarAGrabaciones() {
   cargar();
+  cargarStreams();
   if (intervaloRefresco) clearInterval(intervaloRefresco);
   // Refresco periodico: sobre todo para que las duraciones que se estan
   // calculando en segundo plano (ver grabaciones.py) aparezcan solas sin

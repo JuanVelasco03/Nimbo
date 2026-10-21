@@ -59,6 +59,7 @@ from websockets.http11 import Request
 from websockets.server import ServerProtocol
 
 import ajustes as ajustes_mod
+import cosecha_streams as cosecha_streams_mod
 import favoritas as favoritas_mod
 import grabaciones as grabaciones_mod
 import inicio_automatico as inicio_mod
@@ -80,6 +81,8 @@ INTERVALO_ESTADO_IDLE = 4.0     # sin nadie -- el tooltip de la bandeja
                                  # igual queda con dato de hasta 4s
 INTERVALO_DISCO = 30.0          # shutil.disk_usage no es gratis
 INTERVALO_COSECHA = 10.0        # mismo intervalo que tenia nimbo-cosecha
+INTERVALO_LIMPIEZA = 600.0      # cada cuanto se barre datos\streams\ --
+                                 # el listdir de dos niveles no es gratis
 INTERVALO_SITIO = 15.0          # mismo intervalo que tenia el setInterval
                                  # del lado del cliente
 CUPO_SITIO = 4                  # pedidos salientes simultaneos al sitio
@@ -133,6 +136,8 @@ class Aplicacion:
                                      # _resumen_estado() de app.py
         self._tareas = {}           # nombre -> Task, para no duplicar
                                      # un 202 si llega dos veces seguidas
+        self.ultima_limpieza = None  # ultimo barrido de datos\streams\,
+                                      # lo pisa _bucle_cosecha
 
     def fijar_loop(self, loop):
         self.loop = loop
@@ -202,6 +207,7 @@ class Aplicacion:
             "siguiendo": _leer_json(self.ajustes.estado_siguiendo),
             "vivo": vivo_mod.sesiones_vivas(
                 self.ajustes.streams, _leer_json(self.ajustes.estado_detector)),
+            "limpieza": self.ultima_limpieza,
         }
 
 
@@ -381,6 +387,9 @@ async def _bucle_estado(app):
             if motor != app.estado.get("motor"):
                 delta["motor"] = motor
 
+            if app.ultima_limpieza != app.estado.get("limpieza"):
+                delta["limpieza"] = app.ultima_limpieza
+
             if detector_cambio or "lista" in delta:
                 detector_para_vivo = detector if detector_cambio else app.estado.get("detector")
                 vivo = await app.a_hilo(
@@ -405,11 +414,30 @@ async def _bucle_estado(app):
 async def _bucle_cosecha(app):
     """Mismo trabajo que hacia nimbo-cosecha: cerrar solas las vistas en
     vivo temporales cuyo navegador se cerro de golpe y nunca llego a
-    mandar el cierre (ver vivo_temporal.cosechar)."""
+    mandar el cierre (ver vivo_temporal.cosechar). Ademas, cada
+    INTERVALO_LIMPIEZA, barre datos\\streams\\ con cosecha_streams -- el
+    listdir de dos niveles no es gratis, por eso no corre cada tick."""
+    reloj_limpieza = 0.0
     while True:
         await asyncio.sleep(INTERVALO_COSECHA)
         with contextlib.suppress(Exception):
             await app.a_hilo(vivo_temporal_mod.cosechar, app.lista, app.ajustes.dir_estado)
+
+        reloj_limpieza += INTERVALO_COSECHA
+        if reloj_limpieza < INTERVALO_LIMPIEZA:
+            continue
+        reloj_limpieza = 0.0
+        with contextlib.suppress(Exception):
+            detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
+            resultado = await app.a_hilo(
+                cosecha_streams_mod.barrer, app.ajustes.streams, detector,
+                app.ajustes["dias_segmentos"])
+            if resultado["borradas"]:
+                app.ultima_limpieza = {
+                    "cuando": time.time(),
+                    "sesiones": len(resultado["borradas"]),
+                    "bytes": resultado["bytes"],
+                }
 
 
 def _nombres_sin_estado(estado):
@@ -732,6 +760,12 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             await _json(writer, 404, {"error": "no encontrado"})
             return
         await _servir_bytes(writer, datos, "video/mp4")
+    elif ruta == "/api/streams":
+        a = app.ajustes
+        detector = await app.a_hilo(_leer_json, a.estado_detector)
+        resultado = await app.a_hilo(
+            cosecha_streams_mod.resumen, a.streams, detector, a["dias_segmentos"])
+        await _json(writer, 200, resultado)
     elif ruta.startswith("/api/"):
         await _json(writer, 404, {"error": "no encontrado"})
     else:
@@ -823,6 +857,18 @@ async def _despachar_post(app, ruta, cuerpo):
         ok = await app.a_hilo(
             grabaciones_mod.abrir_carpeta, app.ajustes.grabaciones, cuerpo.get("archivo", ""))
         return 200, {"abierto": ok}
+    elif ruta == "/api/streams/limpiar":
+        a = app.ajustes
+        detector = await app.a_hilo(_leer_json, a.estado_detector)
+        resultado = await app.a_hilo(
+            cosecha_streams_mod.barrer, a.streams, detector, a["dias_segmentos"])
+        if resultado["borradas"]:
+            app.ultima_limpieza = {
+                "cuando": time.time(),
+                "sesiones": len(resultado["borradas"]),
+                "bytes": resultado["bytes"],
+            }
+        return 200, resultado
     else:
         return None
     return 200, await app.a_hilo(app.lista.leer)

@@ -144,7 +144,8 @@ En git van los `.py` y `grabar.txt`; **no** van `ffmpeg.exe`,
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
-| `datos\grabaciones\*.mp4`, `datos\streams\` | solo el detector | Nimbo (solo lee / borra a papelera) |
+| `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
+| `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra a papelera lo ya unido | Nimbo |
 
 `grabar.txt` es la **única fuente de verdad** de a quién se graba, y Nimbo
 es su único escritor — de ahí que no haga falta locking. El usuario lo
@@ -257,6 +258,27 @@ nombre que no haya agregado él mismo**, o una previa podría cortar una
 grabación que el usuario sí quería. El modal manda latido cada 5s;
 `cosechar()` (cada 10s) cierra las que quedaron sin latido y `purgar()`
 limpia al arrancar lo que dejó una corrida anterior muerta.
+
+Nada borraba nunca los segmentos crudos de `datos\streams\`: por cada
+`.mp4` terminado quedaba para siempre una copia entera del mismo material
+en fMP4. `nimbo\cosecha_streams.py` es quien lo barre, y vive en Nimbo, no
+en el detector, porque hace falta cruzar dos señales que viven en lugares
+distintos: el detector solo sabe "¿esta sesión ya está unida?"
+(`unido.json`), y solo Nimbo sabe "¿alguien la está mirando en vivo ahora
+mismo?" (`vivo.sesiones_vivas()`, que a su vez lee `estado\detector.json`,
+no el disco). Una sesión se borra a la papelera solo si pasa las tres
+compuertas: tiene `unido.json` (si no, es una grabación pendiente que
+`recuperar_pendientes()` todavía puede rehacer, y es la única copia que
+existe); no aparece en `vivo.sesiones_vivas()`; y pasaron tanto
+`dias_segmentos` (config, defecto 1 día) desde que se unió como
+`GRACIA_MTIME_S` (5 min) desde el último archivo escrito en la carpeta —
+ese margen por encima del `OLVIDAR_STREAM` del detector es la defensa
+extra contra un escritor todavía activo. Corre sola cada 10 minutos desde
+`servidor.py:_bucle_cosecha` y también a pedido (`POST
+/api/streams/limpiar`, botón "Limpiar segmentos" en la pestaña
+Grabaciones). No importa `detectar_m3u8.py` por el mismo motivo que
+`vivo.py` no lo hace (ver "Los dos puentes" más abajo): porta sus propias
+copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
 
 ### Detalles con historia
 
