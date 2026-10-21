@@ -29,6 +29,25 @@ function renderMotor(estado) {
     boton.textContent = "Deteniendo...";
     boton.className = "principal";
     boton.disabled = true;
+  } else if (m.reiniciando) {
+    punto.className = "punto espera";
+    resumen.textContent = "reiniciando el " + m.reiniciando + "...";
+    boton.textContent = "Parar todo";
+    boton.className = "principal parar";
+    boton.disabled = false;
+  } else if (m.rendido && m.rendido.length) {
+    punto.className = "punto mal";
+    resumen.textContent = "el " + m.rendido.join(", ") + " no arranca -- revisa el registro";
+    boton.textContent = "Arrancar";
+    boton.className = "principal";
+    boton.disabled = false;
+  } else if (!m.detector_vivo && !m.supervisor_vivo && m.proximo_reintento
+              && m.proximo_reintento > Date.now() / 1000) {
+    punto.className = "punto espera";
+    resumen.textContent = "reintento en " + Math.ceil(m.proximo_reintento - Date.now() / 1000) + "s";
+    boton.textContent = "Arrancar";
+    boton.className = "principal";
+    boton.disabled = false;
   } else if (m.detector_vivo && m.supervisor_vivo) {
     punto.className = "punto ok";
     resumen.textContent = "en marcha";

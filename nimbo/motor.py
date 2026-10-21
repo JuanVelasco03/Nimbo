@@ -69,6 +69,18 @@ INTERVALO_VIGILANCIA = 2.0
 # un wireproxy huerfano no hace dano por estar un rato de mas, lo que hace
 # dano es que lo adopte el detector siguiente, y eso se corta al arrancar.
 INTERVALO_TUNEL = 30.0
+# Backoff del relanzado: un hijo que se cae suele volver al primer intento
+# (mitmdump que no pudo abrir el puerto, Chromium con el perfil trabado);
+# si no vuelve en tres, algo esta roto de verdad y hace falta un humano.
+ESPERA_REINTENTO = (5.0, 15.0, 60.0)
+# Rendido no es rendirse del todo: se avisa fuerte y se sigue probando a
+# este ritmo. Una caida a las 3 AM no puede dejar la noche sin grabar.
+ESPERA_RENDIDO = 900.0
+# Vivo mas de esto = el arranque funciono; la proxima caida empieza el
+# backoff de cero en vez de gastar el ultimo intento del presupuesto.
+ESTABLE_S = 120.0
+# mitmdump no suelta el puerto en el mismo instante en que muere.
+ESPERA_PUERTO_LIBRE = 20.0
 
 # -- el tunel de la VPN (wireproxy) --------------------------------------
 # Portado a mano de nucleo\scripts\detectar_m3u8.py (lineas 165-170):
@@ -97,6 +109,24 @@ def _esperar_puerto(host, puerto, tope):
                 return True
         except OSError:
             time.sleep(0.3)
+    return False
+
+
+def _esperar_puerto_libre(host, puerto, tope):
+    """El inverso de _esperar_puerto: True si el puerto quedo libre dentro
+    del tope.
+
+    TerminateProcess / mitmdump al morir vuelven antes de que Windows
+    suelte el socket; arrancar ya mismo sobre ese puerto falla (o peor:
+    _Tunel lo ve ocupado y adopta a un muerto).
+    """
+    fin = time.time() + tope
+    while time.time() < fin:
+        try:
+            socket.create_connection((host, puerto), timeout=0.5).close()
+        except OSError:
+            return True
+        time.sleep(0.2)
     return False
 
 
@@ -258,6 +288,14 @@ class Motor:
         # el tunel es cosa del detector.
         self._tunel_propio = None
         self._ajeno_avisado = set()   # pid ya reportados, para no repetir
+        # -- relanzado automatico de un hijo que se cae solo --------------
+        self._deseado = False          # el usuario pidio que esto corra
+        self._parada_pedida = threading.Event()
+        self._reiniciando = None       # "detector" | "supervisor" | None
+        self._reintentos = {"detector": 0, "supervisor": 0}
+        self._proximo = {"detector": 0.0, "supervisor": 0.0}  # time.time()
+        self._rendido = set()
+        self._vivo_desde = {}          # "detector"/"supervisor" -> monotonic
         threading.Thread(target=self._bucle_vigilancia, daemon=True,
                          name="nimbo-vigilancia").start()
 
@@ -274,11 +312,16 @@ class Motor:
         return self._vivo(self.supervisor)
 
     def estado(self) -> dict:
+        proximos = [t for t in self._proximo.values() if t > time.time()]
         return {
             "detector_vivo": self.detector_vivo(),
             "supervisor_vivo": self.supervisor_vivo(),
             "parando": self._parando,
             "tunel_propio": self._vivo(self._tunel_propio),
+            "reiniciando": self._reiniciando,
+            "rendido": sorted(self._rendido),
+            "reintentos": dict(self._reintentos),
+            "proximo_reintento": min(proximos) if proximos else None,
         }
 
     def _aviso(self, texto, **extra):
@@ -293,6 +336,13 @@ class Motor:
 
     def arrancar(self) -> bool:
         """Arranca lo que no este corriendo. True si arranco algo."""
+        # Un toque manual es un presupuesto nuevo: si un hijo habia
+        # agotado sus reintentos y quedo "rendido", esto lo revive.
+        self._deseado = True
+        self._parada_pedida.clear()
+        self._reintentos = {"detector": 0, "supervisor": 0}
+        self._proximo = {"detector": 0.0, "supervisor": 0.0}
+        self._rendido.clear()
         with self._lock:
             self._parando = False
             algo = False
@@ -341,6 +391,7 @@ class Motor:
         )
         threading.Thread(target=self._leer_salida,
                          args=(self.detector, "detector"), daemon=True).start()
+        self._vivo_desde["detector"] = time.monotonic()
 
         if _esperar_puerto(host, puerto, ESPERA_PUERTO):
             self._aviso("detector listo, escuchando en %s:%d" % (host, puerto))
@@ -367,6 +418,7 @@ class Motor:
         )
         threading.Thread(target=self._leer_salida,
                          args=(self.supervisor, "supervisor"), daemon=True).start()
+        self._vivo_desde["supervisor"] = time.monotonic()
 
     # -- parada ordenada --------------------------------------------------
 
@@ -396,6 +448,11 @@ class Motor:
         """Bloquea hasta que los dos terminaron (o se forzaron). Llamar
         desde un hilo aparte si no se quiere congelar quien lo pida --
         el cierre del detector puede tardar minutos de verdad."""
+        # Antes de pelear por el lock: si hay un _reiniciar() en curso
+        # puede tenerlo tomado hasta decenas de segundos, y ese reinicio
+        # tiene que poder enterarse del pedido de parada sin el lock.
+        self._parada_pedida.set()
+        self._deseado = False
         with self._lock:
             if self._parando:
                 return
@@ -537,13 +594,7 @@ class Motor:
             # terminate/TerminateProcess vuelven antes de que Windows
             # suelte el socket; si arrancaramos ya mismo, _Tunel todavia
             # veria el puerto ocupado y adoptaria a un muerto.
-            fin = time.time() + 5.0
-            while time.time() < fin:
-                try:
-                    socket.create_connection((host, puerto), timeout=0.5).close()
-                except OSError:
-                    break
-                time.sleep(0.2)
+            _esperar_puerto_libre(host, puerto, 5.0)
             self._ajeno_avisado.clear()
 
     def _vigilar_tunel(self):
@@ -649,6 +700,77 @@ class Motor:
                     % (" (%s)" % motivo if motivo else ""))
         return True
 
+    # -- relanzado automatico (un hijo que se cae solo) --------------------
+    #
+    # _parando / self.supervisor = None en parar() ya distinguen "lo
+    # paramos nosotros" de "se murio solo" -- por eso aqui alcanza con
+    # preguntar _parando (y, mientras dura, _reiniciando) antes de avisar
+    # una muerte como tal.
+
+    def _agendar_reinicio(self, cual):
+        """Calcula cuando reintentar 'cual' ("detector"/"supervisor") y
+        avisa. No hace nada si el usuario no pidio que esto corra."""
+        if not self._deseado:
+            return
+        n = self._reintentos[cual]
+        if n < len(ESPERA_REINTENTO):
+            espera = ESPERA_REINTENTO[n]
+            self._aviso("reintento del %s en %ds (intento %d de %d)" %
+                       (cual, espera, n + 1, len(ESPERA_REINTENTO)))
+        else:
+            self._rendido.add(cual)
+            espera = ESPERA_RENDIDO
+            self._aviso(
+                "el %s no vuelve a arrancar despues de %d intentos -- "
+                "revisa el log; sigo probando cada %d min"
+                % (cual, len(ESPERA_REINTENTO), int(ESPERA_RENDIDO // 60)),
+                nivel="error")
+        self._proximo[cual] = time.time() + espera
+        self._reintentos[cual] += 1
+
+    def _reiniciar(self, cual):
+        """El relanzado de verdad. Corre en su propio hilo (bloquea
+        decenas de segundos); _reiniciando lo mantiene unico y calla al
+        resto de _bucle_vigilancia mientras dura."""
+        self._reiniciando = cual
+        try:
+            if self._parada_pedida.is_set():
+                return
+            if cual == "detector":
+                self._aviso("reiniciando el motor: cierro las paginas y "
+                           "vuelvo a arrancar el detector")
+                if self.supervisor_vivo():
+                    self._mandar_parar(self.supervisor)
+                    if not self._esperar_salida(self.supervisor,
+                                                ESPERA_CIERRE_SUPERVISOR):
+                        self._matar(self.supervisor)
+                    self.supervisor = None
+                if self._parada_pedida.is_set():
+                    return
+                host, puerto = _parsear_proxy(self.ajustes["proxy"])
+                if not _esperar_puerto_libre(host, puerto, ESPERA_PUERTO_LIBRE):
+                    self._aviso(
+                        "el puerto %d sigue ocupado -- no puedo reiniciar "
+                        "el detector todavia" % puerto, nivel="error")
+                    self._agendar_reinicio("detector")
+                    return
+                with self._lock:
+                    if self._parando or self._parada_pedida.is_set():
+                        return
+                    self._arrancar_detector()
+                    self._arrancar_supervisor()
+            else:
+                self._aviso("reiniciando el motor: vuelvo a arrancar el "
+                           "supervisor")
+                with self._lock:
+                    if self._parando or self._parada_pedida.is_set():
+                        return
+                    self._arrancar_supervisor()
+            self._aviso("motor reiniciado (intento %d)" %
+                       self._reintentos[cual])
+        finally:
+            self._reiniciando = None
+
     # -- vigilancia --------------------------------------------------------
 
     def _bucle_vigilancia(self):
@@ -658,18 +780,36 @@ class Motor:
             with self._lock:
                 if self._parando:
                     continue
+            if self._reiniciando:
+                # Un reinicio en curso ya sabe que sus hijos van a morir y
+                # nacer -- no hay que reportarlo como "se cerro solo" ni
+                # agendar nada encima.
+                continue
             murio_detector = False
             if self.detector is not None and not self.detector_vivo():
-                self._aviso("el detector se cerro solo (codigo %s)" %
-                           self.detector.returncode,
-                           proceso="detector", tipo="murio")
+                if (time.monotonic() - self._vivo_desde.get("detector", 0)
+                        > ESTABLE_S):
+                    self._reintentos["detector"] = 0
+                    self._rendido.discard("detector")
+                self._aviso(
+                    "el detector se cerro solo (codigo %s) -- si quedo "
+                    "una sesion a medias en datos\\streams\\, el detector "
+                    "la levanta solo al arrancar (recuperar_pendientes); "
+                    "no se perdio la grabacion" % self.detector.returncode,
+                    proceso="detector", tipo="murio")
                 self.detector = None
                 murio_detector = True
+                self._agendar_reinicio("detector")
             if self.supervisor is not None and not self.supervisor_vivo():
+                if (time.monotonic() - self._vivo_desde.get("supervisor", 0)
+                        > ESTABLE_S):
+                    self._reintentos["supervisor"] = 0
+                    self._rendido.discard("supervisor")
                 self._aviso("el supervisor se cerro solo (codigo %s)" %
                            self.supervisor.returncode,
                            proceso="supervisor", tipo="murio")
                 self.supervisor = None
+                self._agendar_reinicio("supervisor")
             if murio_detector:
                 # Sin detector no hay nada que enrutar por el tunel.
                 self._parar_tunel_propio("el detector se cerro solo")
@@ -683,3 +823,16 @@ class Motor:
                 except Exception as e:      # el watchdog no tira el bucle
                     self._aviso("el watchdog del tunel fallo: %s" % e,
                                 nivel="error")
+            # El detector tiene prioridad: si los dos estan listos para
+            # reintentar, se lanza primero el suyo (relanza tambien al
+            # supervisor) y el del supervisor queda para el turno siguiente.
+            if self._deseado and not self._parando and not self._reiniciando:
+                for cual in ("detector", "supervisor"):
+                    vivo = self.detector_vivo() if cual == "detector" \
+                        else self.supervisor_vivo()
+                    if vivo or time.time() < self._proximo[cual]:
+                        continue
+                    threading.Thread(target=self._reiniciar, args=(cual,),
+                                     daemon=True,
+                                     name="nimbo-reinicio").start()
+                    break

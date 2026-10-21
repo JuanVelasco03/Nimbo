@@ -129,6 +129,10 @@ def _resumen_estado(app) -> str:
     m = estado.get("motor") or {}
     if m["parando"]:
         return "Nimbo -- deteniendo..."
+    if m.get("reiniciando"):
+        return "Nimbo -- reiniciando el %s..." % m["reiniciando"]
+    if m.get("rendido"):
+        return "Nimbo -- %s no arranca" % ", ".join(m["rendido"])
     if not (m["detector_vivo"] and m["supervisor_vivo"]):
         return "Nimbo -- detenido"
     streams = (estado.get("detector") or {}).get("streams") or []

@@ -75,6 +75,23 @@ bruto deja grabaciones sin unir; matar el supervisor deja Chromium huérfano
 y el perfil con cerrojos. La parada del detector puede tardar **minutos**
 (`ESPERA_CIERRE_DETECTOR = 960s`) porque espera a que termine de unir.
 
+Si alguno de los dos se cae solo, `Motor._bucle_vigilancia` lo relanza
+sola: backoff 5s/15s/60s y, agotados esos tres intentos, "rendido" (aviso
+`nivel="error"`, visible en la ventana y en el tooltip de la bandeja) pero
+sin dejar de probar cada 15 minutos — una caída a las 3 de la mañana no
+tiene que dejar la noche entera sin grabar. Si el que muere es el
+detector se relanzan **los dos**, en el mismo orden de siempre (cerrar
+páginas por stdin → detector → supervisor): las pestañas viejas del
+supervisor no vuelven a pedir el stream solas, así que dejarlas vivas
+deja dos procesos en pie y cero grabación. Si el que muere es el
+supervisor alcanza con relanzar solo eso. El relanzado nunca actúa si el
+usuario no pidió arrancar (`Motor._deseado`) ni mientras hay una parada en
+curso (`_parando` / `_parada_pedida`) — eso es lo que distingue "se murió
+solo" de "lo paramos nosotros", igual que ya hacía `parar()` antes de
+esto. Una caída a lo bruto puede dejar sesiones a medias en
+`datos\streams\`; es benigno, porque el detector las retoma solo con
+`recuperar_pendientes()` al arrancar de nuevo.
+
 Hay un cuarto proceso que nadie lanza a mano: `wireproxy.exe`, el túnel
 de la VPN, hijo del detector (clase `_Tunel`). Sobrevive a su padre, y
 entonces el detector siguiente lo **adopta** (`_Tunel.run()` ve el puerto
