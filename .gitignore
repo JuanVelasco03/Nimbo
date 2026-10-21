@@ -12,10 +12,15 @@ sesion.json
 datos/
 
 # nucleo\: el motor de captura copiado (ver CLAUDE.md, "El nucleo copiado").
-# Los .py y grabar.txt SI se versionan -- son el motor. Esto NO:
+# Los .py SI se versionan -- son el motor. Esto NO:
 nucleo/scripts/*.exe
 nucleo/scripts/*.conf
 nucleo/scripts/vpn_tunel.txt
 nucleo/scripts/activos.txt
 nucleo/perfil/
 nucleo/supervisor.log
+
+# grabar.txt: a quien se graba (datos de usuario, no codigo). Se versiona
+# grabar.template.txt en su lugar -- el detector crea grabar.txt solo en el
+# primer arranque si no existe (ver detectar_m3u8.py, Detector.__init__).
+nucleo/scripts/grabar.txt

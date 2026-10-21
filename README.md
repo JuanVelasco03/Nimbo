@@ -99,8 +99,8 @@ Nimbo\                     (esta carpeta, donde se descargó/clonó)
 │  ├─ grabaciones\              los .mp4 terminados
 │  └─ detector.log              historial del proxy
 ├─ nucleo\                   EL MOTOR DE CAPTURA (ver CLAUDE.md, "El nucleo copiado")
-│  ├─ scripts\                  detectar_m3u8.py, supervisor.py, grabar.txt (SI van en git);
-│  │                            ffmpeg.exe, wireproxy.exe, *.conf, activos.txt (NO van en git)
+│  ├─ scripts\                  detectar_m3u8.py, supervisor.py, grabar.template.txt (SI van en git);
+│  │                            grabar.txt, ffmpeg.exe, wireproxy.exe, *.conf, activos.txt (NO van en git)
 │  └─ perfil\                   perfil de Chromium del supervisor -- la sesion del sitio
 ├─ perfil_ventana\           perfil del Edge que abre la ventana (no es el de nucleo\perfil)
 ├─ registro\                  reservado, hoy sin uso activo
@@ -115,16 +115,21 @@ variable de entorno `M3U8_BASE` apuntando a `datos\` — un mecanismo que
 
 `grabar.txt` y `activos.txt` **no** se mueven a `datos\`: siguen junto a
 `detectar_m3u8.py`, en `nucleo\scripts\` — son archivos operativos
-del detector (a quién grabar, qué está activo ahora), no datos de
-usuario.
+del detector (a quién grabar, qué está activo ahora). `grabar.txt` sí es
+dato sensible en un sentido: dice a quién mirás, así que está en
+`.gitignore` igual que la cuenta real o la configuración de la máquina —
+el detector lo crea solo (con una plantilla mínima) en el primer
+arranque si no existe. `grabar.template.txt` es la versión documentada
+completa que sí va en git, para copiarla a mano si se quiere algo más
+rico que esa plantilla mínima.
 
 **Nada de lo de arriba se sube a git** salvo la carpeta `nimbo\`/`web\`
 (el código), `favoritas.json` vacío (así un clon nuevo arranca con la
-lista en blanco, lista para usarse), y los `.py`/`grabar.txt` de
-`nucleo\scripts\`. Todo lo demás está en `.gitignore` porque son datos
+lista en blanco, lista para usarse), y los `.py`/`grabar.template.txt`
+de `nucleo\scripts\`. Todo lo demás está en `.gitignore` porque son datos
 de la instalación de cada uno: la cuenta real, la configuración de la
-máquina, los binarios y secretos del túnel VPN, o directamente los
-videos grabados.
+máquina, los binarios y secretos del túnel VPN, a quién grabás, o
+directamente los videos grabados.
 
 ## 4. Si algo no arranca
 

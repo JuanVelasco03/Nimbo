@@ -4,17 +4,8 @@
 # Borrar esa linea   -> cierra la grabacion y genera el mp4 en grabaciones/.
 # Se pueden poner varios modelos a la vez.
 
-# Models: 
-# Ally_addams - afrodita__25 - valen_or - ale_lewis - ZaraLuuv
-# Alice_winter_ - isis_tay1 - AnastasiaColeman - yoyogirlx
-# D-Bunnyyy - juanasnz99 - LiliJones_ - saliha_pinky_ - Im-Valenn
-# KaylaCollinsX - Dulcineaa19 - Ameellie - LoraineLuff - Capricho_01
-# deadlysweet - _Valentinaa_ - Mia_Alanna - ale_lewis - amy_lively
-# babeel_ - Akaame_15 - yoyogirlx - YunoRose_
-
-
 # marca; el nombre tiene que estar igual arriba como linea suelta.
-@vpn=_valentinaa_,ale_lewis,ameellie,anavi_,andy_and_emma,angel09_a_,angelruby,antonella-rey,ariamoonlight,condes_carmen,guadalupe21_,julii_sw,kiimjoi,lally_valencia__,melody_rousse__,morphie_,nina_soul,rouse_07,strawberrypink_,valeria-escobar
+@vpn=
 
 # --- Calidad -------------------------------------------------------------
 # max = la mejor que ofrezca cada modelo, sea 1080p, 720p o 480p.

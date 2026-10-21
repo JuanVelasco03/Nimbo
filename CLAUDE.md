@@ -154,8 +154,14 @@ base con `SUBCARPETAS_SCRIPT = {"scripts","script","bin","src"}` — si el
 basename de su carpeta está en ese set, la base es el padre. Renombrar
 `scripts\` rompe dónde buscan el perfil y las grabaciones.
 
-En git van los `.py` y `grabar.txt`; **no** van `ffmpeg.exe`,
+En git van los `.py` y `grabar.template.txt`; **no** van `ffmpeg.exe`,
 `wireproxy.exe`, los `.conf` del túnel, `activos.txt` ni `nucleo\perfil\`.
+`grabar.txt` tampoco: tiene a quién se graba (datos de usuario), así que
+está en `.gitignore` y lo crea solo el detector en el primer arranque si
+no existe (`detectar_m3u8.py`, bloque de `Detector.__init__` que escribe
+la plantilla mínima). `grabar.template.txt` es la versión documentada
+completa, para copiar a mano si se quiere algo más rico que esa
+plantilla mínima; nadie la lee en runtime.
 
 ### Quién escribe qué (invariantes de estado)
 
