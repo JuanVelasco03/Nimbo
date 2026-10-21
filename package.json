@@ -1,0 +1,13 @@
+{
+  "name": "nimbo-web",
+  "private": true,
+  "description": "Build de Tailwind para la interfaz de nimbo/web. No toca nada del grabador ni hace falta en runtime (app.css ya sale compilado).",
+  "scripts": {
+    "build:css": "tailwindcss -i nimbo/web/tailwind.css -o nimbo/web/app.css --minify",
+    "watch:css": "tailwindcss -i nimbo/web/tailwind.css -o nimbo/web/app.css --watch"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
+  }
+}

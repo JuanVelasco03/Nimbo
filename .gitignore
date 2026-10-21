@@ -1,0 +1,21 @@
+node_modules/
+__pycache__/
+
+# datos locales de Nimbo: nada de esto debe versionarse ni compartirse
+perfil_ventana/
+estado/
+config.json
+instancia.json
+sesion.json
+
+# grabaciones (.mp4) y streams a medio unir -- binarios de usuario, no codigo
+datos/
+
+# nucleo\: el motor de captura copiado (ver CLAUDE.md, "El nucleo copiado").
+# Los .py y grabar.txt SI se versionan -- son el motor. Esto NO:
+nucleo/scripts/*.exe
+nucleo/scripts/*.conf
+nucleo/scripts/vpn_tunel.txt
+nucleo/scripts/activos.txt
+nucleo/perfil/
+nucleo/supervisor.log

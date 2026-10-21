@@ -1,0 +1,452 @@
+/* Fuente de Tailwind para la interfaz de Nimbo.
+   Se compila a app.css con `npm run build:css` (ver package.json en la
+   raiz del repo). app.css es el unico archivo que el servidor sirve en
+   runtime -- no hace falta Node para correr Nimbo, solo para editar
+   este archivo. */
+
+/* deteccion automatica de fuentes apagada a proposito: el directorio del
+   proyecto tiene carpetas enormes (perfil_ventana, estado, registro) que
+   no son plantillas y tailwind se queda sin memoria si las barre. */
+@import "tailwindcss" source(none);
+@source "./index.html";
+@source "./js/*.js";
+
+@theme {
+  /* base: panel de control, no una pagina de marketing */
+  --color-grafito: #121316;
+  --color-panel: #1b1d22;
+  --color-panel-alto: #23262d;
+  --color-borde: #2b2e36;
+  --color-borde-fuerte: #3a3e49;
+  --color-texto: #e7e8ec;
+  --color-atenuado: #8a8d99;
+  --color-apagado: #5c5f6b;
+
+  /* colores de senal: vocabulario de luces tally de un control de video --
+     cada estado de grabacion/conexion tiene SIEMPRE el mismo color, en
+     cualquier lugar de la interfaz donde aparezca. */
+  --color-tally-rec: #e5484d;    /* grabando -- tally rojo */
+  --color-tally-privado: #d9a441; /* show privado -- tally ambar */
+  --color-tally-vivo: #3ddc84;    /* en linea / senal sana -- tally verde */
+  --color-tally-conectando: #4f8fe0; /* abriendo / conectando -- senal azul */
+  --color-tally-aviso: #e2793d;   /* sin senal / fallo -- naranja de aviso */
+
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+}
+
+@layer base {
+  * { @apply box-border; }
+
+  html, body {
+    @apply h-full m-0 bg-grafito text-texto font-sans text-[13.5px] leading-normal;
+  }
+
+  body { @apply flex flex-col overflow-hidden; }
+
+  /* scrollbar fina, a tono con un panel tecnico en vez de la del sistema */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-panel-alto border-2 border-grafito rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-borde-fuerte; }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-tally-conectando;
+  }
+}
+
+@layer utilities {
+  .oculta { display: none !important; }
+}
+
+@layer components {
+
+  /* -- cabecera: barra de transporte, no un navbar de SaaS ------------ */
+
+  .punto {
+    @apply inline-block h-2.5 w-2.5 rounded-full bg-apagado transition-colors duration-300;
+  }
+  .punto.ok {
+    background: var(--color-tally-vivo);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-tally-vivo) 20%, transparent);
+  }
+  .punto.mal { @apply bg-tally-rec; }
+  .punto.espera {
+    background: var(--color-tally-privado);
+    animation: parpadeo 1.4s ease-in-out infinite;
+  }
+
+  nav button {
+    @apply border-none bg-transparent text-atenuado px-3.5 py-2 text-[13px] font-medium
+           rounded-sm cursor-pointer tracking-[0.01em] transition-colors duration-150;
+  }
+  nav button:hover { @apply text-texto bg-panel-alto; }
+  nav button.activa { @apply text-texto bg-panel-alto relative; }
+  nav button.activa::after {
+    content: "";
+    @apply absolute left-3.5 right-3.5 -bottom-[9px] h-[2px] bg-tally-conectando rounded-full;
+  }
+
+  button.principal {
+    @apply bg-tally-conectando text-grafito border-none px-4 py-2 rounded-sm cursor-pointer
+           font-semibold text-[13px] tracking-[0.01em] transition-[filter,background-color] duration-150;
+  }
+  button.principal:hover { @apply brightness-110; }
+  button.principal.parar { @apply bg-tally-rec text-[#1a0d0d]; }
+  button.principal:disabled { @apply opacity-50 cursor-default brightness-100; }
+
+  .aviso-preflight {
+    @apply shrink-0 border-b px-4 py-2 text-[13px];
+    background: color-mix(in srgb, var(--color-tally-privado) 10%, transparent);
+    border-color: color-mix(in srgb, var(--color-tally-privado) 35%, transparent);
+    color: var(--color-tally-privado);
+  }
+  .aviso-preflight ul { @apply mt-1.5 ml-5 list-disc space-y-0.5; }
+  .aviso-preflight .accion { @apply text-atenuado; }
+
+  /* -- grilla de monitoreo ---------------------------------------------- */
+
+  /* el span del tunel vive en el footer, no en .barra-global -- la clase
+     tiene que valer donde sea que JS la ponga. */
+  .alerta { color: var(--color-tally-aviso); font-weight: 600; }
+
+  .riel {
+    @apply absolute inset-y-0 left-0 w-[3px] bg-borde-fuerte;
+  }
+  .tarjeta-modelo[data-estado="grabando"] .riel,
+  .modal[data-estado="grabando"] .riel { background: var(--color-tally-rec); }
+  .tarjeta-modelo[data-estado="privado"] .riel,
+  .modal[data-estado="privado"] .riel { background: var(--color-tally-privado); }
+  .tarjeta-modelo[data-estado="online"] .riel,
+  .modal[data-estado="online"] .riel { background: var(--color-tally-conectando); }
+  .tarjeta-modelo[data-estado="mal"] .riel,
+  .modal[data-estado="mal"] .riel {
+    background: repeating-linear-gradient(
+      -45deg,
+      var(--color-tally-aviso) 0 3px,
+      transparent 3px 6px
+    );
+  }
+  .tarjeta-modelo[data-estado="offline"] .riel,
+  .modal[data-estado="offline"] .riel { background: var(--color-borde-fuerte); }
+  .tarjeta-modelo[data-estado="publico"] .riel,
+  .modal[data-estado="publico"] .riel { background: var(--color-tally-vivo); }
+
+  /* -- tile vertical, imagen grande arriba -- usado por Modelos y por
+     Grabando (vista_grabando.js), antes esta ultima tenia su miniatura
+     chica al costado (.tarjeta, ya quitada) -- */
+
+  .tarjeta-modelo {
+    @apply relative flex flex-col overflow-hidden rounded-sm border border-borde bg-panel;
+  }
+  .tarjeta-modelo .riel {
+    top: 0; right: 0; bottom: auto; left: 0;
+    height: 3px; width: auto;
+  }
+  .tarjeta-modelo .miniatura-grande {
+    @apply aspect-video h-auto w-full rounded-none text-[2rem];
+  }
+  .tarjeta-modelo .cuerpo { @apply min-w-0 p-3; }
+  .tarjeta-modelo .acciones-tarjeta { @apply flex-wrap; }
+
+  /* -- modal de vista previa (click en una tarjeta de Modelos) ------------ */
+
+  .modal-fondo {
+    @apply fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4;
+  }
+  .modal {
+    @apply relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden
+           rounded-sm border border-borde bg-panel;
+  }
+  .modal .riel {
+    top: 0; right: 0; bottom: auto; left: 0;
+    height: 3px; width: auto;
+  }
+  .modal-cerrar {
+    @apply absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-sm
+           bg-grafito/70 text-[1.3rem] leading-none text-texto transition-colors duration-150;
+  }
+  .modal-cerrar:hover { @apply bg-grafito text-tally-rec; }
+  /* sin aspect-video a proposito: una grabacion vertical en una caja 16:9
+     fija queda doblemente achicada (pilarboxed adentro de letterboxed).
+     min/max-height + object-contain deja que la proporcion real del
+     video/imagen mande, sea horizontal o vertical -- ver CLAUDE.md,
+     "Reproductor en vivo". */
+  .modal-imagen {
+    @apply relative flex w-full shrink-0 items-center justify-center
+           overflow-hidden bg-panel-alto;
+    min-height: 12rem;
+    max-height: 70vh;
+  }
+  /* max-h-full (100%) no alcanza aca: la altura de .modal-imagen es "auto"
+     (la define el propio contenido), y un porcentaje de altura contra un
+     contenedor de altura auto se resuelve como "sin limite" (CSS lo
+     ignora) -- un video vertical se renderizaba a su ancho completo y
+     terminaba mucho mas alto que el max-height:70vh del contenedor,
+     recortado por el overflow-hidden de .modal junto con todo lo que
+     viene despues (transporte-vivo, modal-cuerpo). Un vh explicito no
+     depende de la altura del padre, asi que no tiene ese problema. */
+  .modal-imagen img, .modal-imagen video { @apply block max-h-[70vh] max-w-full object-contain; }
+
+  /* -- barra flotante del reproductor en vivo (mute/volumen/pantalla
+     completa/volver al snapshot) -- superpuesta sobre el video, mismo
+     patron que .modal-cerrar ya usa sobre la imagen. Solo visible en
+     modo vivo (ver vista_previa.js). */
+  .transporte-vivo {
+    @apply absolute inset-x-0 bottom-0 z-10 flex items-center justify-between gap-2 px-2.5 py-2;
+    background: linear-gradient(to top, rgb(0 0 0 / 0.82), rgb(0 0 0 / 0) 100%);
+  }
+  .transporte-vivo .boton-chico {
+    @apply border-transparent bg-black/35 text-texto;
+  }
+  .transporte-vivo .boton-chico:hover { @apply border-tally-conectando bg-black/55; }
+
+  .control-volumen { @apply flex items-center gap-1.5; }
+  .control-volumen input[type="range"] {
+    @apply h-1 w-16 shrink-0 cursor-pointer appearance-none rounded-full;
+    background: var(--color-borde-fuerte);
+  }
+  .control-volumen input[type="range"]::-webkit-slider-thumb {
+    @apply h-[11px] w-[11px] appearance-none rounded-full;
+    background: var(--color-tally-vivo);
+  }
+  .control-volumen input[type="range"]::-moz-range-thumb {
+    @apply h-[11px] w-[11px] rounded-full border-none;
+    background: var(--color-tally-vivo);
+  }
+
+  #modal-previa-imagen-cont:fullscreen {
+    @apply max-h-none bg-black;
+  }
+  #modal-previa-imagen-cont:fullscreen img,
+  #modal-previa-imagen-cont:fullscreen video {
+    max-height: 100vh;
+  }
+  .modal-cuerpo { @apply flex min-h-0 flex-col gap-2 p-4; }
+  .modal-cuerpo .nombre { @apply text-[1.05rem]; }
+  .modal-cuerpo .acciones-tarjeta { @apply flex-wrap; }
+
+  .miniatura {
+    @apply flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-sm
+           bg-panel-alto text-[0.95rem] font-semibold text-atenuado;
+  }
+  .miniatura img { @apply block h-full w-full object-cover; }
+
+  /* la miniatura del sitio real (previewUrlThumbSmall) es un recorte de
+     un snapshot en vivo del stream, no un avatar cuadrado -- esta forma
+     le hace justicia (pestana Modelos, tarjetas de favoritas/siguiendo). */
+  .miniatura-grande {
+    @apply relative flex h-[4.75rem] w-28 shrink-0 items-center justify-center overflow-hidden
+           rounded-sm bg-panel-alto text-[1.3rem] font-semibold text-atenuado;
+  }
+  .miniatura-grande img { @apply block h-full w-full object-cover; }
+
+  .fila-nombre { @apply mb-1 flex items-center gap-1.5; }
+  .nombre { @apply truncate font-semibold text-texto; }
+  .etiqueta-vpn {
+    @apply shrink-0 rounded-[3px] border border-tally-conectando px-1 text-[0.65rem]
+           font-mono tracking-wide text-tally-conectando;
+  }
+  /* verde = "viene de tu cuenta real", para no mezclar el significado
+     con el azul de VPN */
+  .etiqueta-sigue {
+    @apply shrink-0 rounded-[3px] border px-1 text-[0.65rem] font-mono tracking-wide;
+    border-color: var(--color-tally-vivo);
+    color: var(--color-tally-vivo);
+  }
+
+  .barra-sesion {
+    @apply mb-3 flex items-center gap-2.5 rounded-sm border border-borde bg-panel px-3 py-2;
+  }
+  .panel-sesion {
+    @apply mb-3 rounded-sm border border-borde bg-panel p-3;
+  }
+  .panel-sesion code {
+    @apply rounded-[3px] bg-panel-alto px-1 font-mono text-[0.78rem];
+  }
+
+  .estado-badge {
+    @apply inline-flex items-center gap-1.5 py-0.5 text-[0.76rem] font-semibold font-mono tracking-wide;
+  }
+  .estado-badge .bola { @apply h-[6px] w-[6px] shrink-0 rounded-full; }
+  .estado-badge.grabando { color: var(--color-tally-rec); }
+  .estado-badge.grabando .bola { background: var(--color-tally-rec); animation: parpadeo 1.6s ease-in-out infinite; }
+  .estado-badge.privado { color: var(--color-tally-privado); }
+  .estado-badge.privado .bola { background: var(--color-tally-privado); }
+  .estado-badge.online { color: var(--color-tally-conectando); }
+  .estado-badge.online .bola { background: var(--color-tally-conectando); }
+  .estado-badge.offline { color: var(--color-atenuado); }
+  .estado-badge.offline .bola { background: var(--color-apagado); }
+  .estado-badge.mal { color: var(--color-tally-aviso); }
+  .estado-badge.mal .bola { background: var(--color-tally-aviso); }
+  .estado-badge.publico { color: var(--color-tally-vivo); }
+  .estado-badge.publico .bola { background: var(--color-tally-vivo); }
+  .estado-badge.espera { color: var(--color-atenuado); }
+  .estado-badge.espera .bola { background: var(--color-apagado); }
+
+  /* status del sitio + grabacion, uno al lado del otro -- nunca uno tapa
+     al otro (ver vista_modelos.js: estadoDeFila / grabacionDeFila) */
+  .fila-estados { @apply flex flex-wrap items-center gap-x-3 gap-y-0.5; }
+
+  .detalle { @apply mt-0.5 truncate font-mono text-[0.78rem] text-atenuado; }
+
+  .acciones-tarjeta { @apply mt-2 flex gap-1.5; }
+  .boton-chico {
+    @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-[0.76rem]
+           text-texto cursor-pointer transition-colors duration-150;
+  }
+  .boton-chico:hover { @apply border-tally-conectando; }
+  .boton-chico.peligro:hover { @apply border-tally-rec text-tally-rec; }
+  .boton-chico.activa { @apply border-tally-conectando text-tally-conectando; }
+
+  .vacio { @apply py-10 text-center text-atenuado; }
+
+  /* -- conmutador (toggle) ------------------------------------------------ */
+
+  .conmutador { @apply relative inline-block h-5 w-9 shrink-0; }
+  .conmutador input { @apply absolute h-0 w-0 opacity-0; }
+  .conmutador .pista {
+    @apply absolute inset-0 cursor-pointer rounded-full border border-borde bg-panel-alto transition-colors duration-200;
+  }
+  .conmutador .pista::before {
+    content: "";
+    @apply absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full bg-apagado transition-transform duration-200;
+  }
+  .conmutador input:checked + .pista { background: color-mix(in srgb, var(--color-tally-vivo) 22%, transparent); border-color: var(--color-tally-vivo); }
+  .conmutador input:checked + .pista::before { @apply translate-x-4; background: var(--color-tally-vivo); }
+
+  /* -- buscador / sugerencias ---------------------------------------------- */
+
+  .sugerencia { @apply flex cursor-pointer items-center gap-2.5 px-3 py-2; }
+  .sugerencia:hover { @apply bg-panel-alto; }
+  .sugerencia .miniatura { @apply h-8 w-8 text-[0.8rem]; }
+  .nombre-sug { @apply flex-1 truncate; }
+  .punto-online { @apply h-2 w-2 shrink-0 rounded-full bg-apagado; }
+  .punto-online.si { background: var(--color-tally-vivo); }
+
+  /* -- ajustes / directivas ------------------------------------------------ */
+
+  .titulo-seccion {
+    @apply mt-5 mb-2 text-[0.72rem] font-semibold uppercase tracking-[0.08em] text-apagado first:mt-0;
+  }
+  .directiva {
+    @apply rounded-sm border border-borde bg-panel p-3.5;
+  }
+  .directiva label { @apply mb-1 block font-semibold text-texto; }
+  .directiva .ayuda { @apply mb-2 text-[0.78rem] text-atenuado; }
+  .directiva input[type="text"], .directiva input[type="number"], .directiva select {
+    @apply w-full rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1.5 text-texto;
+  }
+  .directiva input[type="text"]:focus, .directiva input[type="number"]:focus, .directiva select:focus {
+    @apply border-tally-conectando outline-none;
+  }
+  .fila-check { @apply flex items-center gap-2; }
+
+  /* -- filtros de la pestana Modelos --------------------------------------- */
+
+  .barra-filtros { @apply flex flex-wrap items-center gap-1.5; }
+  .chip-filtro {
+    @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-[0.76rem]
+           text-atenuado cursor-pointer transition-colors duration-150;
+  }
+  .chip-filtro:hover { @apply border-tally-conectando text-texto; }
+  .chip-filtro.prendido {
+    @apply text-texto;
+    border-color: var(--color-tally-conectando);
+    background: color-mix(in srgb, var(--color-tally-conectando) 16%, var(--color-panel-alto));
+  }
+  .chip-filtro .cuenta { @apply ml-1 font-mono text-apagado; }
+  .chip-filtro.prendido .cuenta { @apply text-atenuado; }
+  .chip-filtro.en-cero { @apply opacity-50; }
+
+  /* -- registro (consola del footer) --------------------------------------- */
+
+  .linea-detector { color: var(--color-tally-vivo); }
+  .linea-supervisor { color: var(--color-tally-conectando); }
+  .linea-aviso { color: var(--color-tally-privado); }
+
+  /* -- pestana Registro (historial completo, ver vista_registro.js) ------- */
+
+  .barra-registro {
+    @apply flex flex-wrap items-center gap-2 rounded-sm border border-borde bg-panel px-3 py-2;
+  }
+  .barra-registro select, .barra-registro input[type="text"], #registro-buscar,
+  .control-barra {
+    @apply rounded-[3px] border border-borde bg-panel-alto px-2 py-1 text-[0.8rem] text-texto;
+  }
+  .barra-registro select:focus, #registro-buscar:focus, .control-barra:focus {
+    @apply border-tally-conectando outline-none;
+  }
+
+  .fila-registro {
+    @apply grid gap-2 border-b border-borde/60 px-1 py-0.5;
+    grid-template-columns: 5.5rem 6rem 1fr;
+  }
+  .fila-registro .hora { @apply text-apagado; }
+  .fila-registro .prefijo { @apply font-semibold text-atenuado; }
+  .fila-registro .mensaje { @apply break-words text-texto; }
+  .fila-registro.nivel-info .prefijo { color: var(--color-atenuado); }
+  .fila-registro.nivel-warning .prefijo { color: var(--color-tally-privado); }
+  .fila-registro.nivel-error .prefijo { color: var(--color-tally-rec); }
+  .fila-registro.nivel-error .mensaje { color: var(--color-tally-rec); }
+
+  /* -- pestana Grabaciones (ver vista_grabaciones.js) ---------------------- */
+
+  .fila-grabacion {
+    @apply flex items-center gap-3 rounded-sm border border-borde bg-panel p-2.5;
+  }
+  .cuerpo-grabacion { @apply min-w-0 flex-1; }
+  .detalle-grabacion { @apply mt-0.5 truncate font-mono text-[0.78rem] text-atenuado; }
+  .fila-grabacion .acciones-tarjeta { @apply mt-0 shrink-0 flex-wrap justify-end; }
+  .fila-grabacion .miniatura-grande { @apply h-14 w-20 shrink-0 text-[1rem]; }
+
+  .etiqueta-calidad {
+    @apply shrink-0 rounded-[3px] border border-borde-fuerte px-1 text-[0.65rem]
+           font-mono tracking-wide text-atenuado;
+  }
+  .etiqueta-partes {
+    @apply shrink-0 rounded-[3px] border px-1 text-[0.65rem] font-mono tracking-wide;
+    border-color: var(--color-tally-privado);
+    color: var(--color-tally-privado);
+  }
+
+  .partes-grupo {
+    @apply ml-6 mt-1 flex flex-col gap-1 border-l border-borde pl-3;
+  }
+  .fila-parte {
+    @apply flex items-center gap-3 rounded-sm bg-panel-alto/60 px-2.5 py-1.5;
+  }
+  .parte-etiqueta { @apply w-16 shrink-0 font-mono text-[0.76rem] text-atenuado; }
+  .parte-detalle { @apply min-w-0 flex-1 truncate font-mono text-[0.78rem] text-atenuado; }
+  .fila-parte .acciones-tarjeta { @apply mt-0 shrink-0; }
+
+  /* -- modal de reproduccion (pestana Grabaciones) ------------------------- */
+
+  .modal-grande { @apply max-w-4xl; }
+  /* mismo motivo que .modal-imagen: sin aspect-video fijo, para que una
+     grabacion vertical no quede estirada ni achicada de mas. Antes esto
+     no tenia object-fit -- con h-full+w-full fijos, un video que no sea
+     16:9 se vuelve literalmente un video deformado, no solo chico. */
+  .modal-video-cont {
+    @apply relative flex w-full shrink-0 items-center justify-center bg-grafito;
+    min-height: 12rem;
+    max-height: 75vh;
+  }
+  /* mismo problema que .modal-imagen arriba: max-h-full (100%) no limita
+     nada porque la altura de .modal-video-cont es auto -- un vh explicito
+     evita que una grabacion vertical se recorte junto con los controles
+     nativos del <video> (quedan fuera del overflow-hidden de .modal). */
+  .modal-video-cont video { @apply block max-h-[75vh] max-w-full object-contain; }
+  .partes-selector { @apply mt-1 flex flex-wrap gap-1.5; }
+}
+
+@keyframes parpadeo {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .punto.espera, .estado-badge.grabando .bola { animation: none; }
+}

@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nimbo</title>
+<link rel="icon" href="icono.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="flex shrink-0 items-center gap-6 border-b border-borde bg-panel px-4 py-2.5">
+  <div class="flex items-center gap-2.5">
+    <span class="punto" id="punto-estado"></span>
+    <strong class="text-[0.95rem] font-semibold tracking-[0.01em]">Nimbo</strong>
+  </div>
+  <nav class="flex gap-1">
+    <button data-vista="grabando" class="activa">Grabando</button>
+    <button data-vista="grabaciones">Grabaciones</button>
+    <button data-vista="modelos">Modelos</button>
+    <button data-vista="ajustes">Ajustes</button>
+    <button data-vista="registro">Registro</button>
+  </nav>
+  <div class="ml-auto flex items-center gap-3">
+    <span class="font-mono text-[0.82rem] text-atenuado" id="resumen-estado">-</span>
+    <button class="principal" id="boton-motor">Arrancar</button>
+  </div>
+</header>
+
+<div id="aviso-preflight" class="aviso-preflight oculta"></div>
+
+<main class="flex min-h-0 flex-1 overflow-hidden">
+  <section id="vista-grabando" class="vista min-h-0 flex-1 overflow-y-auto p-4">
+    <div class="barra-global mb-3.5 flex gap-6 px-0.5 font-mono text-[0.82rem] text-atenuado">
+      <span id="info-disco">espacio: -</span>
+    </div>
+    <div id="tarjetas" class="grid grid-cols-[repeat(auto-fill,minmax(290px,1fr))] gap-3"></div>
+  </section>
+
+  <section id="vista-grabaciones" class="vista oculta min-h-0 flex-1 overflow-y-auto p-4">
+    <div class="barra-global mb-3.5 flex flex-wrap items-center gap-3 px-0.5 font-mono text-[0.82rem] text-atenuado">
+      <span id="grabaciones-resumen">-</span>
+      <select id="grabaciones-orden" class="control-barra ml-auto">
+        <option value="recientes">mas recientes primero</option>
+        <option value="viejas">mas viejas primero</option>
+        <option value="tamano">mayor tamano</option>
+        <option value="duracion">mayor duracion</option>
+      </select>
+      <input id="grabaciones-buscar" class="control-barra" autocomplete="off" placeholder="buscar por modelo...">
+    </div>
+    <div id="grabaciones-lista" class="flex flex-col gap-2"></div>
+  </section>
+
+  <section id="vista-modelos" class="vista oculta min-h-0 flex-1 overflow-y-auto p-4">
+    <div class="agregar-rapido-cont relative mb-4">
+      <div class="flex gap-2">
+        <input id="nombre-nuevo" autocomplete="off"
+          class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-apagado focus:border-tally-conectando focus:outline-none"
+          placeholder="nombre de la modelo (como aparece en la URL)">
+        <button class="boton-chico" id="boton-agregar-favorita">+ favoritas</button>
+        <button class="principal" id="boton-grabar-directo">Grabar ahora</button>
+      </div>
+      <div id="sugerencias" class="sugerencias oculta absolute inset-x-0 top-[calc(100%+6px)] z-10 max-h-72 overflow-y-auto rounded-sm border border-borde bg-panel shadow-xl shadow-black/40"></div>
+    </div>
+
+    <div id="barra-sesion" class="barra-sesion">
+      <span class="punto" id="punto-sesion"></span>
+      <span id="resumen-sesion" class="font-mono text-[0.82rem] text-atenuado">sin sesion</span>
+      <button class="boton-chico ml-auto" id="boton-actualizar-siguiendo">Actualizar</button>
+      <button class="boton-chico" id="boton-toggle-sesion">Pegar sesion</button>
+      <button class="boton-chico peligro" id="boton-olvidar-sesion">Cerrar sesion</button>
+    </div>
+    <div id="panel-sesion" class="panel-sesion oculta">
+      <p class="mb-2 text-[0.82rem] text-atenuado">
+        En tu navegador (con la sesion de stripchat ya iniciada): F12 &rarr; pestana
+        <strong>Red</strong>, filtrar por Fetch/XHR, entrar a "Favoritas", click derecho
+        sobre el pedido a <code class="text-texto">favorites</code> &rarr; <strong>Copiar</strong>,
+        y pegar aca lo que copiaste -- sirve <strong>"Copiar como cURL (bash)"</strong> o
+        <strong>"Copiar como PowerShell"</strong>, el que te deje copiar.
+      </p>
+      <textarea id="campo-curl" rows="4" placeholder="curl 'https://es.stripchat.com/api/...' -H '...' ... (o el script de PowerShell)"
+        class="w-full rounded-sm border border-borde bg-panel px-3 py-2 font-mono text-[0.8rem] text-texto placeholder:text-apagado focus:border-tally-conectando focus:outline-none"></textarea>
+      <div class="mt-2 flex gap-2">
+        <button class="principal" id="boton-guardar-sesion">Guardar sesion</button>
+      </div>
+    </div>
+
+    <div id="barra-filtros-modelos" class="barra-filtros mb-3"></div>
+
+    <div id="favoritas" class="grid grid-cols-6 gap-3"></div>
+  </section>
+
+  <section id="vista-ajustes" class="vista oculta min-h-0 flex-1 overflow-y-auto p-4">
+    <h3 class="titulo-seccion">Nimbo</h3>
+    <div id="preferencias" class="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-3"></div>
+    <h3 class="titulo-seccion">Grabacion</h3>
+    <div id="directivas" class="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-3"></div>
+  </section>
+
+  <section id="vista-registro" class="vista oculta flex min-h-0 flex-1 flex-col overflow-hidden p-4">
+    <div class="barra-registro mb-3">
+      <select id="registro-fuente">
+        <option value="detector">detector</option>
+        <option value="supervisor">supervisor</option>
+      </select>
+      <select id="registro-nivel">
+        <option value="">todos los niveles</option>
+        <option value="INFO">INFO</option>
+        <option value="WARNING">WARNING</option>
+        <option value="ERROR">ERROR</option>
+      </select>
+      <input id="registro-buscar" autocomplete="off" placeholder="buscar en el mensaje...">
+      <label class="fila-check" title="repreguntar cada 3s mientras esta pestana esta abierta">
+        <input type="checkbox" id="registro-seguir" checked> seguir
+      </label>
+      <button class="boton-chico" id="registro-refrescar">Actualizar</button>
+      <span id="registro-conteo" class="ml-auto font-mono text-[0.78rem] text-atenuado"></span>
+    </div>
+    <button class="boton-chico mb-2 self-center" id="registro-mas-antiguas">cargar mas antiguas</button>
+    <div id="registro-lista" class="min-h-0 flex-1 overflow-y-auto font-mono text-[0.78rem]"></div>
+  </section>
+</main>
+
+<footer class="flex max-h-36 shrink-0 flex-col border-t border-borde bg-panel">
+  <div class="flex justify-between px-3 py-1.5 font-mono text-[0.72rem] text-apagado">
+    <span>registro</span>
+    <span id="resumen-tunel"></span>
+  </div>
+  <div class="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap px-3 pb-2 font-mono text-[0.78rem] text-atenuado" id="log"></div>
+</footer>
+
+<div id="modal-previa" class="modal-fondo oculta">
+  <div class="modal" id="modal-previa-panel">
+    <div class="riel"></div>
+    <button class="modal-cerrar" id="modal-previa-cerrar" title="Cerrar" aria-label="Cerrar">&times;</button>
+    <div class="modal-imagen" id="modal-previa-imagen-cont">
+      <img id="modal-previa-imagen" alt="">
+      <video id="modal-previa-video" class="oculta" muted playsinline autoplay></video>
+      <div class="vacio oculta" id="modal-previa-sin-imagen">no se pudo cargar la vista previa</div>
+      <div class="transporte-vivo oculta" id="modal-previa-transporte">
+        <button class="boton-chico" data-accion="salir-vivo">snapshot</button>
+        <div class="control-volumen">
+          <button class="boton-chico" data-accion="toggle-sonido" id="modal-previa-boton-sonido">sonido</button>
+          <input type="range" id="modal-previa-volumen" min="0" max="100" value="100"
+                 aria-label="Volumen">
+        </div>
+        <button class="boton-chico" data-accion="pantalla-completa" id="modal-previa-boton-pantalla">pantalla completa</button>
+      </div>
+    </div>
+    <div class="modal-cuerpo">
+      <div class="fila-nombre">
+        <span class="nombre" id="modal-previa-nombre"></span>
+      </div>
+      <div class="fila-estados">
+        <div class="estado-badge" id="modal-previa-badge">
+          <span class="bola"></span><span id="modal-previa-badge-texto"></span>
+        </div>
+        <div class="estado-badge oculta" id="modal-previa-badge-grabacion">
+          <span class="bola"></span><span id="modal-previa-badge-grabacion-texto"></span>
+        </div>
+      </div>
+      <div class="acciones-tarjeta" id="modal-previa-acciones"></div>
+      <div class="partes-selector" id="modal-previa-variantes"></div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-grabacion" class="modal-fondo oculta">
+  <div class="modal modal-grande" id="modal-grabacion-panel">
+    <button class="modal-cerrar" id="modal-grabacion-cerrar" title="Cerrar" aria-label="Cerrar">&times;</button>
+    <div class="modal-video-cont">
+      <video id="modal-grabacion-video" controls></video>
+    </div>
+    <div class="modal-cuerpo">
+      <div class="fila-nombre">
+        <span class="nombre" id="modal-grabacion-nombre"></span>
+      </div>
+      <div class="partes-selector" id="modal-grabacion-partes"></div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

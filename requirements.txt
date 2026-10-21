@@ -1,0 +1,8 @@
+# Dependencias de nimbo/app.py (el proceso que abre la ventana y el icono
+# de la bandeja). Opcionales en el sentido de que si faltan, Nimbo sigue
+# funcionando: cae a un modo sin bandeja (ver app.py: ejecutar_sin_bandeja).
+#
+# NO tiene nada que ver con el Python que corre el supervisor del grabador
+# (ese necesita Playwright y lo busca Nimbo solo -- ver README.md).
+pystray
+Pillow

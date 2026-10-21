@@ -1,0 +1,60 @@
+# Un ID de stream o nombre de modelo por linea. '*' = grabar todo.
+# Los IDs que se van detectando aparecen en activos.txt y en la consola.
+# Agregar una linea  -> empieza a grabar (se aplica en ~2s, sin reiniciar).
+# Borrar esa linea   -> cierra la grabacion y genera el mp4 en grabaciones/.
+# Se pueden poner varios modelos a la vez.
+
+# Models: 
+# Ally_addams - afrodita__25 - valen_or - ale_lewis - ZaraLuuv
+# Alice_winter_ - isis_tay1 - AnastasiaColeman - yoyogirlx
+# D-Bunnyyy - juanasnz99 - LiliJones_ - saliha_pinky_ - Im-Valenn
+# KaylaCollinsX - Dulcineaa19 - Ameellie - LoraineLuff - Capricho_01
+# deadlysweet - _Valentinaa_ - Mia_Alanna - ale_lewis - amy_lively
+# babeel_ - Akaame_15 - yoyogirlx - YunoRose_
+
+
+# marca; el nombre tiene que estar igual arriba como linea suelta.
+@vpn=_valentinaa_,ale_lewis,ameellie,andy_and_emma,antonella-rey,ariamoonlight,condes_carmen,lally_valencia__,melody_rousse__,rouse_07,strawberrypink_
+
+# --- Calidad -------------------------------------------------------------
+# max = la mejor que ofrezca cada modelo, sea 1080p, 720p o 480p.
+# Se puede fijar igual:  @calidad=1080p,720p    @codec=av1,h264
+@calidad=max
+@codec=max
+# 1 = le esconde las calidades bajas al navegador: en el master .m3u8 solo
+#     le queda la emision original, asi el player no tiene a donde bajar.
+#     Se aplica a cualquier stream que ofrezca la original, aunque el
+#     nombre de la modelo todavia no se haya detectado (el master se pide
+#     una sola vez, al arrancar el video: si se esperaba, no llegaba).
+@forzar=1
+# 1 = una sola variante por stream (la mejor). 'todas' = graba todas a la vez.
+@variantes=1
+# segundos para descubrir que calidades ofrece el stream antes de elegir
+@espera=6
+# si el reproductor cambia de calidad igual: segundos antes de seguirlo
+# (se corta en otro archivo; lo de esos segundos no se pierde, va a buffer)
+@cambio=8
+# 1 = graba tambien el stream censurado de los shows privados (no es una
+#     calidad mas baja: es otro video)
+@borrosas=0
+# Cuando la modelo se va a privado, el sitio sigue mandando video pero de
+# 160p (un relleno, no se la ve). A esa altura o menos: corta la grabacion,
+# guarda el mp4 en el acto y se queda esperando; cuando sale del privado
+# vuelve a grabar sola, en un archivo nuevo. 0 = desactivado (lo graba).
+@privado=160p
+# 1 = si no hay ninguna calidad de las pedidas, graba la mejor que haya
+# 0 = no graba nada hasta que vuelva la calidad pedida
+@fallback=1
+
+# --- Modelos geobloqueadas -----------------------------------------------
+# Las que se esconden de tu pais. Marcarlas aqui arriba con @vpn= y listo:
+# los pedidos de SU pestana salen por la VPN y los de las demas no. No hay
+# que encender ni apagar nada, y ninguna otra grabacion se entera.
+# El nombre va marcado aqui Y como linea suelta arriba. Se pueden poner
+# varias lineas @vpn=, o varios nombres separados por coma; se suman.
+# Hace falta wireproxy.exe y un .conf de Proton en scripts\ (ver LEEME.md).
+
+# --- Archivos ------------------------------------------------------------
+@unir=1
+# cierra y une tras N segundos sin segmentos (0 = nunca)
+@inactividad=120
