@@ -22,6 +22,19 @@ La orden de parada va por stdin (ver puente.py y lanzador_supervisor.py):
 por eso los dos se abren siempre con stdin=PIPE y ese extremo no se cierra
 hasta que de verdad se quiere parar. Matar el proceso a lo bruto es el
 ultimo recurso, no el camino normal.
+
+Y hay un tercer proceso que nadie arranca a mano: wireproxy.exe, el tunel
+de la VPN, que el detector abre como hijo suyo (clase _Tunel en
+detectar_m3u8.py). Ese SI se queda huerfano: si el detector muere sin
+pasar por su done() -- se lo mata por tardar en unir, se cae, o se para
+Nimbo a los pocos segundos de arrancarlo -- wireproxy sigue vivo y
+escuchando el puerto del tunel. Y el siguiente detector, en vez de abrir
+el suyo, lo ADOPTA (_Tunel.run() ve el puerto ocupado, se da por listo y
+termina): queda un tunel que ya nadie vigila, con el .conf de la corrida
+anterior, y que tampoco se cerrara en la proxima parada. Por eso aqui hay
+un watchdog de verdad -- se busca el proceso por nombre + dueno del puerto
+y se mira si su padre sigue vivo -- en vez de confiar en la autocuracion
+de _Tunel, que solo cubre el caso de que se le muera el hijo propio.
 """
 
 import os
@@ -30,6 +43,13 @@ import subprocess
 import sys
 import threading
 import time
+
+try:
+    import ctypes
+    from ctypes import wintypes
+except (ImportError, ValueError):   # no es Windows: el watchdog no hace nada
+    ctypes = None
+    wintypes = None
 
 _AQUI = os.path.dirname(os.path.abspath(__file__))
 PUENTE = os.path.join(_AQUI, "puente.py")
@@ -45,6 +65,23 @@ ESPERA_CIERRE_SUPERVISOR = 60.0  # cerrar paginas + Chromium no deberia tardar
 # el termine solo.
 ESPERA_CIERRE_DETECTOR = 960.0
 INTERVALO_VIGILANCIA = 2.0
+# El watchdog del tunel no necesita ir al ritmo de los procesos propios:
+# un wireproxy huerfano no hace dano por estar un rato de mas, lo que hace
+# dano es que lo adopte el detector siguiente, y eso se corta al arrancar.
+INTERVALO_TUNEL = 30.0
+
+# -- el tunel de la VPN (wireproxy) --------------------------------------
+# Portado a mano de nucleo\scripts\detectar_m3u8.py (lineas 165-170):
+# TUNEL / WIREPROXY / CONF_GENERADA. No se importa ese modulo -- hacerlo
+# construye un Detector entero vivo dentro de Nimbo (ver CLAUDE.md, "Los
+# dos puentes"). Si alla cambian el puerto por defecto o el nombre de la
+# conf generada, hay que cambiarlo aqui.
+NOMBRE_TUNEL = "wireproxy.exe"
+TUNEL_DEFECTO = "127.0.0.1:25345"
+CONF_TUNEL_GENERADA = "tunel_wireproxy.conf"
+# Lo que wireproxy escupe cada vez que alguien abre y cierra sin pedir
+# nada (_Tunel.RUIDO, misma lista).
+RUIDO_TUNEL = ("read request failed",)
 
 
 def _parsear_proxy(proxy: str):
@@ -63,6 +100,144 @@ def _esperar_puerto(host, puerto, tope):
     return False
 
 
+# --------------------------------------------------------------------------
+# Mirar la tabla de procesos de Windows (sin psutil)
+# --------------------------------------------------------------------------
+#
+# Nimbo corre con el Python de la ventana, que solo tiene stdlib +
+# pystray/Pillow (ver CLAUDE.md, "Tres procesos"): nada de psutil. Alcanza
+# con dos llamadas de la API, las dos por ctypes:
+#
+#   CreateToolhelp32Snapshot -> pid, padre y nombre de cada proceso
+#   GetExtendedTcpTable      -> que pid tiene abierto cada puerto a la escucha
+#
+# Con las dos juntas se identifica el tunel por nombre + puerto (que es lo
+# que lo distingue de cualquier otro wireproxy que el usuario tenga suyo) y
+# se puede preguntar lo unico que importa: su padre, sigue vivo?
+
+_WIN = sys.platform == "win32" and ctypes is not None
+
+if _WIN:
+    class _PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_char * 260),
+        ]
+
+    class _MIB_TCPROW_OWNER_PID(ctypes.Structure):
+        _fields_ = [
+            ("dwState", wintypes.DWORD),
+            ("dwLocalAddr", wintypes.DWORD),
+            ("dwLocalPort", wintypes.DWORD),
+            ("dwRemoteAddr", wintypes.DWORD),
+            ("dwRemotePort", wintypes.DWORD),
+            ("dwOwningPid", wintypes.DWORD),
+        ]
+
+
+def _procesos() -> dict:
+    """{pid: (pid del padre, nombre del exe en minusculas)}.
+
+    Dict vacio si no se pudo leer (o no es Windows): el watchdog se calla
+    en vez de adivinar -- mejor dejar un huerfano vivo que matar a ciegas.
+    """
+    if not _WIN:
+        return {}
+    k32 = ctypes.windll.kernel32
+    snap = k32.CreateToolhelp32Snapshot(0x00000002, 0)   # TH32CS_SNAPPROCESS
+    if snap in (0, -1, 0xFFFFFFFF):
+        return {}
+    tabla = {}
+    try:
+        e = _PROCESSENTRY32()
+        e.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+        if not k32.Process32First(snap, ctypes.byref(e)):
+            return {}
+        while True:
+            tabla[int(e.th32ProcessID)] = (
+                int(e.th32ParentProcessID),
+                e.szExeFile.decode("latin-1", "replace").lower(),
+            )
+            if not k32.Process32Next(snap, ctypes.byref(e)):
+                break
+    finally:
+        k32.CloseHandle(snap)
+    return tabla
+
+
+def _duenos_puerto(puerto: int) -> set:
+    """Los pid que tienen ese puerto TCP a la escucha."""
+    if not _WIN:
+        return set()
+    try:
+        iphlpapi = ctypes.windll.iphlpapi
+    except (OSError, AttributeError):
+        return set()
+    tam = wintypes.DWORD(0)
+    # AF_INET=2, TCP_TABLE_OWNER_PID_LISTENER=3. La primera llamada es solo
+    # para que diga cuanto buffer hace falta (devuelve ERROR_INSUFFICIENT_BUFFER).
+    iphlpapi.GetExtendedTcpTable(None, ctypes.byref(tam), False, 2, 3, 0)
+    if not tam.value:
+        return set()
+    buf = ctypes.create_string_buffer(tam.value)
+    if iphlpapi.GetExtendedTcpTable(buf, ctypes.byref(tam), False, 2, 3, 0) != 0:
+        return set()
+    cuantas = ctypes.cast(buf, ctypes.POINTER(wintypes.DWORD))[0]
+    base = ctypes.sizeof(wintypes.DWORD)
+    fila_tam = ctypes.sizeof(_MIB_TCPROW_OWNER_PID)
+    duenos = set()
+    for i in range(int(cuantas)):
+        fila = _MIB_TCPROW_OWNER_PID.from_buffer_copy(
+            buf, base + i * fila_tam)
+        # dwLocalPort viene en orden de red en los 16 bits bajos
+        if socket.ntohs(fila.dwLocalPort & 0xFFFF) == puerto:
+            duenos.add(int(fila.dwOwningPid))
+    return duenos
+
+
+def _descendientes(raiz: int, procesos: dict) -> set:
+    """raiz y todo lo que cuelgue de ella, segun la tabla dada."""
+    arbol = {raiz}
+    hijos = {}
+    for pid, (padre, _nombre) in procesos.items():
+        hijos.setdefault(padre, []).append(pid)
+    pendientes = [raiz]
+    while pendientes:
+        for pid in hijos.get(pendientes.pop(), ()):
+            if pid not in arbol:
+                arbol.add(pid)
+                pendientes.append(pid)
+    return arbol
+
+
+def _matar_pid(pid: int, espera: float = 5.0) -> bool:
+    """TerminateProcess a secas. wireproxy no tiene nada que guardar: no
+    escribe archivos, solo mueve paquetes -- a diferencia del detector,
+    matarlo no deja nada a medias."""
+    if not _WIN:
+        return False
+    k32 = ctypes.windll.kernel32
+    # PROCESS_TERMINATE | SYNCHRONIZE
+    h = k32.OpenProcess(0x0001 | 0x00100000, False, pid)
+    if not h:
+        return False
+    try:
+        if not k32.TerminateProcess(h, 1):
+            return False
+        k32.WaitForSingleObject(h, int(espera * 1000))
+        return True
+    finally:
+        k32.CloseHandle(h)
+
+
 class Motor:
     """Un Motor por aplicacion. ajustes es una instancia de
     ajustes.Ajustes; en_evento(tipo, datos) se llama con todo lo que
@@ -78,6 +253,11 @@ class Motor:
         self.supervisor = None
         self._lock = threading.Lock()
         self._parando = False
+        # Un wireproxy que levantamos nosotros para tapar el agujero que
+        # deja un tunel adoptado (ver _vigilar_tunel). Normalmente None:
+        # el tunel es cosa del detector.
+        self._tunel_propio = None
+        self._ajeno_avisado = set()   # pid ya reportados, para no repetir
         threading.Thread(target=self._bucle_vigilancia, daemon=True,
                          name="nimbo-vigilancia").start()
 
@@ -98,6 +278,7 @@ class Motor:
             "detector_vivo": self.detector_vivo(),
             "supervisor_vivo": self.supervisor_vivo(),
             "parando": self._parando,
+            "tunel_propio": self._vivo(self._tunel_propio),
         }
 
     def _aviso(self, texto, **extra):
@@ -146,6 +327,11 @@ class Motor:
         # su propio M3U8_BASE aislado antes de llamar a Motor y no hay que
         # pisarlo con la carpeta real.
         env.setdefault("M3U8_BASE", a.dir_datos)
+        # Antes de arrancar, el puerto del tunel tiene que estar libre: si
+        # queda un wireproxy de la corrida anterior, este detector lo
+        # adopta en vez de abrir el suyo y nos quedamos con un tunel que
+        # nadie vigila ni cierra. Es el momento clave del watchdog.
+        self._limpiar_tunel_previo()
         self._aviso("arrancando el detector (mitmdump)...")
         self.detector = subprocess.Popen(
             cmd, cwd=a.scripts, env=env,
@@ -245,25 +431,255 @@ class Motor:
                         "--unir --forzar)", nivel="error")
                     self._matar(self.detector)
             self.detector = None
+            # Si en algun momento tuvimos que levantar el tunel nosotros,
+            # se va con el detector: sin nadie grabando no hay nada que
+            # enrutar, y dejarlo seria el huerfano que vinimos a evitar.
+            self._parar_tunel_propio("ya no hay detector")
         finally:
             with self._lock:
                 self._parando = False
 
+    # -- watchdog del tunel (wireproxy huerfano) ---------------------------
+    #
+    # El tunel lo abre y lo cierra el detector (clase _Tunel), no Nimbo. Lo
+    # que Nimbo hace aqui es lo que _Tunel no puede hacer: mirar desde
+    # fuera si quedo uno de una corrida anterior. _Tunel solo se autocura
+    # cuando se le muere SU hijo; si el que se muere es el detector, el
+    # hijo sobrevive y el detector siguiente lo adopta (_Tunel.run(), rama
+    # "ya habia un tunel escuchando"), con el .conf viejo y sin nadie que
+    # lo vigile ni lo cierre.
+
+    def _direccion_tunel(self):
+        """(host, puerto) del tunel, o (None, 0) si esta desactivado.
+
+        Se lee del entorno igual que lo hace detectar_m3u8.py, y es el
+        mismo entorno que se le pasa al detector (env = dict(os.environ)
+        en _arrancar_detector), asi que las dos puntas coinciden siempre.
+        """
+        destino = os.environ.get("M3U8_TUNEL", TUNEL_DEFECTO).strip()
+        if not destino:
+            return None, 0          # M3U8_TUNEL vacio = todo sale directo
+        host, _, puerto = destino.rpartition(":")
+        if not puerto.isdigit():
+            return None, 0
+        return (host or "127.0.0.1"), int(puerto)
+
+    def _tuneles_escuchando(self, puerto, procesos):
+        """Los pid de wireproxy.exe que tienen ese puerto a la escucha.
+
+        Nombre Y puerto: con el nombre solo se mataria un wireproxy que el
+        usuario tenga para lo suyo; con el puerto solo, cualquier cosa que
+        se lo haya quedado.
+        """
+        return [pid for pid in _duenos_puerto(puerto)
+                if procesos.get(pid, (0, ""))[1] == NOMBRE_TUNEL]
+
+    def _clasificar_tunel(self, pid, procesos, arbol_detector):
+        """'nuestro' | 'huerfano' | 'ajeno'."""
+        if pid in arbol_detector:
+            return "nuestro"        # hijo del detector vivo: su padre lo cuida
+        if self._vivo(self._tunel_propio) and pid == self._tunel_propio.pid:
+            return "nuestro"
+        padre = procesos.get(pid, (0, ""))[0]
+        if padre == os.getpid():
+            # lo abrimos nosotros (_relanzar_tunel) pero ya no tenemos su
+            # Popen: nadie lo vigila, asi que es un huerfano igual.
+            return "huerfano"
+        if padre and padre != pid and padre in procesos:
+            # alguien vivo lo abrio y no somos nosotros: puede ser un
+            # detector que el usuario corrio a mano desde una consola. No
+            # se mata lo que no es nuestro.
+            return "ajeno"
+        return "huerfano"           # su padre ya no existe
+
+    def _avisar_ajeno(self, pid, procesos, host, puerto):
+        if pid in self._ajeno_avisado:
+            return
+        self._ajeno_avisado.add(pid)
+        padre = procesos.get(pid, (0, ""))[0]
+        self._aviso(
+            "hay un %s que no es mio escuchando en %s:%d (pid %s, lo abrio "
+            "el pid %s): no lo toco, pero el detector va a usar ESE tunel "
+            "-- si no es a proposito, cerralo y volve a arrancar"
+            % (NOMBRE_TUNEL, host, puerto, pid, padre), nivel="error")
+
+    def _limpiar_tunel_previo(self):
+        """Deja libre el puerto del tunel antes de arrancar el detector."""
+        # El nuestro tambien estorba: dejarlo escuchando hace que el
+        # detector nuevo lo adopte igual que a un huerfano.
+        matados = int(self._parar_tunel_propio(
+            "arranca un detector que abre el suyo"))
+        host, puerto = self._direccion_tunel()
+        if not puerto:
+            return
+        procesos = _procesos()
+        if not procesos:
+            return                  # no se pudo mirar: mejor no adivinar
+        for pid in self._tuneles_escuchando(puerto, procesos):
+            clase = self._clasificar_tunel(pid, procesos, set())
+            if clase == "ajeno":
+                self._avisar_ajeno(pid, procesos, host, puerto)
+                continue
+            if clase == "nuestro":
+                continue
+            if _matar_pid(pid):
+                matados += 1
+                self._aviso(
+                    "habia un %s huerfano de una corrida anterior en "
+                    "%s:%d (pid %s): lo cerre para que el detector abra "
+                    "el suyo" % (NOMBRE_TUNEL, host, puerto, pid))
+            else:
+                self._aviso(
+                    "no pude cerrar el %s huerfano (pid %s) que tiene "
+                    "%s:%d: el detector lo va a adoptar"
+                    % (NOMBRE_TUNEL, pid, host, puerto), nivel="error")
+        if matados:
+            # terminate/TerminateProcess vuelven antes de que Windows
+            # suelte el socket; si arrancaramos ya mismo, _Tunel todavia
+            # veria el puerto ocupado y adoptaria a un muerto.
+            fin = time.time() + 5.0
+            while time.time() < fin:
+                try:
+                    socket.create_connection((host, puerto), timeout=0.5).close()
+                except OSError:
+                    break
+                time.sleep(0.2)
+            self._ajeno_avisado.clear()
+
+    def _vigilar_tunel(self):
+        """Una pasada del watchdog. La llama _bucle_vigilancia."""
+        host, puerto = self._direccion_tunel()
+        if not puerto:
+            return
+        procesos = _procesos()
+        if not procesos:
+            return
+        tuneles = self._tuneles_escuchando(puerto, procesos)
+        if not tuneles:
+            self._ajeno_avisado.clear()
+            if self._tunel_propio is not None and not self._vivo(self._tunel_propio):
+                self._tunel_propio = None
+            return
+        det = self.detector
+        hay_detector = self._vivo(det)
+        arbol = _descendientes(det.pid, procesos) if hay_detector else set()
+        for pid in tuneles:
+            clase = self._clasificar_tunel(pid, procesos, arbol)
+            if clase == "nuestro":
+                continue
+            if clase == "ajeno":
+                self._avisar_ajeno(pid, procesos, host, puerto)
+                continue
+            if not _matar_pid(pid):
+                self._aviso("no pude cerrar el %s huerfano (pid %s) de %s:%d"
+                            % (NOMBRE_TUNEL, pid, host, puerto), nivel="error")
+                continue
+            if not hay_detector:
+                self._aviso("cerre un %s huerfano (pid %s) que seguia "
+                            "escuchando %s:%d sin nadie grabando"
+                            % (NOMBRE_TUNEL, pid, host, puerto))
+                continue
+            # Con el detector vivo, ese huerfano era el tunel que adopto al
+            # arrancar: su _Tunel ya termino y no lo va a reabrir, asi que
+            # el puerto lo tenemos que volver a levantar nosotros o las
+            # @vpn= se quedan sin tunel hasta el proximo arranque.
+            self._aviso("el detector estaba usando un %s huerfano (pid %s): "
+                        "lo cerre y relanzo el tunel" % (NOMBRE_TUNEL, pid))
+            self._relanzar_tunel(host, puerto)
+
+    def _relanzar_tunel(self, host, puerto) -> bool:
+        """Levanta wireproxy nosotros, con la conf que ya genero el
+        detector (la del usuario + la seccion [http]; ver _generar_conf)."""
+        a = self.ajustes
+        exe = os.path.join(a.scripts, NOMBRE_TUNEL)
+        conf = os.path.join(a.scripts, CONF_TUNEL_GENERADA)
+        if not os.path.isfile(exe) or not os.path.isfile(conf):
+            self._aviso(
+                "no puedo relanzar el tunel: falta %s o %s en %s -- las "
+                "modelos de @vpn= van a salir directas hasta que se vuelva "
+                "a arrancar el motor"
+                % (NOMBRE_TUNEL, CONF_TUNEL_GENERADA, a.scripts),
+                nivel="error")
+            return False
+        try:
+            proc = subprocess.Popen(
+                [exe, "-s", "-c", conf], cwd=a.scripts,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, text=True, bufsize=1,
+                creationflags=CREAR_SIN_VENTANA,
+            )
+        except OSError as e:
+            self._aviso("no pude relanzar el tunel: %s" % e, nivel="error")
+            return False
+        self._tunel_propio = proc
+        threading.Thread(target=self._leer_tunel, args=(proc,),
+                         daemon=True, name="nimbo-tunel").start()
+        if _esperar_puerto(host, puerto, ESPERA_PUERTO):
+            self._aviso("tunel de nuevo en %s:%d (lo mantiene Nimbo hasta "
+                        "la proxima parada)" % (host, puerto))
+            return True
+        self._aviso("el tunel relanzado no acepto conexiones en %s:%d -- "
+                    "revisa %s" % (host, puerto, CONF_TUNEL_GENERADA),
+                    nivel="error")
+        return False
+
+    def _leer_tunel(self, proc):
+        """Las quejas de wireproxy al log, igual que _Tunel._reflejar."""
+        try:
+            for linea in proc.stderr:
+                texto = linea.strip()
+                if not texto or any(x in texto for x in RUIDO_TUNEL):
+                    continue
+                self._emitir_log("tunel", texto[:200])
+        except (OSError, ValueError):
+            pass
+
+    def _parar_tunel_propio(self, motivo="") -> bool:
+        """True si habia uno andando y se cerro."""
+        proc = self._tunel_propio
+        self._tunel_propio = None
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.terminate()
+            proc.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            self._matar(proc)
+        self._aviso("cerre el tunel que mantenia Nimbo%s"
+                    % (" (%s)" % motivo if motivo else ""))
+        return True
+
     # -- vigilancia --------------------------------------------------------
 
     def _bucle_vigilancia(self):
+        proximo_tunel = 0.0
         while True:
             time.sleep(INTERVALO_VIGILANCIA)
             with self._lock:
                 if self._parando:
                     continue
+            murio_detector = False
             if self.detector is not None and not self.detector_vivo():
                 self._aviso("el detector se cerro solo (codigo %s)" %
                            self.detector.returncode,
                            proceso="detector", tipo="murio")
                 self.detector = None
+                murio_detector = True
             if self.supervisor is not None and not self.supervisor_vivo():
                 self._aviso("el supervisor se cerro solo (codigo %s)" %
                            self.supervisor.returncode,
                            proceso="supervisor", tipo="murio")
                 self.supervisor = None
+            if murio_detector:
+                # Sin detector no hay nada que enrutar por el tunel.
+                self._parar_tunel_propio("el detector se cerro solo")
+            # El tunel se mira DESPUES de soltar las referencias: si el
+            # detector se acaba de caer, su wireproxy quedo huerfano ya
+            # mismo y no hay que esperar al turno siguiente para cerrarlo.
+            if murio_detector or time.time() >= proximo_tunel:
+                proximo_tunel = time.time() + INTERVALO_TUNEL
+                try:
+                    self._vigilar_tunel()
+                except Exception as e:      # el watchdog no tira el bucle
+                    self._aviso("el watchdog del tunel fallo: %s" % e,
+                                nivel="error")
