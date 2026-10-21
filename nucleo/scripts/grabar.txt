@@ -14,7 +14,7 @@
 
 
 # marca; el nombre tiene que estar igual arriba como linea suelta.
-@vpn=_valentinaa_,ale_lewis,ameellie,andy_and_emma,antonella-rey,ariamoonlight,condes_carmen,lally_valencia__,melody_rousse__,rouse_07,strawberrypink_
+@vpn=_valentinaa_,ale_lewis,ameellie,anavi_,andy_and_emma,angel09_a_,angelruby,antonella-rey,ariamoonlight,condes_carmen,guadalupe21_,julii_sw,kiimjoi,lally_valencia__,melody_rousse__,morphie_,nina_soul,rouse_07,strawberrypink_,valeria-escobar
 
 # --- Calidad -------------------------------------------------------------
 # max = la mejor que ofrezca cada modelo, sea 1080p, 720p o 480p.
