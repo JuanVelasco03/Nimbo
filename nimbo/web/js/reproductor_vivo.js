@@ -25,7 +25,15 @@ const MAX_POR_TICK = 8;
 const VENTANA_MAX_S = 90;
 const VENTANA_OBJETIVO_S = 45;
 const DERIVA_MAX_S = 6.0;
-const MARGEN_VIVO_S = 1.0;
+// Cuanto se deja el playhead atras del borde del buffer al saltar al vivo
+// (alVivo() y la correccion de deriva). Con 1.0 el margen era mas chico
+// que el tiempo que tarda un ciclo de tick+fetch+append en traer el
+// proximo segmento (poll de 500ms + red + disco): el playhead alcanzaba
+// el borde del SourceBuffer antes de que llegara mas data y el video se
+// quedaba pegado por una fraccion de segundo, aunque la grabacion en
+// disco siguiera perfecta (son pipelines independientes). 3.0 da colchon
+// de sobra sin que se note como "delay" en una previa.
+const MARGEN_VIVO_S = 3.0;
 const INTENTOS_CUOTA = 3;
 // "sequence": el navegador pega cada grupo de frames inmediatamente detras
 // del anterior, ignorando los tfdt del fragmento -- es el mismo trabajo que
