@@ -866,7 +866,17 @@ class _ModeloDirecto(threading.Thread):
             return
         log.info("[%s/%s] cierre: %s (%d segmentos) -- %s | uniendo en 2do plano",
                  self.nombre, variante, sesion.etiqueta, sesion.segmentos, motivo)
-        self.grabador.pool.submit(_unir_en_fondo, self.grabador.escritor, sesion)
+        # Hilo propio, NO el pool de descargas (self.grabador.pool): ese
+        # pool tiene tope (POOL_HILOS) y con varias modelos grabando a la
+        # vez queda saturado de descargas continuas -- la union, al ser
+        # una tarea mas en la misma cola, podia quedarse esperando un
+        # hueco que nunca llega (visto en vivo: sesion cerrada, carpeta
+        # segmentos\ intacta, sin "UNIR...listo" ni error, minutos
+        # despues). Es una unica tarea de corta vida por sesion cerrada,
+        # no una descarga continua: no compite por el mismo cupo.
+        threading.Thread(target=_unir_en_fondo,
+                          args=(self.grabador.escritor, sesion),
+                          daemon=True, name="directo-unir").start()
 
     def _cerrar_todas(self, motivo: str) -> None:
         for variante in list(self.sesiones):
