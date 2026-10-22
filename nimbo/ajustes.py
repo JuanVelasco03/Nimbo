@@ -45,10 +45,11 @@ DIR_NUCLEO = os.path.join(RAIZ, "nucleo")
 # y segmentos crudos, no codigo.
 DIR_DATOS = os.path.join(RAIZ, "datos")
 
-# Los dos JSON de estado los escriben los procesos hijos (el addon puente y
-# el lanzador del supervisor); Nimbo solo los lee.
+# Los JSON de estado los escriben los procesos hijos (el addon puente, el
+# lanzador del supervisor y grabador_directo.py); Nimbo solo los lee.
 ESTADO_DETECTOR = os.path.join(DIR_ESTADO, "detector.json")
 ESTADO_SUPERVISOR = os.path.join(DIR_ESTADO, "supervisor.json")
+ESTADO_DIRECTO = os.path.join(DIR_ESTADO, "directo.json")
 # Este lo escribe el propio Nimbo (ver sesion.py / servidor.py), no un
 # hijo -- la llamada a "favoritas en linea" de la cuenta real es un
 # pedido HTTP comun, no hace falta un proceso aparte para eso.
@@ -72,11 +73,13 @@ DEFECTOS = {
     "dias_segmentos": 1,
 }
 
-# Los tres archivos que tienen que estar en nucleo\scripts\ para poder
-# arrancar el motor de captura. ffmpeg.exe no esta: su falta se degrada
-# sola (el detector deja el pegote .raw.mp4 sin remuxear), no impide
-# arrancar.
-_NUCLEO_REQUERIDO = ("detectar_m3u8.py", "supervisor.py")
+# Los archivos que tienen que estar en nucleo\scripts\ para poder arrancar
+# el motor de captura. mouflon.py y grabador_directo.py son el camino
+# directo (ver specs\grabador_directo.md); ffmpeg.exe no esta en la lista:
+# su falta se degrada sola (el detector deja el pegote .raw.mp4 sin
+# remuxear), no impide arrancar.
+_NUCLEO_REQUERIDO = ("detectar_m3u8.py", "supervisor.py", "mouflon.py",
+                     "grabador_directo.py")
 
 
 def nucleo_incompleto(ruta_scripts: str) -> list:
@@ -170,6 +173,10 @@ class Ajustes:
     @property
     def estado_supervisor(self) -> str:
         return ESTADO_SUPERVISOR
+
+    @property
+    def estado_directo(self) -> str:
+        return ESTADO_DIRECTO
 
     @property
     def estado_siguiendo(self) -> str:

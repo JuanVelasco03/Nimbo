@@ -114,6 +114,17 @@ except ImportError:       # de CLI (--unir) no hace falta
 AQUI = os.path.dirname(os.path.abspath(__file__))
 SUBCARPETAS_SCRIPT = {"scripts", "script", "bin", "src"}
 
+# mouflon.py vive al lado (es parte del nucleo copiado, igual que este
+# archivo): cuando mitmdump carga esto con -s no hay garantia de que su
+# carpeta ya este en sys.path (a diferencia de correrlo como __main__, que
+# si la agrega solo). Sin este insert, "import mouflon" fallaria justo en
+# ese modo -- el que de verdad usa el detector en produccion.
+if AQUI not in sys.path:
+    sys.path.insert(0, AQUI)
+import mouflon  # noqa: E402  -- biblioteca de protocolo, sin efectos al
+                # importar (ver su docstring): leer_master/mejor_rendicion
+                # vivian aca y se movieron ahi (specs\grabador_directo.md S4.1)
+
 
 def _raiz_proyecto() -> str:
     if os.path.basename(AQUI).lower() in SUBCARPETAS_SCRIPT:
@@ -348,6 +359,13 @@ class Config:
     borrosas: bool = False    # el stream censurado (show privado): no es video
     privado: int = ALTO_PRIVADO   # altura del relleno del show privado
     vpn: frozenset = frozenset()  # modelos geobloqueadas: salen por el tunel
+    # @directo=1 + @navegador=<nombres>: las lee grabador_directo.py (y
+    # supervisor.Lista, para no abrirles pestana). El detector NUNCA ve
+    # trafico de una modelo en modo directo (no pasa por el proxy), asi que
+    # aca solo hace falta reconocerlas para no loguear "directiva
+    # desconocida" -- ver specs\grabador_directo.md S5.
+    directo: bool = False
+    navegador: frozenset = frozenset()
 
     def quiere(self, sid: str, modelo: str) -> bool:
         if self.todo:
@@ -433,7 +451,7 @@ class Seleccion:
             log.info(
                 "[CONFIG] objetivos=%s todo=%s calidad=%s codec=%s variantes=%s "
                 "unir=%s inactividad=%s espera=%ss cambio=%ss fallback=%s "
-                "forzar=%s privado=%s vpn=%s",
+                "forzar=%s privado=%s vpn=%s directo=%s navegador=%s",
                 sorted(cfg.entradas) or "-",
                 cfg.todo,
                 ", ".join(cfg.calidad) or "*",
@@ -447,6 +465,8 @@ class Seleccion:
                 cfg.forzar,
                 ("%dp" % cfg.privado) if cfg.privado else "off",
                 ", ".join(sorted(cfg.vpn)) or "-",
+                cfg.directo,
+                ", ".join(sorted(cfg.navegador)) or "-",
             )
             return self._cfg
 
@@ -495,6 +515,15 @@ class Seleccion:
                     # el supervisor marca sus pestanas y aqui se enrutan por
                     # el tunel. Se suman: dos lineas @vpn= no se pisan.
                     cfg.vpn |= {v.strip() for v in valor.split(",") if v.strip()}
+                elif clave == "directo":
+                    # el detector nunca ve trafico de estas: lo graba
+                    # grabador_directo.py por su cuenta, sin pasar por el
+                    # proxy. Solo se reconoce para no loguear "desconocida".
+                    cfg.directo = valor not in {"0", "no", "false", "off"}
+                elif clave == "navegador":
+                    # opt-out de @directo=1: se suman, igual que @vpn=.
+                    cfg.navegador |= frozenset(
+                        v.strip() for v in valor.split(",") if v.strip())
                 elif clave in {"todo", "all"}:
                     cfg.todo = valor not in {"0", "no", "false", "off"}
                 else:
@@ -781,13 +810,12 @@ def sello() -> str:
 
 
 def puntaje(variante: str, det: Deteccion, cfg: Config) -> tuple:
-    """Para elegir 'la mejor': nitida > borrosa, mas alto mejor, codec preferido."""
-    blur = variante.endswith("_blurred")
-    if cfg.codec and det.codec in cfg.codec:
-        pref = len(cfg.codec) - cfg.codec.index(det.codec)
-    else:
-        pref = 0
-    return (0 if blur else 1, det.altura, pref, det.veces)
+    """Para elegir 'la mejor': nitida > borrosa, mas alto mejor, codec
+    preferido. Reenvia a mouflon.puntaje() -- ver ese modulo para por que
+    vive ahi (specs\\grabador_directo.md S4.1): sirve igual para esto (una
+    Deteccion real del ABR en vivo) que para elegir la mejor Rendicion del
+    master."""
+    return mouflon.puntaje(variante, det, cfg)
 
 
 # --------------------------------------------------------------------------
@@ -795,121 +823,15 @@ def puntaje(variante: str, det: Deteccion, cfg: Config) -> tuple:
 #
 # El reproductor baja de calidad solo (pestana en segundo plano, ABR). Si el
 # manifiesto que le llega ofrece una sola calidad, no tiene a donde bajar.
+#
+# leer_master()/mejor_rendicion()/Rendicion viven en mouflon.py (ver
+# specs\grabador_directo.md S4.1): grabador_directo.py tambien los
+# necesita, y mouflon.py es importable sin el riesgo de este modulo (su
+# "else: addons = [Detector()]" mas abajo).
 # --------------------------------------------------------------------------
 
-RE_ATTR_RES = re.compile(r"RESOLUTION=(\d+)x(\d+)", re.I)
-RE_ATTR_BW = re.compile(r"(?:AVERAGE-)?BANDWIDTH=(\d+)", re.I)
-RE_ATTR_CODECS = re.compile(r'CODECS="([^"]*)"', re.I)
-
-CODECS_HLS = (
-    ("av01", "av1"), ("avc1", "h264"), ("avc3", "h264"),
-    ("hvc1", "hevc"), ("hev1", "hevc"), ("dvh", "hevc"), ("vp09", "vp9"),
-)
-
-
-def _codec_hls(atributos: str, uri: str) -> str:
-    m = RE_ATTR_CODECS.search(atributos)
-    if m:
-        bajo = m.group(1).lower()
-        for prefijo, nombre in CODECS_HLS:
-            if prefijo in bajo:
-                return nombre
-    m = RE_CODEC.search(uri.lower()) or RE_CODEC.search(atributos.lower())
-    if not m:
-        return "na"
-    codec = m.group(1).lower()
-    return "hevc" if codec == "h265" else codec
-
-
-@dataclass
-class Rendicion:
-    """Una linea EXT-X-STREAM-INF del master: lo que la modelo ofrece."""
-    nombre: str           # 1080p_av1
-    calidad: str          # 1080p
-    codec: str            # av1
-    alto: int
-    banda: int
-    attrs: str            # la linea #EXT-X-STREAM-INF completa
-    uri: str
-    fuente: bool = False  # NAME="source": la emision tal cual la sube la modelo
-
-    @property
-    def borrosa(self) -> bool:
-        return self.nombre.endswith("_blurred")
-
-    def como_deteccion(self) -> Deteccion:
-        # la banda entra como desempate en puntaje()
-        return Deteccion(calidad=self.calidad, codec=self.codec, ultimo=0.0,
-                         veces=self.banda, fuente=self.fuente,
-                         borrosa=self.borrosa, alto_fuente=self.alto)
-
-
-def leer_master(texto: str):
-    """Lee las variantes de un master playlist. -> (cabecera, rendiciones, pos)."""
-    if not texto or "#EXT-X-STREAM-INF" not in texto.upper():
-        return [], [], 0
-
-    lineas = texto.splitlines()
-    cabecera, rendiciones = [], []
-    pos = None
-    i = 0
-    while i < len(lineas):
-        linea = lineas[i]
-        if linea.upper().startswith("#EXT-X-STREAM-INF"):
-            j = i + 1
-            while j < len(lineas) and (not lineas[j].strip()
-                                       or lineas[j].startswith("#")):
-                j += 1
-            if j >= len(lineas):
-                break
-            uri = lineas[j].strip()
-            alto = 0
-            m = RE_ATTR_RES.search(linea)
-            if m:
-                alto = int(m.group(2))
-            else:
-                q = RE_CALIDAD.search(uri)
-                if q:
-                    alto = int(RE_ALTURA.match(q.group(1)).group(1))
-            m = RE_ATTR_BW.search(linea)
-            banda = int(m.group(1)) if m else 0
-            codec = _codec_hls(linea, uri)
-            calidad = ("%dp" % alto) if alto else "auto"
-            nombre = calidad + "_" + codec
-            if "blur" in uri.lower():
-                nombre += "_blurred"
-            # la fuente: NAME="source", o la URI sin sufijo de calidad
-            es_fuente = (
-                'NAME="source"' in linea
-                or RE_CALIDAD_TOKEN.search(nombre_archivo(uri)) is None
-            ) and "blur" not in uri.lower()
-            rendiciones.append(Rendicion(nombre=nombre, calidad=calidad,
-                                         codec=codec, alto=alto, banda=banda,
-                                         attrs=linea, uri=uri,
-                                         fuente=es_fuente))
-            if pos is None:
-                pos = len(cabecera)
-            i = j + 1
-            continue
-        cabecera.append(linea)
-        i += 1
-
-    return cabecera, rendiciones, pos or 0
-
-
-def mejor_rendicion(rendiciones, cfg: Config):
-    """La mejor del master segun los filtros; si ninguna coincide, la mejor a secas."""
-    if not rendiciones:
-        return None
-    coinciden = [r for r in rendiciones
-                 if cfg.acepta_variante(r.calidad, r.codec, r.fuente,
-                                        r.borrosa)]
-    if not coinciden:
-        if not cfg.fallback:
-            return None
-        coinciden = rendiciones
-    return max(coinciden, key=lambda r: puntaje(r.nombre, r.como_deteccion(), cfg))
-
+leer_master = mouflon.leer_master
+mejor_rendicion = mouflon.mejor_rendicion
 
 # por debajo de esto es miniatura del grid, no el reproductor grande
 ALTO_MINIMO_REAL = 360

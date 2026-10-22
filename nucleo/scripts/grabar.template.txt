@@ -37,6 +37,19 @@
 # 0 = no graba nada hasta que vuelva la calidad pedida
 @fallback=1
 
+# --- Camino directo (sin navegador) --------------------------------------
+# @directo=1 graba TODO lo de arriba sin abrirle pestana al supervisor:
+# un hilo propio (grabador_directo.py) baja los segmentos de doppiocdn
+# directo, descifrando el protocolo MOUFLON (ver specs\grabador_directo.md).
+# El navegador queda de respaldo, pero el salto NO es automatico: si el
+# protocolo deja de andar (stripchat rota las claves), esa modelo queda
+# "degradada" (se ve en la pestana Registro) hasta que la agregues a
+# @navegador= a mano -- grabar.txt lo edita solo Nimbo, nunca el grabador.
+# @navegador=fulana,mengana opta por el navegador para esos nombres
+# puntuales aunque @directo=1 este encendido arriba.
+@directo=0
+@navegador=
+
 # --- Modelos geobloqueadas -----------------------------------------------
 # Las que se esconden de tu pais. Marcarlas aqui arriba con @vpn= y listo:
 # los pedidos de SU pestana salen por la VPN y los de las demas no. No hay

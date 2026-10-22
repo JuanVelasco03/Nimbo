@@ -60,6 +60,7 @@ from websockets.server import ServerProtocol
 
 import ajustes as ajustes_mod
 import cosecha_streams as cosecha_streams_mod
+import estado_captura as estado_captura_mod
 import favoritas as favoritas_mod
 import grabaciones as grabaciones_mod
 import inicio_automatico as inicio_mod
@@ -105,6 +106,16 @@ def _leer_bytes(ruta):
             return f.read()
     except OSError:
         return None
+
+
+async def _leer_detector_fusionado(app):
+    """detector.json + directo.json fusionados (ver nimbo/estado_captura.py)
+    -- el shape que ve el resto del codigo sigue siendo el de detector.json,
+    asi que vivo.py/cosecha_streams.py no se enteran de donde salio cada
+    sesion."""
+    detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
+    directo = await app.a_hilo(_leer_json, app.ajustes.estado_directo)
+    return estado_captura_mod.fusionar(detector, directo)
 
 
 # ===========================================================================
@@ -196,17 +207,19 @@ class Aplicacion:
         del dia a dia, pero esto sigue siendo lo que responde /api/estado
         si self.estado todavia esta vacio (justo al conectar, antes del
         primer tick)."""
+        detector = estado_captura_mod.fusionar(
+            _leer_json(self.ajustes.estado_detector),
+            _leer_json(self.ajustes.estado_directo))
         return {
             "motor": self.motor.estado(),
             "lista": self.lista.leer(),
             "favoritas": self.favoritas.leer(),
-            "detector": _leer_json(self.ajustes.estado_detector),
+            "detector": detector,
             "supervisor": _leer_json(self.ajustes.estado_supervisor),
             "disco": self._disco(),
             "sesion": self.sesion.estado(),
             "siguiendo": _leer_json(self.ajustes.estado_siguiendo),
-            "vivo": vivo_mod.sesiones_vivas(
-                self.ajustes.streams, _leer_json(self.ajustes.estado_detector)),
+            "vivo": vivo_mod.sesiones_vivas(self.ajustes.streams, detector),
             "limpieza": self.ultima_limpieza,
         }
 
@@ -362,7 +375,7 @@ async def _bucle_estado(app):
                 firma_lista_vista = firma_lista
                 delta["lista"] = await app.a_hilo(app.lista.leer)
 
-            detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
+            detector = await _leer_detector_fusionado(app)
             detector_cambio = detector != app.estado.get("detector")
             if detector_cambio:
                 delta["detector"] = detector
@@ -428,7 +441,7 @@ async def _bucle_cosecha(app):
             continue
         reloj_limpieza = 0.0
         with contextlib.suppress(Exception):
-            detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
+            detector = await _leer_detector_fusionado(app)
             resultado = await app.a_hilo(
                 cosecha_streams_mod.barrer, app.ajustes.streams, detector,
                 app.ajustes["dias_segmentos"])
@@ -729,7 +742,7 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             "inicio_automatico": await app.a_hilo(inicio_mod.esta_activo),
         })
     elif ruta == "/api/vivo/sesiones":
-        detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
+        detector = await _leer_detector_fusionado(app)
         sesiones = await app.a_hilo(vivo_mod.sesiones_vivas, app.ajustes.streams, detector)
         await _json(writer, 200, {"sesiones": sesiones})
     elif ruta == "/api/vivo/segmentos":
@@ -761,7 +774,7 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         await _servir_bytes(writer, datos, "video/mp4")
     elif ruta == "/api/streams":
         a = app.ajustes
-        detector = await app.a_hilo(_leer_json, a.estado_detector)
+        detector = await _leer_detector_fusionado(app)
         resultado = await app.a_hilo(
             cosecha_streams_mod.resumen, a.streams, detector, a["dias_segmentos"])
         await _json(writer, 200, resultado)
@@ -858,7 +871,7 @@ async def _despachar_post(app, ruta, cuerpo):
         return 200, {"abierto": ok}
     elif ruta == "/api/streams/limpiar":
         a = app.ajustes
-        detector = await app.a_hilo(_leer_json, a.estado_detector)
+        detector = await _leer_detector_fusionado(app)
         resultado = await app.a_hilo(
             cosecha_streams_mod.barrer, a.streams, detector, a["dias_segmentos"])
         if resultado["borradas"]:

@@ -13,7 +13,7 @@ Nimbo es una aplicación de escritorio para Windows que graba streams de
 stripchat/doppiocdn. No es una app web: `nimbo\app.py` levanta un servidor
 HTTP en `127.0.0.1` y abre Edge en modo `--app` contra él, con perfil
 propio (`perfil_ventana\`). La ventana es solo la interfaz; el trabajo real
-lo hacen dos procesos hijos.
+lo hacen tres procesos hijos.
 
 ## Comandos
 
@@ -38,6 +38,9 @@ Operaciones del motor de captura que la interfaz **no** cubre, a mano:
 python nucleo\scripts\detectar_m3u8.py --listar
 python nucleo\scripts\detectar_m3u8.py --unir [ID ...] [--forzar]
 python nucleo\scripts\supervisor.py --login
+
+rem diagnostico del camino directo (no toca grabar.txt ni estado\)
+python nucleo\scripts\grabador_directo.py --una-vez <modelo> --minutos 5
 ```
 
 No hay suite de tests ni linter configurados en el repo.
@@ -51,7 +54,7 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
 
 ## Arquitectura
 
-### Tres procesos
+### Cuatro procesos
 
 1. **`nimbo\app.py`** (el que abre el usuario) — servidor HTTP + ventana de
    Edge + icono de bandeja (`pystray`). Instancia única vía
@@ -63,34 +66,61 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
    segmentos y los une a `.mp4` con ffmpeg.
 3. **El supervisor** — `python nimbo\lanzador_supervisor.py`, que importa
    `nucleo\scripts\supervisor.py`. Mantiene un Chromium de Playwright con
-   una página por modelo para que el reproductor del sitio pida el stream
-   (las URLs vienen ofuscadas con `#EXT-X-MOUFLON` y solo ese reproductor
-   sabe pedirlas).
+   una página por modelo para que el reproductor del sitio pida el stream.
+   Durante mucho tiempo se creyó que esto hacía falta porque "las URLs
+   vienen ofuscadas con `#EXT-X-MOUFLON` y solo ese reproductor sabe
+   pedirlas" — **es falso** (verificado en `specs\grabador_directo.md` S1 y
+   `pruebas\RESULTADOS.md`): el navegador no descifra nada localmente, solo
+   le presenta al CDN una `pkey` que viaja en texto plano dentro del propio
+   master playlist. El supervisor sigue en pie como **respaldo**: el camino
+   directo (punto 4) depende de ingeniería inversa de un protocolo ajeno, y
+   si stripchat rota la tabla de claves el supervisor es el único camino
+   que sigue funcionando sin cambiar una línea.
+4. **El camino directo** — `python nimbo\lanzador_directo.py`, que importa
+   `nucleo\scripts\grabador_directo.py`. Graba sin navegador ni proxy:
+   descifra el protocolo MOUFLON v2 con `nucleo\scripts\mouflon.py` (único
+   módulo del núcleo que **sí** se puede importar sin peligro, ver "Los dos
+   puentes") y baja init + segmentos con pedidos HTTP pelados, un hilo por
+   modelo. Solo corre para las marcadas `@directo=1` en `grabar.txt` (menos
+   las de `@navegador=`, opt-out); por eso el supervisor nunca les abre
+   pestaña (`supervisor.Lista.directo`, filtrado en `supervisar()`). Si el
+   descifrado falla 3 veces seguidas para una modelo (tabla de claves
+   rotada, CDN cambiado) esa modelo queda **sin grabar** hasta que el
+   usuario la pase a mano a `@navegador=` — no hay fallback automático
+   editando `grabar.txt`, porque ese archivo lo escribe solo Nimbo
+   (`lista.py`, ver "Quién escribe qué").
 
 `nimbo\motor.py` los arranca y para. **El orden importa**: arranca detector
-→ supervisor; para supervisor → detector. La parada va por **stdin**
-(`"parar\n"`), nunca por `kill`: los dos hijos se abren con `stdin=PIPE` y
-ese extremo se mantiene abierto justo para esto. Matar el detector a lo
-bruto deja grabaciones sin unir; matar el supervisor deja Chromium huérfano
-y el perfil con cerrojos. La parada del detector puede tardar **minutos**
-(`ESPERA_CIERRE_DETECTOR = 960s`) porque espera a que termine de unir.
+→ supervisor → directo; para directo → supervisor → detector. La parada va
+por **stdin** (`"parar\n"`), nunca por `kill`: los tres hijos se abren con
+`stdin=PIPE` y ese extremo se mantiene abierto justo para esto. Matar el
+detector a lo bruto deja grabaciones sin unir; matar el supervisor deja
+Chromium huérfano y el perfil con cerrojos; matar el directo puede dejar
+una unión a medias (delega en `detectar_m3u8.py --unir` como subproceso).
+La parada del detector puede tardar **minutos**
+(`ESPERA_CIERRE_DETECTOR = 960s`) porque espera a que termine de unir; la
+del directo también (`ESPERA_CIERRE_DIRECTO = 1260s`), por el mismo motivo.
 
-Si alguno de los dos se cae solo, `Motor._bucle_vigilancia` lo relanza
-sola: backoff 5s/15s/60s y, agotados esos tres intentos, "rendido" (aviso
+Si alguno se cae solo, `Motor._bucle_vigilancia` lo relanza sola: backoff
+5s/15s/60s y, agotados esos tres intentos, "rendido" (aviso
 `nivel="error"`, visible en la ventana y en el tooltip de la bandeja) pero
 sin dejar de probar cada 15 minutos — una caída a las 3 de la mañana no
 tiene que dejar la noche entera sin grabar. Si el que muere es el
-detector se relanzan **los dos**, en el mismo orden de siempre (cerrar
-páginas por stdin → detector → supervisor): las pestañas viejas del
-supervisor no vuelven a pedir el stream solas, así que dejarlas vivas
-deja dos procesos en pie y cero grabación. Si el que muere es el
-supervisor alcanza con relanzar solo eso. El relanzado nunca actúa si el
-usuario no pidió arrancar (`Motor._deseado`) ni mientras hay una parada en
-curso (`_parando` / `_parada_pedida`) — eso es lo que distingue "se murió
-solo" de "lo paramos nosotros", igual que ya hacía `parar()` antes de
-esto. Una caída a lo bruto puede dejar sesiones a medias en
-`datos\streams\`; es benigno, porque el detector las retoma solo con
-`recuperar_pendientes()` al arrancar de nuevo.
+detector se relanzan **detector y supervisor**, en el mismo orden de
+siempre (cerrar páginas por stdin → detector → supervisor): las pestañas
+viejas del supervisor no vuelven a pedir el stream solas, así que dejarlas
+vivas deja dos procesos en pie y cero grabación. Si el que muere es el
+supervisor alcanza con relanzar solo eso. **Si el que muere es el
+directo, también alcanza con relanzar solo eso**: no depende del proxy ni
+abre páginas, así que una caída suya no se lleva puesto a los otros dos
+(`Motor._reiniciar("directo")`). El relanzado nunca actúa si el usuario no
+pidió arrancar (`Motor._deseado`) ni mientras hay una parada en curso
+(`_parando` / `_parada_pedida`) — eso es lo que distingue "se murió solo"
+de "lo paramos nosotros", igual que ya hacía `parar()` antes de esto. Una
+caída a lo bruto puede dejar sesiones a medias en `datos\streams\`; es
+benigno, porque el detector las retoma solo con `recuperar_pendientes()`
+al arrancar de nuevo (cubre tanto las suyas como las que dejó el directo a
+medio unir, porque las dos comparten el mismo `datos\streams\`).
 
 Hay un cuarto proceso que nadie lanza a mano: `wireproxy.exe`, el túnel
 de la VPN, hijo del detector (clase `_Tunel`). Sobrevive a su padre, y
@@ -109,7 +139,11 @@ Dos interpretes de Python distintos, a propósito: el de la ventana solo
 necesita stdlib + `pystray`/`Pillow`; el del supervisor necesita Playwright
 y `ajustes.localizar_python()` lo busca entre varios instalados. El
 detector corre con el Python empaquetado de mitmdump — por eso `puente.py`
-usa **solo librería estándar**.
+usa **solo librería estándar**. El camino directo también usa solo
+librería estándar (no le hace falta Playwright), pero `motor.py` lo
+arranca con el mismo intérprete que el supervisor (`a["python"]`) en vez
+de inventar una tercera forma de encontrar un Python: no cuesta nada y
+simplifica `ajustes.py`.
 
 ### Los dos puentes (observar sin modificar)
 
@@ -129,12 +163,11 @@ de diseño central del repo.
 
 Los dos reenvían además sus loggers (`"detector"` / `"supervisor"`) a
 `estado\eventos_*.jsonl`. `motor.py` hace lo mismo con el stdout de sus
-dos hijos y sus propios avisos, en `estado\eventos_motor.jsonl`. Los tres
-rotan por tamaño a los 8 MB (`MAX_EVENTOS`, duplicado en los tres
-módulos a propósito — mismo motivo que la duplicación de "Los dos
-puentes" más abajo) con un único archivo viejo de sufijo `.1`;
-`registro.py` sabe cruzar del actual al `.1` sin perder ni repetir
-filas.
+hijos y sus propios avisos, en `estado\eventos_motor.jsonl`. Todos rotan
+por tamaño a los 8 MB (`MAX_EVENTOS`, duplicado a propósito en varios
+módulos — mismo motivo que la duplicación de "Los dos puentes" más abajo)
+con un único archivo viejo de sufijo `.1`; `registro.py` sabe cruzar del
+actual al `.1` sin perder ni repetir filas.
 
 **Nunca importar `detectar_m3u8.py` desde el proceso de Nimbo.** Ese módulo
 termina en `else: addons = [Detector()]`, así que cualquier import que no
@@ -143,7 +176,23 @@ sea `__main__` construye un `Detector` entero vivo — con su `Escritor`, su
 `nimbo\vivo.py` **portan deliberadamente** constantes y el recorrido de
 cajas MP4 del detector en vez de importarlo; si se cambia algo allá, hay
 que sincronizarlo acá a mano (los comentarios de esos módulos citan las
-líneas originales).
+líneas originales). Por el mismo motivo, `nimbo\lanzador_directo.py` y
+`nucleo\scripts\grabador_directo.py` invocan la unión como **subproceso**
+(`python detectar_m3u8.py --unir <sesión>`), nunca como import.
+
+`nucleo\scripts\mouflon.py`, en cambio, **sí es importable sin peligro**
+desde cualquier lado: es protocolo puro (descifrado MOUFLON v2, lectura
+del master `.m3u8`, elección de la mejor rendición, HTTP mínimo), sin
+ningún `addons = [...]` ni estado de módulo mutable — importarlo no
+construye ni arranca nada. Por eso lo importan por igual `detectar_m3u8.py`
+(que antes tenía `leer_master`/`Rendicion`/`mejor_rendicion`/`puntaje`
+duplicados ahí mismo, y ahora los reexporta desde `mouflon.py`) y
+`grabador_directo.py` (que además usa `descifrar_playlist`/
+`extraer_segmentos`/`pedir`/`resolver_id`/`consultar_cam`). El canario
+sin red (`mouflon.verificar_canario()`) es la señal de que la tabla de
+claves (`KEY_MAP`) sigue vigente; si deja de dar `True`, seguir
+`pruebas\RESULTADOS.md` sección 1 para derivar una nueva sin esperar a
+que alguien la publique.
 
 ### El núcleo copiado
 
@@ -167,11 +216,14 @@ plantilla mínima; nadie la lee en runtime.
 
 | Archivo | Lo escribe | Lo lee |
 |---|---|---|
-| `nucleo\scripts\grabar.txt` | solo Nimbo (`lista.py`) | detector (cada 2s), supervisor (cada 1s, acortado por `lanzador_supervisor.py` desde los 5s originales) |
-| `nucleo\scripts\activos.txt` | solo el detector | nadie en Nimbo |
+| `nucleo\scripts\grabar.txt` | solo Nimbo (`lista.py`) | detector (cada 2s), supervisor (cada 1s, acortado por `lanzador_supervisor.py` desde los 5s originales), camino directo (cada 2s, `LectorGrabar`) |
+| `nucleo\scripts\activos.txt` | solo el detector | supervisor y camino directo (traducen ID→nombre); nadie en Nimbo |
 | `estado\detector.json` | `puente.py` | Nimbo |
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
+| `estado\directo.json` | `grabador_directo.py` | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json`) |
+| `estado\ids.json` | `grabador_directo.py` | `grabador_directo.py` (cache propia id↔nombre) |
 | `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
+| `estado\eventos_directo.jsonl` | `lanzador_directo.py` | Nimbo (`registro.py`) |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
@@ -223,8 +275,10 @@ patrón que ya usa `lanzador_supervisor.py` con su hilo de stdin.
   foto completa); de ahí en más solo manda **deltas** (`tipo: "estado"`,
   solo las secciones que cambiaron) — `servidor.py:_bucle_estado` es
   quien decide qué cambió, comparando firmas baratas (`Lista.firma()`
-  para `grabar.txt`; el contenido ya parseado para `detector.json`, cuyo
-  `mtime` es un latido que se reescribe igual aunque no cambie nada). El
+  para `grabar.txt`; el contenido ya parseado para la clave `"detector"`,
+  que en realidad es `estado\detector.json` + `estado\directo.json`
+  fusionados por `estado_captura.fusionar()` — los dos reescriben su JSON
+  siempre, aunque no cambie nada, como latido). El
   ping/pong del WebSocket es manual (`_ws_escritor`): `ServerProtocol` es
   sans-I/O puro, no lo hace solo.
 - El refresco de "Modelos" contra el sitio real (`sitio.buscar`,
@@ -272,14 +326,17 @@ runtime no necesita Node.
 
 ### Reproductor en vivo
 
-El modal de previa muestra video real, no snapshots, sin hls.js y sin tocar
-nunca la ofuscación `#EXT-X-MOUFLON`: el Chromium del supervisor ya resolvió
-esas URIs y el detector ya escribió los fMP4/CMAF en
-`datos\streams\<modelo>_<id>\<variante>_<sesion>\`. La cadena es
-`puente.py` (campo `sesiones` en `detector.json`) → `nimbo\vivo.py`
-(listdir/open, dedup, arranque en keyframe) + `nimbo\mp4.py` (codec string
-del init) → `/api/vivo/*` → `reproductor_vivo.js` (MediaSource) manejado
-por `vista_previa.js`.
+El modal de previa muestra video real, no snapshots, sin hls.js y sin que
+`vivo.py` tenga que tocar la ofuscación `#EXT-X-MOUFLON`: venga la sesión
+del supervisor (el Chromium ya resolvió esas URIs) o del camino directo
+(`mouflon.py` ya las descifró), los fMP4/CMAF quedan escritos igual en
+`datos\streams\<modelo>_<id>\<variante>_<sesion>\` — mismo layout, mismo
+`clave_segmento()`. La cadena es `puente.py`/`grabador_directo.py` (campo
+`sesiones`/`streams` de `detector.json`/`directo.json`, unificados por
+`nimbo\estado_captura.fusionar()`) → `nimbo\vivo.py` (listdir/open, dedup,
+arranque en keyframe) + `nimbo\mp4.py` (codec string del init) →
+`/api/vivo/*` → `reproductor_vivo.js` (MediaSource) manejado por
+`vista_previa.js`.
 
 "Ver en vivo" de una modelo que no se está grabando agrega su nombre a
 `grabar.txt` mientras el modal está abierto. `nimbo\vivo_temporal.py` es el
@@ -295,8 +352,9 @@ en fMP4. `nimbo\cosecha_streams.py` es quien lo barre, y vive en Nimbo, no
 en el detector, porque hace falta cruzar dos señales que viven en lugares
 distintos: el detector solo sabe "¿esta sesión ya está unida?"
 (`unido.json`), y solo Nimbo sabe "¿alguien la está mirando en vivo ahora
-mismo?" (`vivo.sesiones_vivas()`, que a su vez lee `estado\detector.json`,
-no el disco). Una sesión se borra a la papelera solo si pasa las tres
+mismo?" (`vivo.sesiones_vivas()`, que a su vez lee el dict fusionado de
+`estado\detector.json` + `estado\directo.json`, no el disco). Una sesión
+se borra a la papelera solo si pasa las tres
 compuertas: tiene `unido.json` (si no, es una grabación pendiente que
 `recuperar_pendientes()` todavía puede rehacer, y es la única copia que
 existe); no aparece en `vivo.sesiones_vivas()`; y pasaron tanto

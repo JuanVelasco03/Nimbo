@@ -26,6 +26,7 @@ FUENTES = {
     "detector": "eventos_detector.jsonl",
     "supervisor": "eventos_supervisor.jsonl",
     "motor": "eventos_motor.jsonl",
+    "directo": "eventos_directo.jsonl",
 }
 
 BLOQUE = 65536                     # tamano de cada lectura hacia atras

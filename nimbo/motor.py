@@ -55,6 +55,7 @@ except (ImportError, ValueError):   # no es Windows: el watchdog no hace nada
 _AQUI = os.path.dirname(os.path.abspath(__file__))
 PUENTE = os.path.join(_AQUI, "puente.py")
 LANZADOR_SUPERVISOR = os.path.join(_AQUI, "lanzador_supervisor.py")
+LANZADOR_DIRECTO = os.path.join(_AQUI, "lanzador_directo.py")
 
 CREAR_SIN_VENTANA = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -65,6 +66,11 @@ ESPERA_CIERRE_SUPERVISOR = 60.0  # cerrar paginas + Chromium no deberia tardar
 # total) -- aqui el margen es mayor, para no cortarlo justo antes de que
 # el termine solo.
 ESPERA_CIERRE_DETECTOR = 960.0
+# El camino directo delega la union a "detectar_m3u8.py --unir" como
+# subproceso con su propio timeout de 1200s (grabador_directo.py:
+# _unir_en_fondo); varias sesiones la corren en paralelo sobre el mismo
+# pool, asi que el margen no se multiplica por cuantas haya.
+ESPERA_CIERRE_DIRECTO = 1260.0
 INTERVALO_VIGILANCIA = 2.0
 # El watchdog del tunel no necesita ir al ritmo de los procesos propios:
 # un wireproxy huerfano no hace dano por estar un rato de mas, lo que hace
@@ -286,6 +292,7 @@ class Motor:
         self._en_evento = en_evento or (lambda tipo, datos: None)
         self.detector = None       # subprocess.Popen o None
         self.supervisor = None
+        self.directo = None        # lanzador_directo.py (camino sin navegador)
         self._lock = threading.Lock()
         self._parando = False
         # Un wireproxy que levantamos nosotros para tapar el agujero que
@@ -296,11 +303,11 @@ class Motor:
         # -- relanzado automatico de un hijo que se cae solo --------------
         self._deseado = False          # el usuario pidio que esto corra
         self._parada_pedida = threading.Event()
-        self._reiniciando = None       # "detector" | "supervisor" | None
-        self._reintentos = {"detector": 0, "supervisor": 0}
-        self._proximo = {"detector": 0.0, "supervisor": 0.0}  # time.time()
+        self._reiniciando = None       # "detector" | "supervisor" | "directo" | None
+        self._reintentos = {"detector": 0, "supervisor": 0, "directo": 0}
+        self._proximo = {"detector": 0.0, "supervisor": 0.0, "directo": 0.0}  # time.time()
         self._rendido = set()
-        self._vivo_desde = {}          # "detector"/"supervisor" -> monotonic
+        self._vivo_desde = {}          # "detector"/"supervisor"/"directo" -> monotonic
         # -- persistencia del log propio, ver "Los logs del motor" --------
         self._ruta_eventos = os.path.join(ajustes.dir_estado, "eventos_motor.jsonl")
         self._lock_eventos = threading.Lock()   # propio: no el de arranque/parada
@@ -319,11 +326,15 @@ class Motor:
     def supervisor_vivo(self) -> bool:
         return self._vivo(self.supervisor)
 
+    def directo_vivo(self) -> bool:
+        return self._vivo(self.directo)
+
     def estado(self) -> dict:
         proximos = [t for t in self._proximo.values() if t > time.time()]
         return {
             "detector_vivo": self.detector_vivo(),
             "supervisor_vivo": self.supervisor_vivo(),
+            "directo_vivo": self.directo_vivo(),
             "parando": self._parando,
             "tunel_propio": self._vivo(self._tunel_propio),
             "reiniciando": self._reiniciando,
@@ -371,8 +382,8 @@ class Motor:
         # agotado sus reintentos y quedo "rendido", esto lo revive.
         self._deseado = True
         self._parada_pedida.clear()
-        self._reintentos = {"detector": 0, "supervisor": 0}
-        self._proximo = {"detector": 0.0, "supervisor": 0.0}
+        self._reintentos = {"detector": 0, "supervisor": 0, "directo": 0}
+        self._proximo = {"detector": 0.0, "supervisor": 0.0, "directo": 0.0}
         self._rendido.clear()
         with self._lock:
             self._parando = False
@@ -382,6 +393,9 @@ class Motor:
                 algo = True
             if not self.supervisor_vivo():
                 self._arrancar_supervisor()
+                algo = True
+            if not self.directo_vivo():
+                self._arrancar_directo()
                 algo = True
             return algo
 
@@ -451,6 +465,27 @@ class Motor:
                          args=(self.supervisor, "supervisor"), daemon=True).start()
         self._vivo_desde["supervisor"] = time.monotonic()
 
+    def _arrancar_directo(self):
+        a = self.ajustes
+        env = dict(os.environ)
+        env["NIMBO_SCRIPTS"] = a.scripts
+        env["NIMBO_ESTADO"] = a.dir_estado
+        # mismo mecanismo que usa el detector (ver _arrancar_detector):
+        # redirige streams\ a datos\ sin tocar M3U8_GRABAR (grabar.txt
+        # sigue junto al script, resuelto solo por grabador_directo.py).
+        env.setdefault("M3U8_BASE", a.dir_datos)
+        cmd = [a["python"], LANZADOR_DIRECTO]
+        self._aviso("arrancando el camino directo (sin navegador)...")
+        self.directo = subprocess.Popen(
+            cmd, cwd=a.scripts, env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+            creationflags=CREAR_SIN_VENTANA,
+        )
+        threading.Thread(target=self._leer_salida,
+                         args=(self.directo, "directo"), daemon=True).start()
+        self._vivo_desde["directo"] = time.monotonic()
+
     # -- parada ordenada --------------------------------------------------
 
     def _mandar_parar(self, proc):
@@ -475,10 +510,13 @@ class Motor:
             pass
 
     def parar(self, espera_supervisor=ESPERA_CIERRE_SUPERVISOR,
-              espera_detector=ESPERA_CIERRE_DETECTOR):
-        """Bloquea hasta que los dos terminaron (o se forzaron). Llamar
+              espera_detector=ESPERA_CIERRE_DETECTOR,
+              espera_directo=ESPERA_CIERRE_DIRECTO):
+        """Bloquea hasta que los tres terminaron (o se forzaron). Llamar
         desde un hilo aparte si no se quiere congelar quien lo pida --
-        el cierre del detector puede tardar minutos de verdad."""
+        el cierre del detector (o de una union en curso del directo)
+        puede tardar minutos de verdad. Orden: directo -> supervisor ->
+        detector (el inverso del arranque)."""
         # Antes de pelear por el lock: si hay un _reiniciar() en curso
         # puede tenerlo tomado hasta decenas de segundos, y ese reinicio
         # tiene que poder enterarse del pedido de parada sin el lock.
@@ -489,6 +527,18 @@ class Motor:
                 return
             self._parando = True
         try:
+            if self.directo_vivo():
+                self._aviso("cerrando el camino directo -- si hay una union "
+                           "en curso puede tardar unos minutos")
+                self._mandar_parar(self.directo)
+                if self._esperar_salida(self.directo, espera_directo):
+                    self._aviso("camino directo cerrado")
+                else:
+                    self._aviso("el camino directo no cerro a tiempo -- lo fuerzo",
+                               nivel="error")
+                    self._matar(self.directo)
+            self.directo = None
+
             if self.supervisor_vivo():
                 self._aviso("cerrando las paginas...")
                 self._mandar_parar(self.supervisor)
@@ -790,13 +840,24 @@ class Motor:
                         return
                     self._arrancar_detector()
                     self._arrancar_supervisor()
-            else:
+            elif cual == "supervisor":
                 self._aviso("reiniciando el motor: vuelvo a arrancar el "
                            "supervisor")
                 with self._lock:
                     if self._parando or self._parada_pedida.is_set():
                         return
                     self._arrancar_supervisor()
+            else:
+                # "directo": no depende del proxy (no pasa por el
+                # detector), asi que relanzarlo solo no necesita tocar
+                # nada mas -- a diferencia de una caida del detector, que
+                # si se lleva al supervisor con ella.
+                self._aviso("reiniciando el motor: vuelvo a arrancar el "
+                           "camino directo")
+                with self._lock:
+                    if self._parando or self._parada_pedida.is_set():
+                        return
+                    self._arrancar_directo()
             self._aviso("motor reiniciado (intento %d)" %
                        self._reintentos[cual])
         finally:
@@ -841,6 +902,16 @@ class Motor:
                            proceso="supervisor", tipo="murio")
                 self.supervisor = None
                 self._agendar_reinicio("supervisor")
+            if self.directo is not None and not self.directo_vivo():
+                if (time.monotonic() - self._vivo_desde.get("directo", 0)
+                        > ESTABLE_S):
+                    self._reintentos["directo"] = 0
+                    self._rendido.discard("directo")
+                self._aviso("el camino directo se cerro solo (codigo %s)" %
+                           self.directo.returncode,
+                           proceso="directo", tipo="murio")
+                self.directo = None
+                self._agendar_reinicio("directo")
             if murio_detector:
                 # Sin detector no hay nada que enrutar por el tunel.
                 self._parar_tunel_propio("el detector se cerro solo")
@@ -854,13 +925,16 @@ class Motor:
                 except Exception as e:      # el watchdog no tira el bucle
                     self._aviso("el watchdog del tunel fallo: %s" % e,
                                 nivel="error")
-            # El detector tiene prioridad: si los dos estan listos para
-            # reintentar, se lanza primero el suyo (relanza tambien al
-            # supervisor) y el del supervisor queda para el turno siguiente.
+            # El detector tiene prioridad: si varios estan listos para
+            # reintentar a la vez, se lanza primero el suyo (relanza
+            # tambien al supervisor) y los demas quedan para el turno
+            # siguiente. El directo va al final: no depende de los otros
+            # dos ni ellos de el.
             if self._deseado and not self._parando and not self._reiniciando:
-                for cual in ("detector", "supervisor"):
-                    vivo = self.detector_vivo() if cual == "detector" \
-                        else self.supervisor_vivo()
+                for cual in ("detector", "supervisor", "directo"):
+                    vivo = (self.detector_vivo() if cual == "detector"
+                            else self.supervisor_vivo() if cual == "supervisor"
+                            else self.directo_vivo())
                     if vivo or time.time() < self._proximo[cual]:
                         continue
                     threading.Thread(target=self._reiniciar, args=(cual,),

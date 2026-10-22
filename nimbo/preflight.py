@@ -29,7 +29,8 @@ def comprobar(ajustes) -> list:
          "nucleo\\scripts\\ completo" if ok else
          "falta en nucleo\\scripts\\: " + ", ".join(faltan),
          "" if ok else "Reinstala Nimbo: nucleo\\scripts\\ tiene que traer "
-                       "detectar_m3u8.py y supervisor.py")
+                       "detectar_m3u8.py, supervisor.py, mouflon.py y "
+                       "grabador_directo.py")
 
     ok = bool(ajustes["mitmdump"]) and os.path.isfile(ajustes["mitmdump"])
     fila(ok, "mitmproxy",
