@@ -19,8 +19,10 @@ nucleo/scripts/vpn_tunel.txt
 nucleo/scripts/activos.txt
 nucleo/perfil/
 nucleo/supervisor.log
+nucleo/directo.log
 
 # grabar.txt: a quien se graba (datos de usuario, no codigo). Se versiona
 # grabar.template.txt en su lugar -- el detector crea grabar.txt solo en el
 # primer arranque si no existe (ver detectar_m3u8.py, Detector.__init__).
 nucleo/scripts/grabar.txt
+nucleo/scripts/grabar.txt.bak

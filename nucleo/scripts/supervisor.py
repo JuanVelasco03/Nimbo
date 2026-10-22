@@ -9,10 +9,18 @@ grabe. No hay que tener ninguna pestana abierta a mano.
     Primera vez:   python supervisor.py --login
     Despues:       python supervisor.py
 
-Por que un navegador y no una descarga directa: los segmentos de doppiocdn
-vienen con las URLs ofuscadas (tags #EXT-X-MOUFLON) y solo el reproductor
-del sitio sabe pedirlas. El navegador hace su trabajo normal; nosotros solo
-lo abrimos, lo vigilamos y lo cerramos.
+Por que un navegador (ademas del camino directo, ver el modulo hermano
+grabador_directo.py): durante mucho tiempo se creyo que hacia falta
+porque "los segmentos de doppiocdn vienen con las URLs ofuscadas (tags
+#EXT-X-MOUFLON) y solo el reproductor del sitio sabe pedirlas" -- es
+falso (ver la especificacion del camino directo y sus resultados
+medidos: el navegador no descifra nada localmente, solo le presenta al
+CDN una pkey que viaja en claro en el propio master playlist). Este
+modulo sigue andando como RESPALDO: si el protocolo MOUFLON cambia y el
+camino directo se degrada, esto sigue funcionando sin tocarle una linea,
+porque aca el que descifra es el reproductor real del sitio. El
+navegador hace su trabajo normal; nosotros solo lo abrimos, lo vigilamos
+y lo cerramos.
 
 Que hace
     - Lee la MISMA lista que el proxy (grabar.txt): cada linea que no sea un
@@ -201,6 +209,10 @@ class Lista:
         self._avisado_ids = set()
         self._avisado_vpn = set()
         self.vpn = set()          # nombres en minuscula que piden VPN
+        # @directo=1 + @navegador=<nombres>: las que graba
+        # grabador_directo.py por su cuenta. Nunca les abrimos pestana --
+        # ver specs\grabador_directo.md S5 ("supervisor.py — Lista.actual()").
+        self.directo = set()
 
     def actual(self):
         try:
@@ -220,14 +232,24 @@ class Lista:
             return self._nombres
 
         vpn = set()
+        directo_global = False
+        navegador = set()
         for linea in lineas:
             linea = linea.split("#", 1)[0].strip()
             if linea.startswith("@"):
                 clave, _, valor = linea[1:].partition("=")
-                if clave.strip().lower() == "vpn":
+                clave = clave.strip().lower()
+                valor = valor.strip().lower()
+                if clave == "vpn":
                     # se suman: dos lineas @vpn= no se pisan
-                    vpn |= {v.strip().lower()
-                            for v in valor.split(",") if v.strip()}
+                    vpn |= {v.strip() for v in valor.split(",") if v.strip()}
+                elif clave == "directo":
+                    # @directo=1 global: las graba grabador_directo.py por
+                    # su cuenta, nunca una pestana del supervisor.
+                    directo_global = valor not in {"0", "no", "false", "off"}
+                elif clave == "navegador":
+                    # opt-out de @directo=1: se suman, igual que @vpn=.
+                    navegador |= {v.strip() for v in valor.split(",") if v.strip()}
                 continue
             if not linea or linea in {"*", "all", "todo", "todos"}:
                 continue
@@ -246,6 +268,15 @@ class Lista:
         if vpn != self.vpn:
             self.vpn = vpn
             log.info("[LISTA] con VPN: %s", ", ".join(sorted(vpn)) or "-")
+
+        # @directo=1 es global: todo lo que esta en grabar.txt, menos las
+        # de @navegador= (opt-out). grabador_directo.py las graba sin
+        # pasar por esta pestana -- de ahi el filtro en supervisar().
+        directo = ({n.lower() for n in nombres} - navegador) if directo_global else set()
+        if directo != self.directo:
+            self.directo = directo
+            log.info("[LISTA] en modo directo (sin pestana): %s",
+                     ", ".join(sorted(directo)) or "-")
         # @vpn= solo marca; el nombre tiene que estar ademas como linea
         # suelta. Marcarla y olvidarse de la linea no grababa nada y no
         # avisaba: es el error facil de cometer.
@@ -795,7 +826,17 @@ async def supervisar(headless: bool) -> int:
                 pass
         try:
             while not parar.is_set():
-                nombres = set(lista.actual())
+                # Las de @directo=1 (menos @navegador=) las graba
+                # grabador_directo.py por su cuenta: no tiene sentido (ni
+                # es gratis) abrirles encima una pestana que nadie mira.
+                # lista.directo esta en minuscula (se compara asi en
+                # Lista.actual()); lista.actual() no -- sin el .lower()
+                # de aca, un nombre con mayusculas nunca matcheaba y se le
+                # seguia abriendo pestana igual (bug real, visto con 12
+                # modelos reales: las de nombre todo minuscula se filtraban
+                # bien, el resto no).
+                nombres = {n for n in lista.actual()
+                          if n.lower() not in lista.directo}
 
                 for nombre in nombres - set(emisiones):
                     em = Emision(nombre, ctx)
