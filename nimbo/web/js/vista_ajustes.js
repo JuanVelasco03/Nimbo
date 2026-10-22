@@ -28,6 +28,10 @@ const DIRECTIVAS = [
     ayuda: "Une los segmentos en un .mp4 final al cerrar la grabacion." },
   { clave: "inactividad", etiqueta: "Cerrar tras inactividad (s)", tipo: "numero", defecto: "120",
     ayuda: "Cierra y une si no llegan segmentos nuevos en este tiempo. 0 = nunca." },
+  { clave: "directo", etiqueta: "Usar navegador para grabar", tipo: "bool", invertido: true, defecto: "0",
+    ayuda: "Marcado: graba con el navegador (como siempre, mas probado). Desmarcado: graba directo, "
+         + "sin abrir pestanas (mas liviano) -- aplica a TODAS las modelos por igual. Si el protocolo "
+         + "directo se degrada para alguna, agregala a mano a @navegador= en grabar.txt." },
 ];
 
 export function renderDirectivas(valores) {
@@ -39,7 +43,7 @@ export function renderDirectivas(valores) {
       const campo = document.getElementById("directiva-" + d.clave);
       if (!campo || campo === document.activeElement) continue;
       const actual = valores[d.clave] ?? d.defecto;
-      if (d.tipo === "bool") campo.checked = actual === "1";
+      if (d.tipo === "bool") campo.checked = d.invertido ? actual !== "1" : actual === "1";
       else if (campo.value !== actual) campo.value = actual;
     }
     return;
@@ -51,9 +55,10 @@ export function renderDirectivas(valores) {
     div.className = "directiva";
     let control = "";
     if (d.tipo === "bool") {
+      const marcado = d.invertido ? actual !== "1" : actual === "1";
       control = `<div class="fila-check">
         <label class="conmutador">
-          <input type="checkbox" id="directiva-${d.clave}" ${actual === "1" ? "checked" : ""}>
+          <input type="checkbox" id="directiva-${d.clave}" ${marcado ? "checked" : ""}>
           <span class="pista"></span>
         </label>
       </div>`;
@@ -72,7 +77,13 @@ export function renderDirectivas(valores) {
     const campo = div.querySelector("#directiva-" + d.clave);
     const evento = d.tipo === "bool" || d.tipo === "select" ? "change" : "blur";
     campo.addEventListener(evento, () => {
-      const valor = d.tipo === "bool" ? (campo.checked ? "1" : "0") : campo.value;
+      let valor;
+      if (d.tipo === "bool") {
+        const marcado = campo.checked;
+        valor = d.invertido ? (marcado ? "0" : "1") : (marcado ? "1" : "0");
+      } else {
+        valor = campo.value;
+      }
       enviar("/api/lista/directiva", { clave: d.clave, valor }).catch(mostrarError);
     });
   }
