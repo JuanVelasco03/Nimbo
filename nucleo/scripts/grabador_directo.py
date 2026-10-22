@@ -151,7 +151,20 @@ def _escribir_atomico(ruta: str, texto: str) -> None:
     tmp = ruta + ".part"
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(texto)
-    os.replace(tmp, ruta)
+    # En Windows, servidor.py:_leer_json puede tener `ruta` abierta para
+    # lectura (CreateFile sin FILE_SHARE_DELETE) justo en este instante;
+    # os.replace() entonces tira WinError 5 (acceso denegado), no un
+    # sharing violation claro. Es transitorio -- el lector suelta el
+    # handle en microsegundos -- asi que reintentar alcanza; no hace
+    # falta tocar el lado que lee (ya traga OSError y devuelve None).
+    for intento in range(5):
+        try:
+            os.replace(tmp, ruta)
+            return
+        except PermissionError:
+            if intento == 4:
+                raise
+            time.sleep(0.05 * (intento + 1))
 
 
 def _nombres_conocidos() -> dict:
@@ -710,7 +723,13 @@ class _ModeloDirecto(threading.Thread):
             log.warning("[%s/%s] red: %s", self.nombre, variante, e)
             return
         if status != 200:
-            log.warning("[%s/%s] media playlist dio %s", self.nombre, variante, status)
+            # antes solo logueaba y volvia a probar la MISMA uri cada
+            # ~1-2s hasta el proximo _reconciliar_variantes (60s) -- si el
+            # host/pkey quedo invalido eso eran decenas de WARNING idénticos
+            # por nada. Ahora cuenta como fallo (misma vara que publicidad/
+            # MAP-MOUFLON faltante): a los 3 seguidos se degrada solo y el
+            # aviso le dice al usuario que la pase a @navegador=.
+            self._registrar_fallo(variante, "media playlist dio %s" % status)
             return
         texto = cuerpo.decode("utf-8", "replace")
 
