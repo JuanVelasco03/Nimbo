@@ -257,9 +257,15 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
     cmd = [PYTHON_EXE, DETECTAR_PY, "--unir", filtro]
     marcador = os.path.join(sesion.carpeta, MARCADOR)
     try:
+        # stdin=DEVNULL a proposito: sin esto el subproceso hereda el
+        # stdin DE ESTE PROCESO, que es el pipe que motor.py mantiene
+        # abierto para mandar "parar" (ver lanzador_directo.py) -- un
+        # pipe que nadie en esta rama va a cerrar ni escribir. Nada en
+        # --unir lee stdin a proposito, pero no hay motivo para heredar
+        # un handle ajeno en un subproceso que no lo necesita.
         proc = subprocess.run(cmd, cwd=AQUI, env=dict(os.environ),
                                capture_output=True, text=True, timeout=1200,
-                               **_SIN_VENTANA)
+                               stdin=subprocess.DEVNULL, **_SIN_VENTANA)
         if proc.returncode != 0:
             log.error("[UNIR] %s: --unir fallo (codigo %s): %s", sesion.etiqueta,
                       proc.returncode, (proc.stderr or proc.stdout or "")[-400:])
@@ -554,6 +560,8 @@ class _ModeloDirecto(threading.Thread):
         self.sesiones = {}       # variante -> _SesionDirecta
         self.uris = {}           # variante -> uri (puede rotar de host)
         self.fallos = {}         # variante -> fallos consecutivos
+        self._forzado_por_variante = {}   # variante -> ya se forzo un
+                                           # master nuevo en esta racha
         self._futuros = {}       # future -> (variante, url, es_init)
         self._lock = threading.Lock()
 
@@ -723,14 +731,41 @@ class _ModeloDirecto(threading.Thread):
             log.warning("[%s/%s] red: %s", self.nombre, variante, e)
             return
         if status != 200:
-            # antes solo logueaba y volvia a probar la MISMA uri cada
-            # ~1-2s hasta el proximo _reconciliar_variantes (60s) -- si el
-            # host/pkey quedo invalido eso eran decenas de WARNING idénticos
-            # por nada. Ahora cuenta como fallo (misma vara que publicidad/
-            # MAP-MOUFLON faltante): a los 3 seguidos se degrada solo y el
-            # aviso le dice al usuario que la pase a @navegador=.
-            self._registrar_fallo(variante, "media playlist dio %s" % status)
+            # Un status HTTP (403/404/5xx) en la media playlist casi
+            # siempre es la uri/host quedando vieja -- pasa solo al volver
+            # de un show privado o cuando el CDN rota el host -- y se
+            # arregla pidiendo un master nuevo, NO reintentando la misma
+            # uri. Antes se reintentaba la misma uri cada ~1-2s hasta el
+            # proximo _reconciliar_variantes (hasta 60s): ruido. Un intento
+            # (contarlo como _registrar_fallo, como publicidad/MAP-MOUFLON
+            # faltante) tambien estaba mal: eso degrada a los 3 seguidos
+            # (3-6s) y un 403 transitorio dejaba a la modelo "offline"
+            # para siempre pese a seguir en vivo -- degradado es solo para
+            # cuando el CONTENIDO prueba que el protocolo esta roto de
+            # verdad, no para un status HTTP que un master nuevo resuelve.
+            #
+            # Forzar la reconciliacion una vez (self.proximo_chequeo = 0.0)
+            # resuelve el caso comun en el ciclo que sigue. Pero si YA se
+            # forzo para esta racha y el master nuevo tampoco sirve -- una
+            # modelo en show p2p puede seguir dando 403 en la media
+            # playlist sin que el master cambie nunca lo suficiente, visto
+            # en vivo: 100+ pedidos seguidos al sitio sin pausa -- no se
+            # vuelve a forzar: se deja el ritmo normal de CHEQUEO_ESTADO
+            # (60s) hasta que algo cambie. _forzado_por_variante se limpia
+            # solo en el primer 200 que llegue.
+            if self._forzado_por_variante.get(variante):
+                log.warning(
+                    "[%s/%s] media playlist dio %s otra vez tras pedir un "
+                    "master nuevo -- dejo el ritmo normal (%ds) hasta que "
+                    "se resuelva", self.nombre, variante, status,
+                    int(self.CHEQUEO_ESTADO))
+            else:
+                log.warning("[%s/%s] media playlist dio %s -- pido un master nuevo",
+                            self.nombre, variante, status)
+                self.proximo_chequeo = 0.0
+                self._forzado_por_variante[variante] = True
             return
+        self._forzado_por_variante[variante] = False
         texto = cuerpo.decode("utf-8", "replace")
 
         if mouflon.es_publicidad(texto, url_final):
@@ -852,6 +887,7 @@ class _ModeloDirecto(threading.Thread):
         sesion = self.sesiones.pop(variante, None)
         self.uris.pop(variante, None)
         self.fallos.pop(variante, None)
+        self._forzado_por_variante.pop(variante, None)
         if sesion is None:
             return
         if not sesion.segmentos:
@@ -864,19 +900,13 @@ class _ModeloDirecto(threading.Thread):
             log.info("[%s/%s] @unir=0, queda sin unir: %s", self.nombre,
                      variante, sesion.carpeta)
             return
-        log.info("[%s/%s] cierre: %s (%d segmentos) -- %s | uniendo en 2do plano",
+        log.info("[%s/%s] cierre: %s (%d segmentos) -- %s | encolado para unir",
                  self.nombre, variante, sesion.etiqueta, sesion.segmentos, motivo)
-        # Hilo propio, NO el pool de descargas (self.grabador.pool): ese
-        # pool tiene tope (POOL_HILOS) y con varias modelos grabando a la
-        # vez queda saturado de descargas continuas -- la union, al ser
-        # una tarea mas en la misma cola, podia quedarse esperando un
-        # hueco que nunca llega (visto en vivo: sesion cerrada, carpeta
-        # segmentos\ intacta, sin "UNIR...listo" ni error, minutos
-        # despues). Es una unica tarea de corta vida por sesion cerrada,
-        # no una descarga continua: no compite por el mismo cupo.
-        threading.Thread(target=_unir_en_fondo,
-                          args=(self.grabador.escritor, sesion),
-                          daemon=True, name="directo-unir").start()
+        # A la cola de union (self.grabador.cola_union), NO al pool de
+        # descargas ni un hilo suelto por cierre: ver _bucle_union para el
+        # porque completo (saturacion del pool y, peor, varios --unir
+        # corriendo a la vez pisandose el mismo detector.log).
+        self.grabador.cola_union.put((self.grabador.escritor, sesion))
 
     def _cerrar_todas(self, motivo: str) -> None:
         for variante in list(self.sesiones):
@@ -941,6 +971,7 @@ class Grabador:
         self.pool = cf.ThreadPoolExecutor(max_workers=POOL_HILOS,
                                           thread_name_prefix="directo-dl")
         self.ids_cache = _leer_ids_cache()
+        self.cola_union: queue.Queue = queue.Queue()
         self._modelos = {}       # nombre_lower -> _ModeloDirecto
         self._lock = threading.RLock()
         self._parar = threading.Event()
@@ -948,6 +979,33 @@ class Grabador:
 
     def parar(self) -> None:
         self._parar.set()
+
+    # -- union de sesiones cerradas: una cola, un solo hilo -----------------
+    #
+    # Antes cada cierre de sesion mandaba _unir_en_fondo al pool de
+    # descargas (quedaba esperando un hueco que con varias modelos
+    # grabando a la vez no llegaba nunca) y despues a un threading.Thread
+    # suelto por cierre (si dos o tres modelos se sacaban de grabar.txt
+    # casi juntas, dos o tres `--unir` corrian a la vez: cada uno abre su
+    # propio logging.FileHandler sobre el MISMO detector.log y llama a
+    # sesiones_en_disco(), que barre TODAS las carpetas de datos\streams\
+    # -- incluidas las de las modelos que siguen grabando -- siempre, sin
+    # relacion con el filtro que se le paso). Una cola con un solo hilo
+    # consumidor saca la concurrencia de la ecuacion: las uniones se
+    # procesan de una, en el orden en que se cerraron las sesiones, y la
+    # siguiente modelo puede seguir grabando sin que su union compita por
+    # nada con la de otra.
+
+    def _bucle_union(self) -> None:
+        while True:
+            item = self.cola_union.get()
+            if item is None:
+                return
+            escritor, sesion = item
+            try:
+                _unir_en_fondo(escritor, sesion)
+            except Exception as e:
+                log.error("[UNIR] %s: %s", sesion.etiqueta, e)
 
     def correr(self) -> None:
         os.makedirs(STREAMS_DIR, exist_ok=True)
@@ -974,6 +1032,9 @@ class Grabador:
         hilo_estado = threading.Thread(target=self._bucle_estado,
                                        daemon=True, name="directo-estado")
         hilo_estado.start()
+        hilo_union = threading.Thread(target=self._bucle_union,
+                                      daemon=True, name="directo-union")
+        hilo_union.start()
 
         if sys.stdin is not None:
             hilo_stdin = threading.Thread(target=self._bucle_stdin,
@@ -990,6 +1051,13 @@ class Grabador:
             m.parar()
         for m in modelos:
             m.join(60)
+        # Para aca ya estan encoladas todas las uniones que van a salir de
+        # este cierre (cada _cerrar_todas() de arriba las puso en
+        # cola_union de forma sincronica, antes de que run() del modelo
+        # termine) -- se les da el mismo presupuesto que motor.py calcula
+        # para la parada completa (ESPERA_CIERRE_DIRECTO) antes de cortar.
+        self.cola_union.put(None)
+        hilo_union.join(1200)
         self.pool.shutdown(wait=True)
         self.escritor.detener()
         with contextlib.suppress(Exception):
