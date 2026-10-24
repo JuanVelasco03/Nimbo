@@ -21,7 +21,13 @@ import { conToken } from "./api.js";
 
 const INTERVALO_TICK_MS = 500;
 const SEGMENTOS_ATRAS = 3;
-const MAX_POR_TICK = 8;
+// Tiene que cubrir SEGMENTOS_ATRAS grupos enteros, no 3 archivos: un
+// segmento CMAF "standard" del camino directo trae varios moof pegados
+// que grabador_directo.py parte en <nombre>_partN, asi que un grupo son
+// ~4 archivos. Con 8 el servidor nunca llegaba a mandar los 3 grupos del
+// arranque y contestaba salto=true en cada tick (ver vivo.py,
+// GRUPOS_BACKLOG_SALTO).
+const MAX_POR_TICK = 24;
 const VENTANA_MAX_S = 90;
 const VENTANA_OBJETIVO_S = 45;
 const DERIVA_MAX_S = 6.0;
@@ -67,6 +73,8 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
   let saltoPendiente = false;
   let cola = [];               // [{tipo:"append"|"remove", ...}]
   let destruido = false;
+  let tickEnVuelo = false;     // ver _tick(): el worker no espera al await
+  let ultimaClave = null;      // [epoch, secuencia, parte] ya appendeado
 
   const worker = new Worker(new URL("./temporizador_previa.worker.js", import.meta.url));
   worker.onmessage = (ev) => {
@@ -165,22 +173,62 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
 
   // -- ciclo de vida -------------------------------------------------------
 
+  // "<epoch>:<secuencia>:<parte>" -> [n,n,n], el mismo orden que usa
+  // vivo.py:clave_segmento. Sirve para no appendear dos veces lo mismo:
+  // en mode="sequence" un duplicado NO se detecta por timestamp, se pega
+  // atras del anterior como si fuera contenido nuevo.
+  function _clave(cursor) {
+    if (!cursor) return null;
+    const p = String(cursor).split(":");
+    if (p.length !== 3) return null;
+    const n = p.map(Number);
+    return n.some(Number.isNaN) ? null : n;
+  }
+
+  function _posterior(a, b) {      // a > b, lexicografico
+    if (!b) return true;
+    if (!a) return false;
+    for (let i = 0; i < 3; i++) {
+      if (a[i] !== b[i]) return a[i] > b[i];
+    }
+    return false;
+  }
+
   async function _tick() {
     if (!sesion || !sourceBuffer || destruido) return;
+    // El worker tiquea cada 500 ms sin esperar a que termine el tick
+    // anterior, y `cursor` recien se actualiza al final: sin esta guarda
+    // un tick lento (8+ segmentos de disco + HTTP) hace que el siguiente
+    // arranque con el cursor viejo y vuelva a appendear lo mismo.
+    if (tickEnVuelo) return;
+    tickEnVuelo = true;
+    // la sesion puede rotar (reconexion de encoder, cambio de calidad)
+    // mientras este tick espera: compararla contra la de ESTE tick, no
+    // contra null, o los bytes de la sesion vieja se appendean en el
+    // SourceBuffer de la nueva.
+    const mia = sesion;
     try {
       const desde = saltoPendiente ? null : cursor;
       saltoPendiente = false;
       const r = await obtenerJSON(
-        "/api/vivo/segmentos?sesion=" + encodeURIComponent(sesion)
+        "/api/vivo/segmentos?sesion=" + encodeURIComponent(mia)
         + "&desde=" + (desde == null ? "" : encodeURIComponent(desde))
         + "&limite=" + MAX_POR_TICK + "&atras=" + SEGMENTOS_ATRAS);
-      if (!r || sesion === null) return;    // se desmonto mientras esperaba
+      if (!r || sesion !== mia) return;     // se desmonto/roto mientras esperaba
       for (const seg of r.segmentos || []) {
+        const clave = _clave(seg.cursor);
+        // un "salto" manda a buscar desde el borde vivo y la ventana
+        // puede solaparse con lo ya appendeado: saltar hacia adelante si,
+        // nunca repetir hacia atras.
+        // clave null = cursor con un formato que este cliente no entiende:
+        // mejor appendear sin poder deduplicar que quedarse en negro.
+        if (clave && !_posterior(clave, ultimaClave)) continue;
         const bytes = await obtenerBytes(
-          "/api/vivo/segmento?sesion=" + encodeURIComponent(sesion)
+          "/api/vivo/segmento?sesion=" + encodeURIComponent(mia)
           + "&nombre=" + encodeURIComponent(seg.nombre));
-        if (sesion === null) return;
+        if (sesion !== mia) return;
         _encolarAppend(bytes);
+        if (clave) ultimaClave = clave;
       }
       cursor = r.cursor;
       if (r.salto) saltoPendiente = true;   // mucho backlog: la proxima
@@ -191,6 +239,8 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
       avisarEstado({ vivo: !!r.vivo });
     } catch (e) {
       avisarError(e);
+    } finally {
+      tickEnVuelo = false;
     }
   }
 
@@ -208,6 +258,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
     cola = [];
     cursor = null;
     saltoPendiente = false;
+    ultimaClave = null;
 
     let perfil;
     try {
@@ -265,6 +316,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
             + "&nombre=" + encodeURIComponent(seg.nombre));
           if (sesion !== sesionNueva) return;
           _encolarAppend(bytes);
+          ultimaClave = _clave(seg.cursor) || ultimaClave;
         }
         cursor = perfil.cursor;
         _arrancarTick();
@@ -300,6 +352,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
     sourceBuffer = null;
     sesion = null;
     cursor = null;
+    ultimaClave = null;
   }
 
   function destruir() {

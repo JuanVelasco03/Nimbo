@@ -36,6 +36,19 @@ CARPETA_PLAYLISTS = "playlists"
 # quede mostrando un video como "en vivo" largo rato despues de un corte.
 UMBRAL_VIVO_S = 10.0
 
+# Cuantos grupos (epoch, secuencia) pueden quedar sin mandar antes de
+# avisarle al cliente "salto" (= "veni a buscar desde el borde vivo, no
+# trates de alcanzar el backlog"). NO puede ser 0: un segmento CMAF
+# "standard" del camino directo trae varios moof pegados que
+# grabador_directo parte en <nombre>_partN, asi que un grupo son ~4
+# archivos y `limite` (8 en reproductor_vivo.js) no alcanza para los
+# `atras` grupos que pide el arranque -- con el calculo viejo
+# (pendientes > 0) "salto" daba True SIEMPRE, el cliente pedia
+# desde=None en cada tick, _arranque le devolvia la misma ventana y
+# terminaba reappendeando el mismo tramo cada 500 ms (medido el
+# 2026-10-24: eso es lo que se veia como "saltos" y video repetido).
+GRUPOS_BACKLOG_SALTO = 3
+
 _lock_cache = threading.Lock()
 _cache_perfiles = {}   # ruta_init -> (mtime, size, perfil)
 
@@ -286,7 +299,18 @@ def listar(dir_streams, rel, desde=None, limite=40, atras=3) -> dict:
                 indice += 1
 
     ventana = pares[indice:indice + max(1, limite)]
-    pendientes = len(pares) - (indice + len(ventana))
+    # nunca cortar un grupo a la mitad: las partes de un mismo segmento
+    # CMAF no son independientes (solo la parte 0 arranca en IDR), y
+    # dejar la mitad afuera obliga al cliente a pedir de nuevo el grupo
+    # entero en el tick siguiente.
+    if ventana and indice + len(ventana) < len(pares):
+        grupo_final = ventana[-1][0][:2]
+        j = indice + len(ventana)
+        while j < len(pares) and pares[j][0][:2] == grupo_final:
+            ventana.append(pares[j])
+            j += 1
+    resto = pares[indice + len(ventana):]
+    pendientes = len({(c[0], c[1]) for c, _ in resto})
 
     ultimo_mtime = 0.0
     if pares:
@@ -317,7 +341,7 @@ def listar(dir_streams, rel, desde=None, limite=40, atras=3) -> dict:
         "codecs": perfil.get("codecs"),
         "mime": perfil.get("mime"),
         "segmentos": segmentos,
-        "salto": pendientes > 0,
+        "salto": pendientes > GRUPOS_BACKLOG_SALTO,
         "vivo": bool(ultimo_mtime) and (time.time() - ultimo_mtime) < UMBRAL_VIVO_S,
         "ultimo_mtime": ultimo_mtime,
     }

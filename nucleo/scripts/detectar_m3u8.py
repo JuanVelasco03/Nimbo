@@ -2738,6 +2738,83 @@ class Detector:
 # Modo CLI (sin mitmproxy): listar y unir lo ya descargado
 # --------------------------------------------------------------------------
 
+def _coincide_filtro(s, filtros) -> bool:
+    """Un filtro con "/" es EXACTO: "<stream>/<sesion>", o sea
+    "modelo_id/variante_timestamp" -- asi lo pasa
+    grabador_directo.py:_unir_en_fondo. Hace falta porque el nombre de
+    sesion es solo "<variante>_<timestamp>", sin modelo ni id: motor.py
+    arranca todas las modelos en el mismo segundo, asi que un substring
+    como "960p_h264_20261024-130827" coincide tambien con las sesiones de
+    las OTRAS modelos -- y las unia VIVAS, dejandoles un unido.json con
+    dos minutos de grabacion encima de una sesion que seguia escribiendo
+    (medido el 2026-10-24: 4 sesiones vivas unidas de una).
+
+    Sin "/" se mantiene el substring de siempre, que es lo comodo a mano
+    ("--unir lady_ni_" une todo lo de esa modelo)."""
+    stream = s.stream.lower()
+    sesion = s.sesion.lower()
+    laxo = False
+    for f in filtros:
+        f = f.replace("\\", "/")
+        if "/" in f:
+            izq, _, der = f.rpartition("/")
+            if izq == stream and der == sesion:
+                return "exacto"
+        elif f in stream or f in sesion:
+            laxo = True
+    return "laxo" if laxo else ""
+
+
+def _huella_segmentos(ruta_sesion: str):
+    """(cuantos, mtime del mas nuevo, bytes) de la carpeta de segmentos."""
+    segs = os.path.join(ruta_sesion, CARPETA_SEGS)
+    cuantos = 0
+    nuevo = 0.0
+    total = 0
+    try:
+        with os.scandir(segs) as it:
+            for e in it:
+                if not e.name.lower().endswith(EXT_SEGMENTO):
+                    continue
+                try:
+                    st = e.stat()
+                except OSError:
+                    continue
+                cuantos += 1
+                total += st.st_size
+                if st.st_mtime > nuevo:
+                    nuevo = st.st_mtime
+    except OSError:
+        return None
+    return (cuantos, nuevo, total)
+
+
+VENTANA_VIVA_S = 30.0     # mas nuevo que esto: puede estar viva, hay que mirar
+ESPERA_VIVA_S = 3.0       # cuanto se espera para ver si sigue creciendo
+
+
+def _sigue_escribiendose(ruta_sesion: str) -> bool:
+    """¿Le estan escribiendo a esta sesion AHORA MISMO? Dos huellas
+    separadas por ESPERA_VIVA_S: una sesion recien cerrada ya no crece,
+    una viva si.
+
+    Red de seguridad para que --unir no se lleve puesta una sesion que
+    todavia se esta grabando. Hace falta porque el filtro puede ser laxo
+    (un substring a mano, o el nombre de sesion suelto
+    "<variante>_<timestamp>" que pasaba grabador_directo.py antes de usar
+    stream/sesion): el nombre de sesion es el mismo para todas las
+    modelos que arrancaron el mismo segundo con la misma variante, asi
+    que coincidia tambien con las de las otras y les dejaba un unido.json
+    con dos minutos encima de una grabacion en curso (medido el
+    2026-10-24). Un filtro exacto "<stream>/<sesion>" no pasa por aca: si
+    se pide esa sesion y nada mas, es porque se acaba de cerrar."""
+    antes = _huella_segmentos(ruta_sesion)
+    if antes is None or not antes[1] or time.time() - antes[1] > VENTANA_VIVA_S:
+        return False          # nadie escribio hace rato: no hace falta esperar
+    time.sleep(ESPERA_VIVA_S)
+    return _huella_segmentos(ruta_sesion) != antes
+
+
 def main(argv) -> int:
     configurar_log()
     forzar = "--forzar" in argv or "--rehacer" in argv or "-f" in argv
@@ -2746,14 +2823,19 @@ def main(argv) -> int:
         filtros = [a.lower() for a in argv if not a.startswith("-")]
         hecho = 0
         for s in sesiones_en_disco():
-            if filtros and not any(
-                f in s.stream.lower() or f in s.sesion.lower() for f in filtros
-            ):
+            como = _coincide_filtro(s, filtros) if filtros else "laxo"
+            if not como:
                 continue
             if not s.archivos:
                 continue
             if s.unida and not forzar:
                 log.info("[SALTO] %s ya unida (--forzar para rehacer)", s.etiqueta)
+                continue
+            if como != "exacto" and _sigue_escribiendose(s.ruta):
+                log.warning(
+                    "[SALTO] %s: le estan escribiendo ahora mismo (sesion "
+                    "viva) -- no la uno; se une sola cuando cierre",
+                    s.etiqueta)
                 continue
             if unir_sesion(s.ruta, s.etiqueta):
                 hecho += 1

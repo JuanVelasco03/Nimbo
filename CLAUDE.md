@@ -178,7 +178,27 @@ cajas MP4 del detector en vez de importarlo; si se cambia algo allá, hay
 que sincronizarlo acá a mano (los comentarios de esos módulos citan las
 líneas originales). Por el mismo motivo, `nimbo\lanzador_directo.py` y
 `nucleo\scripts\grabador_directo.py` invocan la unión como **subproceso**
-(`python detectar_m3u8.py --unir <sesión>`), nunca como import.
+(`python detectar_m3u8.py --unir <sesión>`), nunca como import. El filtro
+que se le pasa va **completo**, `<modelo>_<id>/<variante>_<timestamp>`
+(`Sesion.ref`, no `Sesion.etiqueta`): `--unir` trata un filtro con `/`
+como coincidencia exacta y sin `/` como substring, y el nombre de sesión
+suelto es el mismo para todas las modelos que arrancaron el mismo segundo
+con la misma variante — `motor.py` las arranca todas juntas, así que el
+substring se llevaba puestas las sesiones **vivas** de las otras y les
+dejaba un `unido.json` con dos minutos encima de una grabación en curso.
+Como red de seguridad, `--unir` con filtro laxo (o sin filtro) saltea
+cualquier sesión que **siga creciendo** (dos huellas de la carpeta de
+segmentos separadas por 3s, solo si el archivo más nuevo tiene menos de
+30s); un filtro exacto no pasa por ahí, porque pedir esa sesión y nada
+más ya significa que se acaba de cerrar. Y el `[UNIR] ... listo` del
+directo se gana comparando el **mtime** del `unido.json` antes y después
+de correr el hijo, no con un `os.path.isfile` pelado: `--unir` saltea sin
+ruido una sesión que ya tenga marcador (`s.unida and not forzar`), así
+que con uno viejo encima el `isfile` daba `True` y se logueaba "listo"
+sin haber unido nada — y el resto de esa grabación no se une nunca más.
+El resumen de lo que hizo el hijo sale de su **stderr** y su stdout
+(`logging` escribe en stderr, leer solo stdout dejaba el resumen
+siempre vacío).
 
 `nucleo\scripts\mouflon.py`, en cambio, **sí es importable sin peligro**
 desde cualquier lado: es protocolo puro (descifrado MOUFLON v2, lectura
@@ -337,6 +357,27 @@ del supervisor (el Chromium ya resolvió esas URIs) o del camino directo
 arranque en keyframe) + `nimbo\mp4.py` (codec string del init) →
 `/api/vivo/*` → `reproductor_vivo.js` (MediaSource) manejado por
 `vista_previa.js`.
+
+Un segmento CMAF del camino directo trae varios `moof` pegados que
+`grabador_directo.py` parte en `<nombre>_partN` (ver
+`mouflon.partir_fragmentos`), así que **un "segmento" para el reproductor
+son ~4 archivos**, y todo lo que cuenta de a cuántos tiene que contar por
+grupo `(epoch, secuencia)`, no por archivo: `vivo.py:listar` nunca corta
+un grupo a la mitad (solo la parte 0 arranca en IDR) y mide el backlog
+del campo `salto` en grupos (`GRUPOS_BACKLOG_SALTO`), y
+`reproductor_vivo.js:MAX_POR_TICK` tiene que cubrir `SEGMENTOS_ATRAS`
+grupos **enteros**. Con los valores viejos (8 archivos por tick,
+`pendientes > 0`) `salto` daba `True` en cada tick, el cliente pedía
+`desde=None` siempre, `_arranque()` le devolvía la misma ventana y el
+reproductor reappendeaba el mismo tramo cada 500 ms — en
+`mode="sequence"` un duplicado no se detecta por timestamp, se pega atrás
+del anterior, así que se veía como saltos y video repetido. El cliente
+además deduplica por cursor (`ultimaClave`: nunca appendea hacia atrás,
+sí salta hacia adelante), tiene guarda de reentrada en `_tick()` (el
+worker tiquea cada 500 ms sin esperar al `await`) y ata cada tick a **su**
+sesión, no a "cualquiera menos `null`" — si rota la calidad o reconecta
+el encoder mientras un pedido está en vuelo, esos bytes no van al
+`SourceBuffer` de la sesión nueva.
 
 "Ver en vivo" de una modelo que no se está grabando agrega su nombre a
 `grabar.txt` mientras el modal está abierto. `nimbo\vivo_temporal.py` es el

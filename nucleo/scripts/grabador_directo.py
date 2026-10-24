@@ -246,16 +246,48 @@ def _escribir_info_sesion(sesion, modelo: str, id_modelo, motivo: str) -> None:
         log.warning("[INFO] %s", e)
 
 
+_LINEAS_UNION = ("[LISTO]", "[UNIR]", "[SALTO]", "[ERROR]", "[DISCO]")
+
+
+def _resumen_union(proc, tope: int = 3) -> str:
+    """Las ultimas lineas interesantes de lo que escribio `--unir`. Antes
+    esa salida se descartaba salvo en los branches de error, asi que el
+    log del directo no decia QUE habia unido el hijo (y con el filtro
+    laxo de antes podia ser la sesion de otra modelo).
+
+    Mira stderr Y stdout: el hijo loguea con el StreamHandler de
+    `logging`, que escribe en **stderr**, asi que leer solo stdout dejaba
+    el resumen siempre vacio."""
+    texto = ((getattr(proc, "stderr", "") or "")
+             + (getattr(proc, "stdout", "") or ""))
+    utiles = [l.strip() for l in texto.splitlines()
+              if any(m in l for m in _LINEAS_UNION)]
+    return " | ".join(utiles[-tope:]) if utiles else "(el hijo no dijo nada)"
+
+
 def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
     """Delega la union a detectar_m3u8.py --unir como SUBPROCESO: correr
     como __main__ no arma un Detector (ver docstring del modulo) y hereda
     el Reencadenador, los 6 intentos de reparacion, _hay_espacio y
-    _marcar_unida sin duplicar nada de eso aca."""
+    _marcar_unida sin duplicar nada de eso aca.
+
+    El "listo" se gana comparando el mtime del marcador ANTES y DESPUES,
+    no con un os.path.isfile pelado: `--unir` saltea sin ruido cualquier
+    sesion que ya tenga un unido.json (`s.unida and not forzar`), asi que
+    con un marcador viejo encima el isfile daba True y se logueaba "listo"
+    sin haber unido una sola cosa -- y el resto de la grabacion no se une
+    nunca mas. Visto en vivo el 2026-10-24: cuatro sesiones con un
+    unido.json prematuro de 2 min sobre grabaciones de 8 a 43 min, todas
+    con su "listo" en el log."""
     if not escritor.barrera().wait(180):
-        log.warning("[UNIR] %s: escrituras pendientes, sigo igual", sesion.etiqueta)
-    filtro = sesion.etiqueta.lower()
+        log.warning("[UNIR] %s: escrituras pendientes, sigo igual", sesion.ref)
+    filtro = sesion.ref.lower()
     cmd = [PYTHON_EXE, DETECTAR_PY, "--unir", filtro]
     marcador = os.path.join(sesion.carpeta, MARCADOR)
+    try:
+        antes = os.path.getmtime(marcador)
+    except OSError:
+        antes = None
     try:
         # stdin=DEVNULL a proposito: sin esto el subproceso hereda el
         # stdin DE ESTE PROCESO, que es el pipe que motor.py mantiene
@@ -267,7 +299,7 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
                                capture_output=True, text=True, timeout=1200,
                                stdin=subprocess.DEVNULL, **_SIN_VENTANA)
         if proc.returncode != 0:
-            log.error("[UNIR] %s: --unir fallo (codigo %s): %s", sesion.etiqueta,
+            log.error("[UNIR] %s: --unir fallo (codigo %s): %s", sesion.ref,
                       proc.returncode, (proc.stderr or proc.stdout or "")[-400:])
         elif not os.path.isfile(marcador):
             # --unir devuelve 0 igual si no encontro ninguna sesion que
@@ -277,14 +309,27 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
             log.error(
                 "[UNIR] %s: --unir termino sin error pero no generó %s -- "
                 "revisa M3U8_BASE (tiene que ser una ruta ABSOLUTA) -- "
-                "salida: %s", sesion.etiqueta, MARCADOR,
-                (proc.stdout or "")[-400:])
+                "salida: %s", sesion.ref, MARCADOR, _resumen_union(proc))
         else:
-            log.info("[UNIR] %s: listo", sesion.etiqueta)
+            try:
+                ahora = os.path.getmtime(marcador)
+            except OSError:
+                ahora = None
+            if antes is not None and ahora == antes:
+                log.error(
+                    "[UNIR] %s: NO se unio -- ya tenia un %s de antes y "
+                    "--unir la salteo, asi que lo grabado despues de ese "
+                    "marcador quedo sin unir. Rehacela a mano: "
+                    "python %s --unir --forzar \"%s\" -- salida: %s",
+                    sesion.ref, MARCADOR, os.path.basename(DETECTAR_PY),
+                    sesion.ref, _resumen_union(proc))
+            else:
+                log.info("[UNIR] %s: listo | %s", sesion.ref,
+                         _resumen_union(proc))
     except subprocess.TimeoutExpired:
-        log.error("[UNIR] %s: --unir no termino en 20 min", sesion.etiqueta)
+        log.error("[UNIR] %s: --unir no termino en 20 min", sesion.ref)
     except OSError as e:
-        log.error("[UNIR] %s: no se pudo lanzar --unir: %s", sesion.etiqueta, e)
+        log.error("[UNIR] %s: no se pudo lanzar --unir: %s", sesion.ref, e)
 
 
 def _descargar(url: str, por_tunel: bool) -> bytes:
@@ -531,6 +576,17 @@ class _SesionDirecta:
     @property
     def etiqueta(self) -> str:
         return os.path.basename(self.carpeta)
+
+    @property
+    def ref(self) -> str:
+        """"<modelo>_<id>/<variante>_<timestamp>" -- lo que se le pasa a
+        "detectar_m3u8.py --unir" como filtro EXACTO (ver
+        detectar_m3u8._coincide_filtro). NO alcanza con .etiqueta: no
+        lleva modelo ni id, y como motor.py arranca todas las modelos en
+        el mismo segundo, el substring coincidia tambien con las sesiones
+        VIVAS de las otras y se las unia a medio grabar."""
+        return "%s/%s" % (os.path.basename(os.path.dirname(self.carpeta)),
+                          os.path.basename(self.carpeta))
 
 
 # --------------------------------------------------------------------------
@@ -1005,7 +1061,7 @@ class Grabador:
             try:
                 _unir_en_fondo(escritor, sesion)
             except Exception as e:
-                log.error("[UNIR] %s: %s", sesion.etiqueta, e)
+                log.error("[UNIR] %s: %s", sesion.ref, e)
 
     def correr(self) -> None:
         os.makedirs(STREAMS_DIR, exist_ok=True)
