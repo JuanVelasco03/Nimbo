@@ -23,6 +23,7 @@ Dos caminos, con usos distintos:
     estado(). La respuesta ya trae avatarUrl, asi que no hace falta un
     endpoint aparte para la miniatura.
 """
+import collections
 import json
 import re
 import ssl
@@ -69,11 +70,41 @@ CACHE_ESTADO_SEGUNDOS = 20.0
 CACHE_BUSQUEDA_SEGUNDOS = 10.0
 MIN_CONSULTA = 2     # el propio sitio rechaza consultas mas cortas (400)
 
+# Cache de miniaturas (ver specs\congelado_interfaz.md). Hasta el
+# 25/10/2026 cada <img> que recreaba la interfaz era un HTTPS saliente al
+# CDN ocupando un hilo del pool de servidor.py: con 8 modelos en la grilla
+# y un repintado por segundo, 480 pedidos salientes por minuto (medido).
+# La defensa de verdad es del lado del cliente (Cache-Control inmutable +
+# no recrear el <img>), pero esto es la red de abajo: aunque el navegador
+# pida igual -- DevTools con "Disable cache", una ventana recien abierta,
+# dos pestanas -- el pedido se responde de RAM y no sale a la red.
+#
+# TIENE que estar acotada: el snapshot del modal de previa
+# (vista_previa.js:pintarImagen) arma una URL nueva por segundo a
+# proposito, asi que un dict indexado por URL sin tope es una fuga.
+CACHE_IMAGEN_ENTRADAS = 64
+CACHE_IMAGEN_BYTES = 8 * 1024 * 1024
+CACHE_IMAGEN_SEGUNDOS = 300.0
+# El fallo tambien se cachea, mas corto: una URL muerta (o una modelo que
+# ya no existe) se reintentaba a 1 Hz, un hilo del pool por vez.
+CACHE_IMAGEN_FALLO_SEGUNDOS = 30.0
+# Un snapshot son ~7 KB: 4 s ya es patologico. Bajado de 10 s porque el
+# timeout es lo unico que acota cuanto se queda un hilo del pool tomado
+# -- y ni eso alcanza: getaddrinfo() NO esta cubierto por el timeout= de
+# urllib (hay 2391 "getaddrinfo failed" en estado\eventos_directo.jsonl,
+# en esta maquina el DNS si falla), asi que el tope duro de cuantos hilos
+# puede comerse esto lo pone CUPO_IMAGEN en servidor.py.
+TOPE_IMAGEN = 4.0
+
 _CONTEXTO_SSL = ssl.create_default_context()
 _CONTEXTO_SSL.check_hostname = False
 _CONTEXTO_SSL.verify_mode = ssl.CERT_NONE   # el certificado es el de mitmproxy
 
 _supervisor_cache = {}
+
+# Centinela de "no hay nada en la cache": None no sirve, porque es un
+# resultado valido y cacheable (la miniatura que no se pudo bajar).
+_AUSENTE = object()
 
 
 def _supervisor(ruta_scripts):
@@ -99,6 +130,10 @@ class Sitio:
         self.ajustes = ajustes
         self._cache_estado = {}
         self._cache_busqueda = {}
+        # LRU acotada: url -> (guardado, resultado). OrderedDict y no dict
+        # porque hace falta desalojar el mas viejo, ver _imagen_cacheada.
+        self._cache_imagen = collections.OrderedDict()
+        self._bytes_imagen = 0
         self._lock = threading.Lock()
 
     # -- transporte ---------------------------------------------------
@@ -213,7 +248,10 @@ class Sitio:
         hosts de HOSTS_IMAGEN_PERMITIDOS -- cualquier otra cosa se
         descarta sin ni intentar el pedido. Nunca lanza: si la
         miniatura no carga, la tarjeta se queda sin ella (el cliente
-        ya tiene onerror="this.remove()")."""
+        ya tiene onerror="this.remove()").
+
+        Cacheada en RAM (ver CACHE_IMAGEN_* arriba): un hit no sale a la
+        red ni se queda con el hilo del pool."""
         try:
             partes = urllib.parse.urlsplit(url)
         except ValueError:
@@ -221,13 +259,57 @@ class Sitio:
         if partes.scheme not in ("http", "https") or partes.netloc not in HOSTS_IMAGEN_PERMITIDOS:
             return None
 
+        guardado = self._imagen_cacheada(url)
+        if guardado is not _AUSENTE:
+            return guardado
+
         cabeceras = dict(CABECERAS_IMAGEN)
         cabeceras["Referer"] = self.ajustes["sitio"].rstrip("/") + "/"
         req = urllib.request.Request(url, headers=cabeceras)
+        resultado = None
+        # El lock NUNCA se tiene tomado durante el open(), igual que en
+        # estado_cacheado()/buscar(): es un pedido de red de hasta
+        # TOPE_IMAGEN segundos, y adentro del lock serializaria a todos
+        # los hilos del pool que esten sirviendo miniaturas.
         try:
-            with self._abridor(vpn).open(req, timeout=10) as r:
-                if r.status != 200:
-                    return None
-                return r.headers.get("Content-Type", "image/jpeg"), r.read()
+            with self._abridor(vpn).open(req, timeout=TOPE_IMAGEN) as r:
+                if r.status == 200:
+                    resultado = (r.headers.get("Content-Type", "image/jpeg"),
+                                  r.read())
         except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
-            return None
+            resultado = None
+        self._guardar_imagen(url, resultado)
+        return resultado
+
+    def _imagen_cacheada(self, url: str):
+        """-> el resultado guardado (puede ser None, un fallo cacheado), o
+        _AUSENTE si no hay nada vigente. None es un valor valido de cache,
+        asi que no sirve de centinela."""
+        ahora = time.time()
+        with self._lock:
+            visto = self._cache_imagen.get(url)
+            if visto is None:
+                return _AUSENTE
+            guardado, resultado = visto
+            tope = (CACHE_IMAGEN_SEGUNDOS if resultado is not None
+                    else CACHE_IMAGEN_FALLO_SEGUNDOS)
+            if ahora - guardado >= tope:
+                del self._cache_imagen[url]
+                self._bytes_imagen -= len(resultado[1]) if resultado else 0
+                return _AUSENTE
+            self._cache_imagen.move_to_end(url)   # LRU: recien usada
+            return resultado
+
+    def _guardar_imagen(self, url: str, resultado) -> None:
+        with self._lock:
+            viejo = self._cache_imagen.pop(url, None)
+            if viejo is not None and viejo[1] is not None:
+                self._bytes_imagen -= len(viejo[1][1])
+            self._cache_imagen[url] = (time.time(), resultado)
+            if resultado is not None:
+                self._bytes_imagen += len(resultado[1])
+            while (len(self._cache_imagen) > CACHE_IMAGEN_ENTRADAS
+                    or self._bytes_imagen > CACHE_IMAGEN_BYTES):
+                _, (_, fuera) = self._cache_imagen.popitem(last=False)
+                if fuera is not None:
+                    self._bytes_imagen -= len(fuera[1])

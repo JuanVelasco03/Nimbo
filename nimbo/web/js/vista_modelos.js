@@ -1,9 +1,9 @@
 // Pestana "Modelos": la grilla de favoritas y el buscador con
 // autocompletado contra el sitio real (ver sitio.js / sitio.py).
 
-import { obtener } from "./api.js";
+import { obtener, bandera } from "./api.js";
 import { inicialDe } from "./formato.js";
-import { cacheSitio, construirMiniatura, urlImagenProxy } from "./sitio.js";
+import { cacheSitio, sincronizarMiniatura, urlImagenProxy } from "./sitio.js";
 
 // Favoritas locales (favoritas.json) + las que vienen de la cuenta real
 // del sitio y estan en linea ahora (estado.siguiendo, ver sesion.py) --
@@ -207,6 +207,111 @@ export function iniciarFiltros() {
   });
 }
 
+// -- la tarjeta de una modelo: se crea una vez y se actualiza in-place ---
+//
+// Mismo motivo que en vista_grabando.js (ver specs\congelado_interfaz.md):
+// renderFavoritas corre en cada delta de estado -- una vez por segundo --
+// y hasta el 25/10/2026 reconstruia el contenedor entero con innerHTML.
+// Cada <img> recreado es un pedido nuevo a /api/sitio/imagen (un HTTPS
+// saliente al CDN del lado del servidor), y con 32 modelos seguidas en la
+// grilla eso saturaba el tope de 6 sockets por host de Chromium: los
+// botones -- incluido "Actualizar", que vive en esta misma pestana --
+// dejaban de responder.
+//
+// Todo lo opcional (SIGUIENDO, VPN, el segundo badge, los botones que
+// dependen de `local`) esta siempre en el DOM y se prende/apaga con
+// .oculta, asi la estructura no cambia nunca.
+
+const tarjetasModelos = new Map();   // nombre -> elemento
+
+function crearTarjetaModelo(nombre) {
+  const div = document.createElement("div");
+  div.className = "tarjeta-modelo";
+  div.dataset.nombre = nombre;
+  div.innerHTML = `
+    <div class="riel"></div>
+    <div class="miniatura-grande"></div>
+    <div class="cuerpo">
+      <div class="fila-nombre">
+        <span class="nombre"></span>
+        <span class="etiqueta-sigue oculta">SIGUIENDO</span>
+        <span class="etiqueta-vpn oculta">VPN</span>
+      </div>
+      <div class="fila-estados">
+        <div class="estado-badge" data-badge="sitio"><span class="bola"></span><span class="texto"></span></div>
+        <div class="estado-badge oculta" data-badge="rec"><span class="bola"></span><span class="texto"></span></div>
+      </div>
+      <div class="acciones-tarjeta">
+        <label class="conmutador" title="grabar">
+          <input type="checkbox" data-accion="toggle-grabar">
+          <span class="pista"></span>
+        </label>
+        <button class="boton-chico" data-accion="toggle-vpn"></button>
+        <button class="boton-chico peligro oculta" data-accion="quitar-favorita">quitar</button>
+        <button class="boton-chico oculta" data-accion="agregar-favorita">+ favoritas</button>
+      </div>
+    </div>`;
+  const nom = div.querySelector(".nombre");
+  nom.textContent = nombre;
+  nom.title = nombre;
+  for (const b of div.querySelectorAll("[data-accion]")) b.dataset.nombre = nombre;
+  return div;
+}
+
+function ponerTexto(nodo, texto) {
+  if (nodo.textContent !== texto) nodo.textContent = texto;
+}
+
+function pintarBadge(badge, info) {
+  if (!info) {
+    badge.classList.add("oculta");
+    return;
+  }
+  const clase = "estado-badge " + info.clase;
+  // className se pisa entero (incluido el .oculta) a proposito: la clase
+  // de color es parte de la identidad del badge, no un modificador.
+  if (badge.className !== clase) badge.className = clase;
+  ponerTexto(badge.querySelector(".texto"), info.texto);
+}
+
+function actualizarTarjetaModelo(el, fila) {
+  const { nombre, local, siguiendo, enVpn, enLista } = fila;
+  const info = estadoDeFila(fila);
+  const rec = grabacionDeFila(fila);
+
+  const estado = rec && rec.clase === "grabando" ? "grabando" : info.clase;
+  if (el.dataset.estado !== estado) el.dataset.estado = estado;
+  sincronizarMiniatura(el.querySelector(".miniatura-grande"), nombre);
+
+  el.querySelector(".etiqueta-sigue").classList.toggle("oculta", !siguiendo);
+  el.querySelector(".etiqueta-vpn").classList.toggle("oculta", !enVpn);
+
+  pintarBadge(el.querySelector("[data-badge='sitio']"), info);
+  pintarBadge(el.querySelector("[data-badge='rec']"), rec);
+
+  // No pisar el control que el usuario esta tocando justo ahora -- mismo
+  // criterio que vista_ajustes.js:renderDirectivas, que ya salteaba el
+  // campo con el foco para no comerse lo que se estaba escribiendo. Aca
+  // importa igual: el click en el conmutador dispara un POST y un
+  // refrescar(), y pisarle el checked en el medio lo haria parpadear.
+  const check = el.querySelector("[data-accion='toggle-grabar']");
+  if (check !== document.activeElement && check.checked !== enLista) {
+    check.checked = enLista;
+  }
+
+  const botonVpn = el.querySelector("[data-accion='toggle-vpn']");
+  botonVpn.dataset.vpnActivo = enVpn ? "1" : "0";
+  ponerTexto(botonVpn, enVpn ? "quitar VPN" : "marcar VPN");
+
+  el.querySelector("[data-accion='quitar-favorita']").classList.toggle("oculta", !local);
+  el.querySelector("[data-accion='agregar-favorita']").classList.toggle("oculta", local);
+}
+
+function vaciarFavoritas(cont, html) {
+  tarjetasModelos.clear();
+  cont.innerHTML = html;
+}
+
 export function renderFavoritas(estado) {
   ultimoEstadoModelos = estado;
   const cont = document.getElementById("favoritas");
@@ -225,48 +330,49 @@ export function renderFavoritas(estado) {
   }
 
   if (filas.length === 0) {
-    cont.innerHTML = '<div class="vacio">Sin favoritas todavia. Agrega un nombre arriba, '
-      + 'o pega tu sesion para ver a quien segui en linea.</div>';
+    vaciarFavoritas(cont, '<div class="vacio">Sin favoritas todavia. Agrega un nombre arriba, '
+      + 'o pega tu sesion para ver a quien segui en linea.</div>');
     return;
   }
   if (visibles.length === 0) {
-    cont.innerHTML = '<div class="vacio">Ninguna favorita coincide con el filtro elegido.</div>';
+    vaciarFavoritas(cont, '<div class="vacio">Ninguna favorita coincide con el filtro elegido.</div>');
     return;
   }
-  cont.innerHTML = "";
+
+  // El "antes" del experimento, igual que en vista_grabando.js:
+  // localStorage.nimbo_tarjetas_in_place = "0" vuelve a reconstruir todo.
+  if (!bandera("nimbo_tarjetas_in_place", true)) {
+    tarjetasModelos.clear();
+    cont.innerHTML = "";
+    for (const fila of visibles) {
+      const el = crearTarjetaModelo(fila.nombre);
+      actualizarTarjetaModelo(el, fila);
+      cont.appendChild(el);
+    }
+    return;
+  }
+
+  if (cont.querySelector(".vacio")) cont.innerHTML = "";   // venia del caso vacio
+
+  const vistos = new Set();
   for (const fila of visibles) {
-    const { nombre, local, siguiendo, enVpn, enLista } = fila;
-    const info = estadoDeFila(fila);
-    const rec = grabacionDeFila(fila);
-    const div = document.createElement("div");
-    div.className = "tarjeta-modelo";
-    div.dataset.estado = rec && rec.clase === "grabando" ? "grabando" : info.clase;
-    div.dataset.nombre = nombre;
-    div.innerHTML = `
-      <div class="riel"></div>
-      <div class="miniatura-grande">${construirMiniatura(nombre)}</div>
-      <div class="cuerpo">
-        <div class="fila-nombre">
-          <span class="nombre" title="${nombre}">${nombre}</span>
-          ${siguiendo ? '<span class="etiqueta-sigue">SIGUIENDO</span>' : ""}
-          ${enVpn ? '<span class="etiqueta-vpn">VPN</span>' : ""}
-        </div>
-        <div class="fila-estados">
-          <div class="estado-badge ${info.clase}"><span class="bola"></span>${info.texto}</div>
-          ${rec ? `<div class="estado-badge ${rec.clase}"><span class="bola"></span>${rec.texto}</div>` : ""}
-        </div>
-        <div class="acciones-tarjeta">
-          <label class="conmutador" title="grabar">
-            <input type="checkbox" data-accion="toggle-grabar" data-nombre="${nombre}" ${enLista ? "checked" : ""}>
-            <span class="pista"></span>
-          </label>
-          <button class="boton-chico" data-accion="toggle-vpn" data-nombre="${nombre}" data-vpn-activo="${enVpn ? "1" : "0"}">${enVpn ? "quitar VPN" : "marcar VPN"}</button>
-          ${local
-            ? `<button class="boton-chico peligro" data-accion="quitar-favorita" data-nombre="${nombre}">quitar</button>`
-            : `<button class="boton-chico" data-accion="agregar-favorita" data-nombre="${nombre}">+ favoritas</button>`}
-        </div>
-      </div>`;
-    cont.appendChild(div);
+    vistos.add(fila.nombre);
+    let el = tarjetasModelos.get(fila.nombre);
+    if (!el) {
+      el = crearTarjetaModelo(fila.nombre);
+      tarjetasModelos.set(fila.nombre, el);
+    }
+    actualizarTarjetaModelo(el, fila);
+    // appendChild sobre un nodo que ya esta en el DOM lo MUEVE, no lo
+    // recrea: la <img> no se vuelve a pedir. Recorriendo `visibles` en
+    // orden queda ordenado, y si nada cambio de lugar el navegador no
+    // toca nada.
+    cont.appendChild(el);
+  }
+  for (const [nombre, el] of tarjetasModelos) {
+    if (vistos.has(nombre)) continue;
+    el.remove();
+    tarjetasModelos.delete(nombre);
   }
 }
 

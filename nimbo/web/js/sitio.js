@@ -30,6 +30,49 @@ export function construirMiniatura(nombre) {
   return inicialDe(nombre);
 }
 
+// Pone al dia la miniatura de una tarjeta YA construida, SIN recrear el
+// <img> si la URL no cambio.
+//
+// Esto es la linea que corta la tormenta de pedidos que congelaba la
+// ventana (specs\congelado_interfaz.md): un <img> recreado se vuelve a
+// pedir siempre, y ese pedido es un GET a /api/sitio/imagen, que del lado
+// del servidor es un HTTPS saliente al CDN ocupando un hilo del pool. Con
+// la grilla reconstruida a 1 Hz eso eran N pedidos por segundo, para
+// siempre. Comparar por src (y no reemplazar nunca "por si cambio") es lo
+// que hace que un repintado cueste cero red.
+//
+// Nota: compara contra img.getAttribute("src"), no img.src -- el segundo
+// devuelve la URL absoluta ya resuelta por el navegador y nunca seria
+// igual a la relativa que arma urlImagenProxy().
+export function sincronizarMiniatura(contenedor, nombre) {
+  const info = cacheSitio[(nombre || "").toLowerCase()];
+  const img = contenedor.querySelector("img");
+
+  if (!info || !info.avatar) {
+    // sin avatar: la inicial. Si ya esta puesta, no se toca (escribir el
+    // mismo textContent igual invalida el layout de ese nodo).
+    const inicial = inicialDe(nombre);
+    if (img || contenedor.textContent !== inicial) contenedor.textContent = inicial;
+    return;
+  }
+
+  const url = urlImagenProxy(info.avatar);
+  if (img) {
+    if (img.getAttribute("src") !== url) img.setAttribute("src", url);
+    return;
+  }
+  // onerror="this.remove()" igual que construirMiniatura: si la miniatura
+  // no carga, la tarjeta se queda sin ella y el proximo sincronizar vuelve
+  // a intentarlo (ya no hay <img> que encontrar).
+  const nuevo = document.createElement("img");
+  nuevo.alt = "";
+  nuevo.loading = "lazy";
+  nuevo.onerror = () => nuevo.remove();
+  nuevo.setAttribute("src", url);
+  contenedor.textContent = "";
+  contenedor.appendChild(nuevo);
+}
+
 // Mezcla lo que llego por el canal "sitio" del WebSocket -- {nombre:
 // {avatar?, online?, estado?}}, una entrada por cada favorita o modelo
 // sin estado que el servidor pudo resolver en esa vuelta (ver

@@ -7,6 +7,22 @@
 
 export const TOKEN = new URLSearchParams(location.search).get("t") || "";
 
+// Banderas de diagnostico/variante que se prenden desde la consola de la
+// ventana de Nimbo (localStorage.<nombre> = "1" / "0"). Vive aca y no en
+// formato.js porque ese modulo es "sin estado, sin DOM" a proposito; este
+// ya lee la configuracion del entorno del navegador (el token de la URL).
+// Las usan reproductor_vivo.js (nimbo_diag_vivo, nimbo_append_por_grupo) y
+// vista_grabando/vista_modelos (nimbo_tarjetas_in_place).
+export function bandera(nombre, defecto) {
+  try {
+    const v = window.localStorage.getItem(nombre);
+    if (v === null) return defecto;
+    return v === "1" || v === "true";
+  } catch (err) {
+    return defecto;            // localStorage bloqueado: manda el defecto
+  }
+}
+
 export function conToken(ruta) {
   const sep = ruta.includes("?") ? "&" : "?";
   return ruta + sep + "t=" + encodeURIComponent(TOKEN);

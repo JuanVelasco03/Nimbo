@@ -43,6 +43,13 @@ from urllib.parse import urlencode, urlsplit
 
 TOPE_PAGINAS = 10   # 10 * limite(60) = 600 favoritas en linea: de sobra
 LIMITE_DEFECTO = 60
+TOPE_PAGINA_S = 15.0
+# Tope de la vuelta COMPLETA, no de cada pagina: TOPE_PAGINAS * TOPE_PAGINA_S
+# son 150s de peor caso, y en todo ese rato el boton "Actualizar" queda
+# descartando clicks (servidor.py:_lanzar_tarea deduplica por nombre de
+# tarea). Mejor devolver lo que se junto hasta aca -- la funcion ya tiene
+# ese contrato: parciales con el motivo adentro, nunca una excepcion.
+TOPE_TOTAL_S = 45.0
 
 
 class Sesion:
@@ -141,13 +148,17 @@ class Sesion:
 
         todos, vistos = [], set()
         offset = 0
+        limite_tiempo = time.monotonic() + TOPE_TOTAL_S
         for _ in range(TOPE_PAGINAS):
+            if time.monotonic() >= limite_tiempo:
+                return {"autenticado": True, "error": "corte por tiempo",
+                        "modelos": todos}
             qs = urlencode({"offset": offset, "limit": limite,
                             "sortBy": "bestMatch", "mlfv": "false"})
             url = sitio + "/api/front/models/favorites?" + qs
             req = urllib.request.Request(url, headers=cabeceras)
             try:
-                with urllib.request.urlopen(req, timeout=15) as r:
+                with urllib.request.urlopen(req, timeout=TOPE_PAGINA_S) as r:
                     cuerpo = json.loads(r.read().decode("utf-8", errors="replace"))
             except urllib.error.HTTPError as e:
                 if e.code in (401, 403):

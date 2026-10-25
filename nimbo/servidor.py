@@ -87,6 +87,11 @@ INTERVALO_LIMPIEZA = 600.0      # cada cuanto se barre datos\streams\ --
 INTERVALO_SITIO = 15.0          # mismo intervalo que tenia el setInterval
                                  # del lado del cliente
 CUPO_SITIO = 4                  # pedidos salientes simultaneos al sitio
+CUPO_IMAGEN = 3                 # miniaturas simultaneas: el navegador puede
+                                 # pedir N por segundo (una por tarjeta) y
+                                 # cada una es un HTTPS saliente -- sin tope
+                                 # se comen el pool entero y no responde
+                                 # nada mas (ver specs\congelado_interfaz.md)
 
 INTERVALO_PING = 15.0
 TOPE_PONG = 20.0
@@ -140,6 +145,10 @@ class Aplicacion:
         self.token = secrets.token_urlsafe(24)
         self.ejecutor = ThreadPoolExecutor(
             max_workers=EJECUTOR_HILOS, thread_name_prefix="nimbo-ej")
+        # Se puede construir fuera del loop: desde 3.10 el Semaphore ya no
+        # se ata a uno al crearse (_bucle_sitio crea el suyo adentro de la
+        # corutina solo porque es local a ella).
+        self.cupo_imagen = asyncio.Semaphore(CUPO_IMAGEN)
         self.motor = motor_mod.Motor(ajustes, en_evento=self._en_evento)
         self.conexiones = set()     # de _Conexion, solo se toca desde el loop
         self.loop = None
@@ -147,6 +156,11 @@ class Aplicacion:
                                      # _resumen_estado() de app.py
         self._tareas = {}           # nombre -> Task, para no duplicar
                                      # un 202 si llega dos veces seguidas
+        self._sueltas = set()       # tareas sin dueno (el latido del WS):
+                                     # asyncio solo guarda una referencia
+                                     # debil, y una tarea que nadie sostiene
+                                     # se la puede llevar el recolector a
+                                     # mitad de camino
         self.ultima_limpieza = None  # ultimo barrido de datos\streams\,
                                       # lo pisa _bucle_cosecha
 
@@ -263,6 +277,11 @@ async def _ws_escritor(con):
             return
 
 
+async def _latido_suelto(app, nombre):
+    with contextlib.suppress(Exception):
+        await app.a_hilo(vivo_temporal_mod.latido, app.ajustes.dir_estado, nombre)
+
+
 async def _despachar_mensaje(app, con, datos):
     try:
         msg = json.loads(bytes(datos).decode("utf-8"))
@@ -280,8 +299,15 @@ async def _despachar_mensaje(app, con, datos):
     elif tipo == "latido":
         nombre = msg.get("nombre")
         if nombre:
-            with contextlib.suppress(Exception):
-                await app.a_hilo(vivo_temporal_mod.latido, app.ajustes.dir_estado, nombre)
+            # Sin await a proposito: esto corre DENTRO de _ws_lector, y si
+            # el pool esta ocupado un await aca deja de leer el socket --
+            # no se procesan los PONG y _ws_escritor cierra la conexion por
+            # "sin pong", llevandose puesto el canal de estado justo cuando
+            # mas se lo necesita. El latido es best-effort por diseno:
+            # vivo_temporal.cosechar() cierra sola a los 30s si no llega.
+            tarea = app.loop.create_task(_latido_suelto(app, nombre))
+            app._sueltas.add(tarea)
+            tarea.add_done_callback(app._sueltas.discard)
 
 
 async def _ws_lector(app, con, reader):
@@ -698,12 +724,27 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         resultado = await app.a_hilo(app.sitio.estado_cacheado, nombre, vpn)
         await _json(writer, 200, resultado)
     elif ruta == "/api/sitio/imagen":
-        resultado = await app.a_hilo(app.sitio.imagen, _valor(qs, "url"))
+        # El cupo es lo unico que acota de verdad cuanto del pool de 12
+        # hilos puede comerse esto: la miniatura es un HTTPS saliente, y
+        # getaddrinfo() no respeta el timeout (ver sitio.TOPE_IMAGEN).
+        # Mismo criterio que CUPO_SITIO con _bucle_sitio.
+        async with app.cupo_imagen:
+            resultado = await app.a_hilo(app.sitio.imagen, _valor(qs, "url"))
         if resultado is None:
             await _json(writer, 404, {"error": "no encontrado"})
             return
         tipo, datos = resultado
-        await _responder(writer, 200, {"Content-Type": tipo}, datos)
+        # La UNICA respuesta cacheable de este servidor (el resto va con el
+        # "no-store" de _responder_cabeceras, que este extra pisa via
+        # .update()). La URL es snapshot/<id>/<snapshotTimestamp>: su
+        # contenido no cambia nunca, y el timestamp solo se renueva cuando
+        # el usuario aprieta Actualizar (sesion.py:_url_snapshot). Sin esto
+        # el navegador re-bajaba la MISMA imagen una vez por segundo por
+        # modelo -- ver specs\congelado_interfaz.md.
+        await _responder(writer, 200, {
+            "Content-Type": tipo,
+            "Cache-Control": "public, max-age=86400, immutable",
+        }, datos)
     elif ruta == "/api/preflight":
         filas = await app.a_hilo(preflight_mod.comprobar, app.ajustes)
         await _json(writer, 200, {"filas": filas})
@@ -788,11 +829,18 @@ def _lanzar_tarea(app, nombre, fn, *args):
     """Dedup de los 202+hilo: si ya hay una tarea con este nombre
     corriendo, un segundo POST no lanza una segunda -- motor.arrancar()/
     parar() ya tienen su propio lock, pero asi ni se llega a pedir el
-    hilo de mas."""
+    hilo de mas.
+
+    -> True si lanzo, False si lo descarto por duplicado. Quien llama TIENE
+    que pasarle ese dato al cliente: antes devolvia 202 {"aceptado": true}
+    igual, asi que "Actualizar" apretado mientras la vuelta anterior
+    todavia corria (hasta 45s, ver sesion.TOPE_TOTAL_S) no hacia nada y no
+    avisaba nada -- se veia como un boton roto."""
     tarea = app._tareas.get(nombre)
     if tarea is not None and not tarea.done():
-        return
+        return False
     app._tareas[nombre] = app.loop.create_task(app.a_hilo(fn, *args))
+    return True
 
 
 async def _despachar_post(app, ruta, cuerpo):
@@ -824,9 +872,13 @@ async def _despachar_post(app, ruta, cuerpo):
         await app.a_hilo(_quitar_siguiendo)
         return 200, {"sesion": await app.a_hilo(app.sesion.estado)}
     elif ruta == "/api/sesion/actualizar":
-        _lanzar_tarea(app, "sesion_actualizar", app.sesion.actualizar_siguiendo,
-                       app.ajustes.estado_siguiendo)
-        return 202, {"aceptado": True}
+        # 202 y no 409 aunque se descarte: un 409 hace que api.js:enviar()
+        # tire excepcion y el footer lo muestre como "error: ...", que es la
+        # lectura equivocada para un doble click.
+        lanzada = _lanzar_tarea(app, "sesion_actualizar",
+                                 app.sesion.actualizar_siguiendo,
+                                 app.ajustes.estado_siguiendo)
+        return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     elif ruta == "/api/vivo/abrir":
         if not app.motor.estado()["supervisor_vivo"]:
             return 409, {"error": "el motor no esta corriendo"}
@@ -841,11 +893,11 @@ async def _despachar_post(app, ruta, cuerpo):
             vivo_temporal_mod.cerrar, app.lista, app.ajustes.dir_estado, cuerpo["nombre"])
         return 200, {"ok": True}
     elif ruta == "/api/motor/arrancar":
-        _lanzar_tarea(app, "motor_arrancar", app.motor.arrancar)
-        return 202, {"aceptado": True}
+        lanzada = _lanzar_tarea(app, "motor_arrancar", app.motor.arrancar)
+        return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     elif ruta == "/api/motor/parar":
-        _lanzar_tarea(app, "motor_parar", app.motor.parar)
-        return 202, {"aceptado": True}
+        lanzada = _lanzar_tarea(app, "motor_parar", app.motor.parar)
+        return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     elif ruta == "/api/preferencias":
         clave = cuerpo["clave"]
         if clave not in ("arrancar_al_abrir", "bandeja", "ver_navegador"):

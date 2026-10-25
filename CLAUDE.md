@@ -328,6 +328,29 @@ patrón que ya usa `lanzador_supervisor.py` con su hilo de stdin.
   `pystray`/`Pillow`, que son opcionales (sin ellas Nimbo cae a modo sin
   bandeja). `app.py` envuelve su propio import en un `try/except
   ImportError` para fallar con un mensaje claro en vez de un traceback.
+- Todo va con `Cache-Control: no-store` menos **una**:
+  `/api/sitio/imagen`, que va `public, max-age=86400, immutable` porque
+  su URL (`snapshot/<id>/<snapshotTimestamp>`) es contenido inmutable y
+  el timestamp solo se renueva cuando el usuario aprieta Actualizar. Sin
+  eso el navegador re-bajaba la misma imagen una vez por segundo **por
+  modelo** — ver `specs\congelado_interfaz.md`.
+- La red saliente tiene cupo: `CUPO_SITIO` (4) para `_bucle_sitio` y
+  `CUPO_IMAGEN` (3) para `/api/sitio/imagen`, de los 12 hilos de
+  `EJECUTOR_HILOS`. No es de más: una miniatura es un HTTPS al CDN, el
+  navegador puede pedir una por tarjeta por segundo, y `getaddrinfo()`
+  **no** respeta el `timeout=` de urllib (hay 2.391 `getaddrinfo failed`
+  en `eventos_directo.jsonl`), así que sin tope duro se comen el pool
+  entero y deja de responder todo lo demás. `sitio.py` además cachea las
+  miniaturas en RAM (LRU acotada: el snapshot del modal arma una URL
+  nueva por segundo a propósito).
+- `_despachar_mensaje` **nunca** espera al pool: corre dentro de
+  `_ws_lector`, y un `await` ahí deja de leer el socket, no se procesan
+  los PONG y `_ws_escritor` cierra la conexión por "sin pong" —
+  llevándose el canal de estado justo cuando más se lo necesita. El
+  `latido` va por `create_task`.
+- `/api/estado` se responde desde `app.estado` (la caché de
+  `_bucle_estado`) sin tocar el pool: **no sirve como sonda** de si el
+  servidor está saturado. Para eso, `/api/lista`.
 
 El frontend son módulos ES nativos sin build (`nimbo\web\js\`): `main.js`
 orquesta y cada `vista_*.js` se pinta sola. `api.js:conectarWS` reemplaza
@@ -343,6 +366,30 @@ que `main.js` le pase el cliente WebSocket a mano por cada import. El
 CSS sí pasa por Tailwind v4 configurado en el propio `tailwind.css`
 (`@theme`, `@source`), compilado a `app.css`, que **se versiona** — el
 runtime no necesita Node.
+
+**Ningún `render*` reconstruye su contenedor con `innerHTML` en el
+camino del delta**: las grillas se reconcilian por clave
+(`vista_grabando.js`/`vista_modelos.js` guardan un `Map` nombre→elemento,
+crean el nodo una vez y después solo escriben texto y clases; lo
+opcional vive siempre en el DOM y se prende/apaga con `.oculta`; el
+reorden es `appendChild`, que **mueve** el nodo en vez de recrearlo).
+El motivo es el `<img>` de la miniatura: recrearlo lo vuelve a pedir, y
+ese pedido es un HTTPS saliente del lado del servidor — con la grilla
+reconstruida a 1 Hz eran N pedidos por segundo, hasta congelar la
+ventana con 6-8 modelos (`specs\congelado_interfaz.md`). Por eso la
+miniatura se pone al día con `sitio.js:sincronizarMiniatura()`, que solo
+reemplaza el `<img>` si la URL cambió de verdad, y por eso al escribir
+valores se saltea el control que tiene el foco (mismo criterio que ya
+tenía `vista_ajustes.js:renderDirectivas`).
+
+`pintarEstado(estado, secciones)` saltea los `render*` cuya sección no
+vino en el delta, pero **eso solo no alcanzaba**: `detector` cambia en
+cada tick (contadores de bytes) y de él dependen las tres vistas caras.
+`localStorage.nimbo_tarjetas_in_place = "0"` vuelve al `innerHTML` de
+antes para poder medir las dos variantes sobre la misma instalación —
+no es un fallback, es el "antes" del experimento, igual que
+`nimbo_append_por_grupo` en el reproductor. El helper que las lee es
+`api.js:bandera`, uno solo para todos.
 
 ### Reproductor en vivo
 

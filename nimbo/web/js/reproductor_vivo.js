@@ -19,7 +19,7 @@
 // servidor via ?atras=, no este archivo), y el reloj del tick en un Web
 // Worker (igual que vista_previa.js).
 
-import { conToken } from "./api.js";
+import { conToken, bandera } from "./api.js";
 
 const INTERVALO_TICK_MS = 500;
 const SEGMENTOS_ATRAS = 3;
@@ -93,15 +93,9 @@ const MODO_SB = "sequence";
 //     toma efecto en el proximo remontaje (cerrar y abrir la previa), no
 //     en medio de una sesion -- mezclar las dos variantes en el mismo
 //     SourceBuffer no mediria ninguna de las dos.
-function _bandera(nombre, defecto) {
-  try {
-    const v = window.localStorage.getItem(nombre);
-    if (v === null) return defecto;
-    return v === "1" || v === "true";
-  } catch (e) {
-    return defecto;            // localStorage bloqueado: manda el defecto
-  }
-}
+// (la implementacion vive en api.js:bandera -- misma lectura, un solo
+// lugar, porque vista_grabando/vista_modelos tambien la necesitan)
+const _bandera = bandera;
 const DIAG_CADA_TICKS = 20;    // 20 x 500 ms = una linea cada 10 s
 
 async function obtenerBytes(ruta) {

@@ -69,14 +69,34 @@ function renderMotor(estado) {
   }
 }
 
-function pintarEstado(estado) {
-  renderMotor(estado);
-  renderBarraGlobal(estado);
-  renderTarjetas(estado);
-  renderSesion(estado);
-  renderFavoritas(estado);
-  renderPrevia(estado);
-  renderDirectivas(estado.lista.directivas || {});
+// Que secciones de `estado` mira cada render. El delta del WebSocket trae
+// solo las que cambiaron (servidor.py:_bucle_estado), asi que no hace
+// falta repintar las vistas que no dependen de ninguna de ellas.
+//
+// Ojo con lo que esto NO arregla: "detector" cambia en CADA tick (los
+// contadores de bytes de detector.json/directo.json), asi que las tres
+// vistas caras igual corren una vez por segundo. Lo que las hace baratas
+// es que reconcilian in-place en vez de reconstruirse (ver
+// vista_grabando.js / vista_modelos.js y specs\congelado_interfaz.md);
+// esta tabla solo saca del camino a las que ademas no tienen por que
+// mirar.
+const DEPENDE = [
+  [renderMotor, ["motor"]],
+  [renderBarraGlobal, ["disco", "detector"]],
+  [renderTarjetas, ["lista", "detector", "supervisor"]],
+  [renderSesion, ["sesion", "siguiendo"]],
+  [renderFavoritas, ["lista", "favoritas", "siguiendo", "detector", "supervisor"]],
+  [renderPrevia, ["detector", "lista", "favoritas", "siguiendo", "supervisor"]],
+  [(estado) => renderDirectivas(estado.lista.directivas || {}), ["lista"]],
+];
+
+// secciones = null -> pintar todo (primera pintada, estado_inicial, y
+// cualquier refrescar() puntual: ahi llega el estado completo).
+function pintarEstado(estado, secciones) {
+  for (const [render, claves] of DEPENDE) {
+    if (secciones && !claves.some(c => secciones.has(c))) continue;
+    render(estado);
+  }
 }
 
 // Reconciliacion puntual: ya no hay un setInterval corriendo esto cada
@@ -105,7 +125,7 @@ function conMensaje(msg) {
   } else if (msg.tipo === "estado") {
     if (!ultimoEstado) return;   // todavia no llego el inicial: se ignora, ya viene completo
     ultimoEstado = { ...ultimoEstado, ...msg.datos };
-    pintarEstado(ultimoEstado);
+    pintarEstado(ultimoEstado, new Set(Object.keys(msg.datos)));
   } else if (msg.tipo === "sitio") {
     aplicarSitio(msg.datos);
     if (ultimoEstado) renderFavoritas(ultimoEstado);
@@ -193,8 +213,12 @@ function iniciarAcciones() {
     if (!ultimoEstado) return;
     const m = ultimoEstado.motor;
     try {
-      if (m.detector_vivo || m.supervisor_vivo) await enviar("/api/motor/parar", {});
-      else await enviar("/api/motor/arrancar", {});
+      const r = m.detector_vivo || m.supervisor_vivo
+        ? await enviar("/api/motor/parar", {})
+        : await enviar("/api/motor/arrancar", {});
+      if (r && r.ya_corriendo) {
+        agregarLog("linea-aviso", "ya hay una orden en curso para el motor -- espera");
+      }
     } catch (err) { mostrarError(err); }
     refrescar();
   });
@@ -256,7 +280,14 @@ function iniciarAcciones() {
 
   document.getElementById("boton-actualizar-siguiendo").addEventListener("click", async () => {
     try {
-      await enviar("/api/sesion/actualizar", {});
+      // 202 {"ya_corriendo": true} = el dedupe de servidor.py:_lanzar_tarea
+      // descarto este click porque la vuelta anterior todavia corre (hasta
+      // sesion.TOPE_TOTAL_S). Antes se descartaba igual pero sin decirlo, y
+      // se veia como un boton roto.
+      const r = await enviar("/api/sesion/actualizar", {});
+      if (r && r.ya_corriendo) {
+        agregarLog("linea-aviso", "ya hay una actualizacion en curso -- espera a que termine");
+      }
     } catch (err) { mostrarError(err); }
     refrescar();
   });
