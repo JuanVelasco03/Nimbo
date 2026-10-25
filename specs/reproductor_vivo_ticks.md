@@ -1,8 +1,10 @@
 # Reproductor en vivo: los ticks que quedan
 
-Especificación de implementación. Estado: **el problema está medido contra
-datos reales de una corrida en vivo** (ver §2); lo que falta es elegir entre
-dos arreglos y hacerlo.
+Especificación de implementación. Estado: **A implementado y medido el
+2026-10-25**, junto con el secundario de §5 (la rotación de sesión) y los
+scripts del apéndice. B (`mode="segments"`) queda documentado y **sin
+hacer**: ver §11, "Estado de ejecución", que es lo único que hay que leer
+para saber en qué quedó cada paso de §7.
 
 Punto de partida: commit `17c78dc` ("Arreglar el salto permanente del
 reproductor en vivo y el `--unir` que unia sesiones vivas"). Todo lo de este
@@ -349,3 +351,144 @@ timescales — ojo que las claves del dict son `pista` y `escala`, no `id` ni
 `timescale`. Verifica que `tfdt[n+1] == tfdt[n] + duracion[n]` por pista
 (discontinuidades) y acumula la duración de cada pista para medir el
 desfasaje audio-video, total y por grupo de 4 partes. Produjo §2.2 y §2.3.
+
+---
+
+## 11. Estado de ejecución (2026-10-25)
+
+Todo lo de acá se midió contra la instalación real corriendo, con las
+modelos que había en vivo ese día (`lady_ni_` 1080p, `lummii_` 960p,
+`ginny_ross` 960p). Los scripts del apéndice ya están en `pruebas\`:
+`sondeo.py`, `huecos.py`, `drift.py` y uno más que pedía el paso 5,
+`inits.py`.
+
+### Paso 1 — instrumentar el navegador: hecho, y el resultado corrige §2.4
+
+Se instrumentó el cliente (`reproductor_vivo.js:_medir`, se prende con
+`localStorage.nimbo_diag_vivo = "1"` y se lee en caliente, sin recargar).
+Se midieron 5 minutos continuos de cada variante sobre la misma modelo,
+con Chromium headless manejado por CDP:
+
+```
+modo=parte  ticks=600  appends=616  partes=616  rangos~1.00
+            ticks-con-hueco=0%  hueco-max=0.000s  avance/parte=0.50000s
+modo=grupo  ticks=380  appends=97   partes=388   rangos~1.00
+            ticks-con-hueco=0%  hueco-max=0.000s  avance/parte=0.49995s
+```
+
+Dos cosas, las dos importantes:
+
+1. **La verificación que pedía §7.1 no se puede hacer como estaba
+   escrita.** `sourceBuffer.buffered` nunca mostró más de un rango, en
+   ninguna de las dos variantes: Chrome fusiona los rangos separados por
+   pocos ms (su *fudge factor*), así que una realineación de 9 ms es
+   invisible ahí. Contar huecos en `buffered` no mide nada.
+2. **La línea de tiempo avanza 0,5000 s exactos por parte**, o sea la
+   duración de la pista de **video**. No se acumula inflación: lo que el
+   realineo de `sequence` desacomoda es el **audio**, que por parte mide
+   0,4907 ó 0,5120 s (§2.3) y queda recortado o con un hueco de ~9 ms en
+   cada borde de append. Eso es consistente con §2.4 en el mecanismo
+   (~2 realineaciones por segundo appendeando parte por parte), pero no
+   se puede contar como "huecos en `buffered`".
+
+El diagnóstico también loguea `inflacion`, la misma medida contra el
+reloj. **No sirve para esto**: la pérdida real del grabador (§2.6, 0,24%
+ahí; 0,82% acumulado en todo el disco medido con `huecos.py`) es del
+mismo orden y la tapa — se vieron valores de -0,02% a -0,73% según el
+tramo. Queda en el log porque es útil para ver pérdida, no realineación.
+
+### Paso 2 — A, append por grupo: hecho
+
+`_appendearGrupos` agrupa por `(epoch, secuencia)`, baja las partes del
+grupo, las concatena y hace **un** `appendBuffer`. El último grupo con
+partes de cada respuesta no se appendea (se espera al tick siguiente), y
+el cursor del cliente avanza hasta lo último consumido y **no** hasta el
+`cursor` del servidor — si no, ese grupo en espera se perdería para
+siempre. `_appendearPartes` sigue existiendo como el "antes" del
+experimento, detrás de `localStorage.nimbo_append_por_grupo = "0"`.
+
+Puerta de §7.2, con `sondeo.py` sobre sesiones vivas (90 s cada una,
+imitando las dos variantes del cliente, cursores incluidos):
+
+```
+--modo grupo   ticks=180  entregados=192  duplicados=0  salto=0  nunca-entregados=0
+--modo parte   ticks=180  entregados=197  duplicados=0  salto=0  nunca-entregados=0
+```
+
+Y en el navegador: 4,00 partes por append (97 appends / 388 partes)
+contra 1,00 antes, con el mismo avance de línea de tiempo y sin un solo
+error de MSE en 5 minutos. **Las realineaciones bajaron 4×, que es
+exactamente lo que A prometía.**
+
+Lo que **falta** y no se puede automatizar: §8.3, los 5 minutos mirando.
+Los micro-ticks son un juicio a ojo; el resto está medido.
+
+### Paso 3 — medición de A: hecha (arriba). Paso 4 — B: no hecho
+
+B (`mode="segments"`) sigue sin hacerse, a propósito: su única razón de
+ser era la realineación, y A ya la bajó 4×. Además, lo medido en el paso
+1 le quita a B su premisa más fuerte: no hay inflación de la línea de
+tiempo que arreglar, y `segments` obligaría a sembrar `currentTime`, a
+escribir el vigilante de huecos y a rehacer `_recortar` /
+`_vigilarDeriva` / `alVivo()` sobre múltiples rangos — todo eso para
+exponer una pérdida del 0,8% que hoy `sequence` cose sola. Si los ticks
+siguen molestando después de A, el orden de §4.2 sigue siendo válido.
+
+### Paso 5 — rotación de sesión: medido y hecho
+
+`pruebas\inits.py` compara el `init` de cada sesión con el de la sesión
+anterior de la **misma** modelo y la **misma** variante, por contenido y
+no por nombre (el nombre trae un id aleatorio del CDN y siempre difiere):
+
+```
+rotaciones comparadas: 26
+  init IDENTICO al anterior: 26  (100%)
+  init distinto:              0
+```
+
+26 de 26. Con eso, `_empalmar()`: si el init de la sesión nueva es byte a
+byte igual al que ya está en el `SourceBuffer`, `montar()` **no remonta
+nada** — cambia `sesion`, pone `cursor`/`ultimaClave` en null y el tick
+que ya corre trae la ventana de arranque de la sesión nueva en los
+próximos 500 ms. Si el init difiere (otra calidad, otro codec) se remonta
+como siempre.
+
+Probado contra dos sesiones hermanas reales (`lummii_` 960p, sellos
+`122509` → `125104`), manejando el módulo desde el mundo principal de la
+página por CDP:
+
+```
+antes:         src=blob:…a97c  rangos=1  fin=3.925  sesion=…122509
+justo después: src=blob:…a97c  rangos=1  fin=3.925  sesion=…125104
+después (8s):  src=blob:…a97c  rangos=1  fin=7.780  sesion=…125104
+errores: []    mismoMediaSource: true
+```
+
+Mismo `MediaSource`, un solo rango, el buffer siguió creciendo: la
+rotación dejó de ser un corte.
+
+La otra mitad de §5 — que el cliente pida la sesión hermana en cuanto
+`vivo` se cae, sin esperar el delta del WebSocket — **no se hizo, y ya no
+hace falta**: lo que dolía era el remontaje, no los 2 s de detección, y
+el cliente no tiene la lista de hermanas (la tiene `vista_previa.js`, y le
+llega por el mismo delta que se querría saltear).
+
+### Paso 6 — documentación: hecha
+
+- `reproductor_vivo.js`, comentario de `MODO_SB`: ya no dice que los
+  timestamps vengan sucios dentro de una sesión (§2.5). Dice qué sí pasa
+  (una parte perdida salta hacia adelante), cuál es el precio de
+  `sequence` y por qué se appendea por grupo.
+- `CLAUDE.md`, "Reproductor en vivo": el append por grupo, el empalme de
+  rotación y para qué sirve cada script de `pruebas\`.
+
+### Hallazgo extra: lo que llega tarde al disco no se entrega nunca
+
+Un `sondeo.py` de 70 s encontró 8 archivos (2 grupos) en disco y nunca
+entregados. No es un bug del cursor: son segmentos que el grabador
+escribió **fuera de orden** después de un reintento — `seq=216` apareció
+11,5 s después de `seq=217`. Cuando el cursor del cliente ya pasó esa
+clave, el servidor no los vuelve a ofrecer. En vivo da igual (son dos
+segundos viejos que ya no se van a mirar) y el `.mp4` final no se pierde
+nada, porque la unión lee el disco y no el cursor. Vale anotarlo para no
+confundirlo con una regresión la próxima vez que `sondeo.py` no dé 0.

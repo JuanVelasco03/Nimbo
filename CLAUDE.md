@@ -379,6 +379,48 @@ sesión, no a "cualquiera menos `null`" — si rota la calidad o reconecta
 el encoder mientras un pedido está en vuelo, esos bytes no van al
 `SourceBuffer` de la sesión nueva.
 
+El cliente appendea **un grupo entero por `appendBuffer`**, no una parte
+por vez: baja las ~4 partes del grupo, las concatena y hace un solo
+append (`reproductor_vivo.js:_appendearGrupos`). El motivo es
+`mode="sequence"`, que recalcula el `timestampOffset` en **cada** append
+tomando el final de presentación más alto de las pistas de ese append —
+y una parte de 0,5 s termina en 0,5000 s de video pero en 0,4907 ó
+0,5120 s de audio (el AAC va en bloques de 1024 muestras), así que cada
+append realinea sobre una pista y le deja a la otra unos ms de hueco o
+solape. Appendear por grupo baja esas realineaciones de ~2/s a ~0,5/s y
+deja que la compensación periódica del encoder (que vive en la línea de
+tiempo absoluta, los `tfdt`) se cancele **adentro** del append. El
+último grupo con partes de cada respuesta **no** se appendea: se espera
+al tick siguiente, porque las 4 partes se escriben en ráfaga pero el
+tick puede caer en el medio. Por eso el cursor del cliente avanza hasta
+lo último **consumido** y no hasta el `cursor` que devolvió el servidor:
+pasarlo por arriba perdería ese grupo para siempre. Medido en el
+navegador (`pruebas\` + el diagnóstico de `localStorage.nimbo_diag_vivo`):
+4,00 partes por append contra 1,00 de antes, mismo avance de la línea de
+tiempo (0,5000 s exactos por parte) y cero huecos en `buffered`.
+
+Una **rotación de sesión** (el encoder reconecta, el detector cierra la
+carpeta y abre otra) ya no remonta nada si el `init` nuevo es byte a byte
+igual al que está adentro del `SourceBuffer`: se sigue appendeando ahí
+mismo y solo cambia de dónde salen los segmentos
+(`reproductor_vivo.js:_empalmar`). Antes eso costaba un corte de varios
+segundos — `MediaSource` nuevo, `init` nuevo, arranque `SEGMENTOS_ATRAS`
+grupos atrás — y era el artefacto más visible de la previa. Se compara el
+**contenido** del init y no el nombre (el nombre trae un id aleatorio del
+CDN, siempre distinto): `pruebas\inits.py` mide eso sobre la instalación
+real y dio 26 de 26 rotaciones de la misma variante con init idéntico. Si
+el init difiere (otra calidad u otro codec) el remontaje es inevitable y
+sigue siendo el camino.
+
+Las mediciones del reproductor viven en `pruebas\` y solo leen (disco +
+la API local, sacando puerto y token de `instancia.json`): `sondeo.py`
+imita al cliente contra `/api/vivo/segmentos` y reporta duplicados y "lo
+que quedó en disco y nunca se entregó" (las dos tienen que dar 0, en
+`--modo grupo` y en `--modo parte`), `drift.py` mide discontinuidades de
+`tfdt` y el desfasaje audio-video por fragmento, `huecos.py` la pérdida
+real del grabador por sesión y `inits.py` lo de la rotación. Ver
+`specs\reproductor_vivo_ticks.md`.
+
 "Ver en vivo" de una modelo que no se está grabando agrega su nombre a
 `grabar.txt` mientras el modal está abierto. `nimbo\vivo_temporal.py` es el
 dueño de eso y su invariante es dura: **nunca quita de `grabar.txt` un
