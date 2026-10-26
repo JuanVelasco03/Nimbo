@@ -169,7 +169,13 @@ function _volverASnapshot() {
   if (!modoVivo()) return;
   reproductor.desmontar();
   sesionVivaMontada = null;
-  relojLatido.postMessage({ accion: "parar" });
+  // El comentario del boton "salir-vivo" ya dice que volver al snapshot
+  // NO cierra la vista temporal -- pero esto paraba el latido igual, asi
+  // que a los CADUCIDAD_S=30s vivo_temporal.cosechar() la cerraba sola
+  // (la sacaba de grabar.txt) con el modal todavia abierto. El latido
+  // tiene que seguir mientras esTemporal siga activo; solo lo para
+  // cerrarPrevia() de verdad.
+  if (!esTemporal) relojLatido.postMessage({ accion: "parar" });
   document.getElementById("modal-previa-video").classList.add("oculta");
   document.getElementById("modal-previa-transporte").classList.add("oculta");
   _salirDePantallaCompleta();
@@ -196,6 +202,17 @@ async function iniciarVivo(nombre, fila) {
     esTemporal = !!r.temporal;
   } catch (err) {
     esTemporal = false;
+  }
+  // El reloj del servidor (vivo_temporal.abrir()) ya arranco a contar
+  // CADUCIDAD_S=30s desde el POST de arriba -- pero el latido recien
+  // empezaba a mandarse adentro de montarVivo(), que no corre hasta que
+  // el supervisor/detector escriben la primera sesion en disco (puede
+  // tardar mas de 30s: resolver id + master + primer segmento). Arrancarlo
+  // ya mismo, con un latido inmediato, cierra ese hueco -- el worker
+  // tolera un "arrancar" repetido (vuelve a postear el mismo intervalo).
+  if (esTemporal) {
+    enviarWS({ tipo: "latido", nombre });
+    relojLatido.postMessage({ accion: "arrancar", ms: ESPERA_LATIDO_MS });
   }
   // el video se monta solo cuando aparezca la sesion -- ver sincronizarVivo(),
   // llamado en cada refresco de pintarEstado() (SSE o poll de 2s)
@@ -398,8 +415,19 @@ export function iniciarPrevia() {
 
   document.getElementById("modal-previa-cerrar").addEventListener("click", cerrarPrevia);
 
-  document.getElementById("modal-previa").addEventListener("click", (ev) => {
-    if (ev.target === ev.currentTarget) { cerrarPrevia(); return; }  // fondo, no el panel
+  // Solo cierra si el click EMPEZO en el fondo: antes alcanzaba con que
+  // TERMINARA ahi, asi que arrastrar el slider de volumen (o seleccionar
+  // texto) y soltar afuera del panel cerraba el modal entero -- el click
+  // se despacha en el ancestro comun (#modal-previa) cuando el mousedown
+  // y el mouseup caen en elementos distintos.
+  let clickEmpezoEnElFondo = false;
+  const modalPrevia = document.getElementById("modal-previa");
+  modalPrevia.addEventListener("mousedown", (ev) => {
+    clickEmpezoEnElFondo = ev.target === ev.currentTarget;
+  });
+
+  modalPrevia.addEventListener("click", (ev) => {
+    if (ev.target === ev.currentTarget && clickEmpezoEnElFondo) { cerrarPrevia(); return; }  // fondo, no el panel
     const boton = ev.target.closest("[data-accion]");
     if (!boton || !nombreAbierto) return;
     const accion = boton.dataset.accion;
@@ -425,8 +453,26 @@ export function iniciarPrevia() {
     }
   });
 
+  // Cuando una nos salio de pantalla completa (ver abajo), Chromium
+  // consume el Escape para eso -- pero el keydown igual burbujea al
+  // document y, sin esta guarda, cerraba el modal entero: "salir de
+  // pantalla completa" se sentia como "se cerro la vista en vivo y volvi
+  // a Modelos". El boton de pantalla completa (mas abajo) ya chequeaba
+  // esto; el Escape global no.
+  let salioDePantallaCompleta = 0;
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement) salioDePantallaCompleta = performance.now();
+  });
+
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && nombreAbierto) cerrarPrevia();
+    if (ev.key !== "Escape" || !nombreAbierto) return;
+    if (document.fullscreenElement) return;
+    // el orden entre este keydown y el fullscreenchange no esta
+    // garantizado entre navegadores -- si la salida ya gano la carrera,
+    // document.fullscreenElement arriba ya es null. Esta ventana corta
+    // cubre ese caso.
+    if (performance.now() - salioDePantallaCompleta < 300) return;
+    cerrarPrevia();
   });
 
   // una sola fuente de verdad para el label del boton de sonido: el

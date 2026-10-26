@@ -77,6 +77,18 @@ EJECUTOR_HILOS = 12          # tope del pool: que el refresco del sitio no
                              # pueda dejar sin ranura al resto de la API
 CANALES_VALIDOS = {"estado", "motor", "sitio"}
 
+# Watchdog de _lanzar_tarea: cuanto se espera antes de dar una tarea por
+# perdida y lanzar otra. No son comparables entre si -- una parada del
+# motor TIENE que poder tardar los ~20 minutos medidos en vivo (@inactividad
+# por sesion + la cola de union, secuencial), asi que un tope global chico
+# la cortaria a mitad de camino.
+TOPE_TAREA = {
+    "sesion_actualizar": 90.0,     # sesion.TOPE_TOTAL_S = 45.0, con margen
+    "motor_arrancar": 300.0,
+    "motor_parar": 1500.0,         # motor.ESPERA_CIERRE_DIRECTO = 1260s, con margen
+}
+TOPE_TAREA_DEFECTO = 120.0
+
 INTERVALO_ESTADO_ACTIVO = 1.0   # con alguien mirando "estado"
 INTERVALO_ESTADO_IDLE = 4.0     # sin nadie -- el tooltip de la bandeja
                                  # igual queda con dato de hasta 4s
@@ -120,7 +132,7 @@ async def _leer_detector_fusionado(app):
     sesion."""
     detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
     directo = await app.a_hilo(_leer_json, app.ajustes.estado_directo)
-    return estado_captura_mod.fusionar(detector, directo)
+    return estado_captura_mod.fusionar(detector, directo, time.time())
 
 
 # ===========================================================================
@@ -825,6 +837,20 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         await _servir_estatico(app, ruta, writer)
 
 
+def _tarea_terminada(app, nombre, tarea):
+    """done_callback: saca la tarea de app._tareas (si no, queda
+    referenciada para siempre, aunque ya termino) y avisa si fallo --
+    antes la Task nunca se awaiteaba, asi que una excepcion de disco en
+    sesion.actualizar_siguiendo() se perdia entera, sin log ni aviso en la
+    ventana."""
+    app._tareas.pop(nombre, None)
+    if tarea.cancelled():
+        return
+    exc = tarea.exception()
+    if exc is not None:
+        app.motor._aviso("la tarea %s fallo: %s" % (nombre, exc), nivel="error")
+
+
 def _lanzar_tarea(app, nombre, fn, *args):
     """Dedup de los 202+hilo: si ya hay una tarea con este nombre
     corriendo, un segundo POST no lanza una segunda -- motor.arrancar()/
@@ -835,11 +861,36 @@ def _lanzar_tarea(app, nombre, fn, *args):
     que pasarle ese dato al cliente: antes devolvia 202 {"aceptado": true}
     igual, asi que "Actualizar" apretado mientras la vuelta anterior
     todavia corria (hasta 45s, ver sesion.TOPE_TOTAL_S) no hacia nada y no
-    avisaba nada -- se veia como un boton roto."""
-    tarea = app._tareas.get(nombre)
-    if tarea is not None and not tarea.done():
-        return False
-    app._tareas[nombre] = app.loop.create_task(app.a_hilo(fn, *args))
+    avisaba nada -- se veia como un boton roto.
+
+    Watchdog: si la tarea existente lleva mas de TOPE_TAREA[nombre] sin
+    terminar, se la da por perdida y se lanza una nueva de todas formas --
+    sin esto, un hilo del pool colgado en getaddrinfo() (que NO respeta el
+    timeout= de urllib, ver sitio.py:TOPE_IMAGEN) dejaba "ya_corriendo":
+    true para SIEMPRE, hasta reiniciar Nimbo: ni sesion.actualizar ni
+    motor.arrancar/parar volvian a correr nunca mas.
+
+    OJO, esto es mitigacion y no cura: libera la BANDERA, no el hilo. El
+    hilo colgado en getaddrinfo() sigue perdido en el pool -- con
+    EJECUTOR_HILOS=12, unos pocos cuelgues sucesivos igual dejan el
+    servidor sin ranuras. La cura real es que cada operacion saliente
+    tenga su propio tope efectivo (sesion.py ya lo tiene con
+    TOPE_TOTAL_S, chequeado entre paginas); esto solo evita que un cuelgue
+    deje la bandera trabada para siempre."""
+    existente = app._tareas.get(nombre)
+    if existente is not None:
+        tarea, inicio = existente
+        if not tarea.done():
+            tope = TOPE_TAREA.get(nombre, TOPE_TAREA_DEFECTO)
+            if time.monotonic() - inicio < tope:
+                return False
+            app.motor._aviso(
+                "la tarea %s lleva mas de %ds -- la doy por perdida y "
+                "lanzo otra" % (nombre, int(tope)), nivel="error")
+            app._tareas.pop(nombre, None)
+    nueva = app.loop.create_task(app.a_hilo(fn, *args))
+    nueva.add_done_callback(lambda t: _tarea_terminada(app, nombre, t))
+    app._tareas[nombre] = (nueva, time.monotonic())
     return True
 
 

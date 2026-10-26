@@ -366,6 +366,7 @@
   .linea-detector { color: var(--color-tally-vivo); }
   .linea-supervisor { color: var(--color-tally-conectando); }
   .linea-aviso { color: var(--color-tally-privado); }
+  .linea-ok { color: var(--color-tally-vivo); }
 
   /* -- pestana Registro (historial completo, ver vista_registro.js) ------- */
 

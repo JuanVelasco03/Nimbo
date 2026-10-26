@@ -120,6 +120,38 @@ RE_FILA_ACTIVOS = re.compile(r"^(\d{4,})\s+([A-Za-z0-9_.\-]{2,40})\s")
 
 MAX_REGISTRO = 20 * 1024 * 1024       # mismo tope que detectar_m3u8.py/motor.py
 
+# -- politica de "solo grabar en show publico" ------------------------------
+#
+# Antes, un 403/404 en la media playlist (show privado/p2p/etc, o el CDN
+# rotando el host) dejaba la sesion ABIERTA: _intervalo() seguia devolviendo
+# el ritmo de grabacion activa (max(0.5, target_duration/2), ~0.5-1.3s) y
+# _paso() seguia llamando _refrescar_todas() en cada vuelta -- un bucle
+# caliente de ~1 pedido/s por modelo contra el sitio, medido en vivo: 57% de
+# los eventos del camino directo eran ese warning, con medianas de 1.3-1.8s
+# entre reintentos (deberia haber sido "ritmo normal, 60s", el propio
+# mensaje de log mentia). Y como fila_estado() define grabando como "hay una
+# sesion abierta" (no "entran bytes"), el badge seguia diciendo GRABANDO sin
+# que llegara un solo byte.
+#
+# Fuera de show publico, ahora se deja de pedir la media playlist al
+# instante (no se llama _refrescar_todas) y se espera a ESPERA_NO_PUBLICO
+# antes de volver a mirar. Las sesiones quedan abiertas, congeladas: es
+# @inactividad (ya existe, ya la configura el usuario, ver
+# detectar_m3u8.py:78 y _cerrar_por_inactividad mas abajo) quien las cierra
+# y las une si no vuelven a tiempo -- asi una modelo que entra y sale de
+# privado en segundos reusa la MISMA sesion en vez de fragmentar un .mp4
+# por cada ida y vuelta.
+ESTADOS_PUBLICOS = {"public", "live"}
+ESPERA_NO_PUBLICO = 30.0
+# Solo para @inactividad=0 ("no cortes por falta de bytes" -- una señal
+# distinta de "el sitio dice que no es publico"): sin esto una modelo que
+# desactivo el corte por inactividad quedaria con la sesion abierta para
+# siempre en cuanto el sitio deja de reportar publico.
+ESPERA_CIERRE_NO_PUBLICO = 120.0
+# Backoff propio de la media playlist cuando el status sigue mal tras pedir
+# un master nuevo (antes: ~1-2s sin tope, ver _refrescar_variante).
+ESPERA_STATUS_MALO = 5.0
+
 log = logging.getLogger("directo")
 
 
@@ -559,7 +591,8 @@ class LectorGrabar:
 
 class _SesionDirecta:
     __slots__ = ("variante", "calidad", "codec", "carpeta", "sesion",
-                 "init_nombre", "segmentos", "bytes", "inicio", "vistos")
+                 "init_nombre", "segmentos", "bytes", "inicio", "vistos",
+                 "ultimo_segmento")
 
     def __init__(self, variante, calidad, codec, carpeta, sesion):
         self.variante = variante
@@ -572,6 +605,11 @@ class _SesionDirecta:
         self.bytes = 0
         self.inicio = time.time()
         self.vistos = set()
+        # 0.0 a proposito, no time.time(): el vigilante de @inactividad
+        # (ver _cerrar_por_inactividad) no cierra una sesion que todavia
+        # no bajo nada, mismo criterio que Stream.ultimo_segmento en
+        # detectar_m3u8.py (linea ~2581, "and st.ultimo_segmento").
+        self.ultimo_segmento = 0.0
 
     @property
     def etiqueta(self) -> str:
@@ -618,8 +656,14 @@ class _ModeloDirecto(threading.Thread):
         self.fallos = {}         # variante -> fallos consecutivos
         self._forzado_por_variante = {}   # variante -> ya se forzo un
                                            # master nuevo en esta racha
+        self._proximo_intento = {}        # variante -> backoff propio tras
+                                           # un status malo persistente
         self._futuros = {}       # future -> (variante, url, es_init)
         self._lock = threading.Lock()
+        # timestamp de cuando se dejo de ver show publico (0.0 = no esta
+        # esperando). Las sesiones quedan abiertas y congeladas mientras
+        # tanto -- ver ESTADOS_PUBLICOS mas arriba.
+        self.esperando_publico = 0.0
 
     # -- ciclo de vida -------------------------------------------------
 
@@ -640,6 +684,8 @@ class _ModeloDirecto(threading.Thread):
         log.info("[%s] termina", self.nombre)
 
     def _intervalo(self) -> float:
+        if self.esperando_publico:
+            return ESPERA_NO_PUBLICO
         return max(0.5, self.target_duration / 2.0) if self.sesiones else 5.0
 
     def _en_vivo(self) -> bool:
@@ -647,6 +693,13 @@ class _ModeloDirecto(threading.Thread):
             return True
         # una consulta que no pudo contestar no dice que dejo de emitir
         return mouflon.estado_incierto(self.estado_cam)
+
+    def _publico(self) -> bool:
+        """Solo "public"/"live" son show publico de verdad. privado/p2p/
+        groupShow/ticketShow siguen contando para _en_vivo() (no hay que
+        soltar el id ni dejar de consultar el estado) pero no se les pide
+        mas la media playlist -- ver el comentario de ESTADOS_PUBLICOS."""
+        return self.estado_cam in ESTADOS_PUBLICOS
 
     def _carpeta_stream(self) -> str:
         sufijo = str(self.id_modelo) if self.id_modelo else "sinid"
@@ -663,17 +716,96 @@ class _ModeloDirecto(threading.Thread):
         cfg_general = self.grabador.seleccion.actual()
         ahora = time.time()
         if ahora >= self.proximo_chequeo:
-            self.proximo_chequeo = ahora + self.CHEQUEO_ESTADO
             self._chequear_estado()
+            # mientras se espera el regreso a publico, confirmar cada
+            # ESPERA_NO_PUBLICO (no CHEQUEO_ESTADO/60s): si no, "volvio a
+            # publico" podia tardar hasta el doble de lo que tarda en
+            # notarse que se fue.
+            self.proximo_chequeo = ahora + (
+                ESPERA_NO_PUBLICO if self.esperando_publico else self.CHEQUEO_ESTADO)
             if not self.degradado and self._en_vivo() and self.id_modelo:
                 self._reconciliar_variantes(cfg_general)
 
         if not self._en_vivo():
             if self.sesiones:
                 self._cerrar_todas("la modelo no esta en vivo (%s)" % self.estado_cam)
+            self.esperando_publico = 0.0
             return
 
+        # @inactividad (ya existe, ya la usa el detector) es quien de
+        # verdad cierra y une las sesiones sin bytes recientes, tanto si
+        # el motivo es un CDN que dejo de responder en show publico como
+        # si es que se fue a privado -- correrlo ANTES de decidir la rama
+        # de abajo para que no haga falta un segundo temporizador.
+        self._cerrar_por_inactividad(cfg_general)
+
+        if mouflon.estado_incierto(self.estado_cam):
+            # la consulta de estado fallo (429/5xx/sin red): no dice nada
+            # de si la modelo sigue en publico o no. No se decide nada,
+            # se sigue como se venia -- cortar aca cerraria TODAS las
+            # grabaciones a la vez ante un hipo del sitio.
+            if self.sesiones:
+                self._refrescar_todas()
+            return
+
+        if not self._publico():
+            if not self.esperando_publico:
+                self.esperando_publico = ahora
+                log.info("[%s] no esta en show publico (%s) -- congelo y "
+                         "reintento cada %ds", self.nombre, self.estado_cam,
+                         int(ESPERA_NO_PUBLICO))
+            # ni se pide la media playlist ni se reconcilian variantes:
+            # las sesiones quedan como estan, congeladas, hasta que vuelva
+            # a publico o las cierre @inactividad de arriba.
+            return
+
+        if self.esperando_publico:
+            log.info("[%s] volvio a show publico", self.nombre)
+            self.esperando_publico = 0.0
+
         self._refrescar_todas()
+
+    def _cerrar_por_inactividad(self, cfg_general: "_ConfigGeneral") -> None:
+        """Mismo criterio que el vigilante del detector
+        (detectar_m3u8.py:2580-2584, @inactividad): sin un segmento real
+        hace mas de N segundos, cerrar la variante y encolarla para unir.
+
+        A diferencia del detector, no hace falta resetear
+        sesion.ultimo_segmento al cerrar (sus lineas 2450/2609):
+        _cerrar_variante() destruye la _SesionDirecta entera, y la que
+        la reemplace nace en 0.0 (ver _SesionDirecta.__init__).
+
+        @inactividad=0 significa "no cortes por falta de bytes" -- una
+        señal distinta de "el sitio dice que no es publico". Fuera de
+        show publico igual hace falta cortar alguna vez (si no, la sesion
+        queda abierta para siempre esperando un segmento que no va a
+        llegar): ESPERA_CIERRE_NO_PUBLICO cubre ese caso puntual.
+        """
+        if not self.sesiones:
+            return
+        limite = cfg_general.inactividad
+        if not limite and self.esperando_publico:
+            limite = ESPERA_CIERRE_NO_PUBLICO
+        if not limite:
+            return
+        ahora = time.time()
+        for variante, sesion in list(self.sesiones.items()):
+            # Normalmente (como el detector) solo cuenta un segmento REAL.
+            # Pero _reconciliar_variantes() puede abrir una sesion nueva
+            # (su propio chequeo de privado via altura de rendicion, mas
+            # viejo que esperando_publico, puede no coincidir en el mismo
+            # instante) justo cuando ya se sabe por el sitio que no es
+            # publico: esa sesion nace en ultimo_segmento=0.0 y, sin este
+            # fallback, el "and sesion.ultimo_segmento" de abajo la
+            # dejaria abierta para siempre (nunca llega un segmento
+            # porque _paso() no la refresca mientras esperando_publico).
+            # Mientras se esta esperando, sesion.inicio sirve de
+            # referencia para esa sesion sin bytes.
+            referencia = sesion.ultimo_segmento or (
+                sesion.inicio if self.esperando_publico else 0.0)
+            if referencia and ahora - referencia > limite:
+                self._cerrar_variante(
+                    variante, "sin segmentos hace %ds" % int(limite))
 
     # -- estado (sin abrir pagina) ---------------------------------------
 
@@ -777,6 +909,9 @@ class _ModeloDirecto(threading.Thread):
         sesion = self.sesiones.get(variante)
         if not uri or sesion is None:
             return
+        ahora = time.time()
+        if ahora < self._proximo_intento.get(variante, 0.0):
+            return   # backoff propio tras un status malo persistente, ver abajo
         base = uri.split("?", 1)[0]
         url = (base + "?playlistType=standard&preferredVideoCodec=h264"
                "&psch=v2&pkey=" + mouflon.PKEY_VERIFICADO)
@@ -805,16 +940,20 @@ class _ModeloDirecto(threading.Thread):
             # forzo para esta racha y el master nuevo tampoco sirve -- una
             # modelo en show p2p puede seguir dando 403 en la media
             # playlist sin que el master cambie nunca lo suficiente, visto
-            # en vivo: 100+ pedidos seguidos al sitio sin pausa -- no se
-            # vuelve a forzar: se deja el ritmo normal de CHEQUEO_ESTADO
-            # (60s) hasta que algo cambie. _forzado_por_variante se limpia
-            # solo en el primer 200 que llegue.
+            # en vivo: 100+ pedidos seguidos al sitio sin pausa -- paso a
+            # un backoff propio de ESPERA_STATUS_MALO (antes se reintentaba
+            # sin tope, ~1-2s) y vuelvo a forzar la consulta de estado:
+            # si el sitio confirma que ya no es show publico, _paso() entra
+            # a la rama "esperando_publico" y deja de pedir esta playlist
+            # del todo. _forzado_por_variante se limpia solo en el primer
+            # 200 que llegue.
             if self._forzado_por_variante.get(variante):
                 log.warning(
                     "[%s/%s] media playlist dio %s otra vez tras pedir un "
-                    "master nuevo -- dejo el ritmo normal (%ds) hasta que "
-                    "se resuelva", self.nombre, variante, status,
-                    int(self.CHEQUEO_ESTADO))
+                    "master nuevo -- reintento cada %ds y pido el estado",
+                    self.nombre, variante, status, int(ESPERA_STATUS_MALO))
+                self._proximo_intento[variante] = ahora + ESPERA_STATUS_MALO
+                self.proximo_chequeo = 0.0
             else:
                 log.warning("[%s/%s] media playlist dio %s -- pido un master nuevo",
                             self.nombre, variante, status)
@@ -822,6 +961,7 @@ class _ModeloDirecto(threading.Thread):
                 self._forzado_por_variante[variante] = True
             return
         self._forzado_por_variante[variante] = False
+        self._proximo_intento.pop(variante, None)
         texto = cuerpo.decode("utf-8", "replace")
 
         if mouflon.es_publicidad(texto, url_final):
@@ -932,6 +1072,7 @@ class _ModeloDirecto(threading.Thread):
                 continue
             sesion.segmentos += 1
             sesion.bytes += len(bytes_frag)
+            sesion.ultimo_segmento = time.time()
         if sesion.segmentos % 20 == 0:
             log.info("[%s/%s] %d segmentos | %.1f MB | %.1f min", self.nombre,
                      variante, sesion.segmentos, sesion.bytes / 1048576,
@@ -944,6 +1085,7 @@ class _ModeloDirecto(threading.Thread):
         self.uris.pop(variante, None)
         self.fallos.pop(variante, None)
         self._forzado_por_variante.pop(variante, None)
+        self._proximo_intento.pop(variante, None)
         if sesion is None:
             return
         if not sesion.segmentos:
@@ -979,10 +1121,18 @@ class _ModeloDirecto(threading.Thread):
                 "bytes": s.bytes, "inicio": s.inicio,
             } for nombre, s in self.sesiones.items()]
         grabando = bool(sesiones_info)
+        # "grabando" se deja con el mismo significado de siempre ("hay una
+        # sesion abierta", igual que Stream.grabando del detector -- lo
+        # consume app.py para el conteo del tooltip de bandeja). La mentira
+        # de "grabando" sin bytes esta acotada por @inactividad y, sobre
+        # todo, es visible: ultimo_segmento de abajo es lo que el frontend
+        # usa para pintar SIN SEÑAL encima de este mismo badge.
         if grabando:
             estado = "grabando"
         elif self.degradado:
             estado = "degradado"
+        elif self.esperando_publico:
+            estado = "esperando"
         elif self.privado:
             estado = "privado"
         elif self._en_vivo():
@@ -991,6 +1141,8 @@ class _ModeloDirecto(threading.Thread):
             estado = "inactivo"
         variantes = sorted(self.sesiones)
         inicios = [s.inicio for s in self.sesiones.values()]
+        ultimos = [s.ultimo_segmento for s in self.sesiones.values()
+                   if s.ultimo_segmento]
         return {
             "id": str(self.id_modelo) if self.id_modelo else "",
             "modelo": self.nombre,
@@ -1003,6 +1155,9 @@ class _ModeloDirecto(threading.Thread):
             "privado_desde": self.privado_desde or None,
             "inicio": min(inicios) if inicios else None,
             "ultimo_visto": self.ultimo_visto,
+            "ultimo_segmento": max(ultimos) if ultimos else None,
+            "estado_cam": self.estado_cam,
+            "esperando": bool(self.esperando_publico),
             "segmentos": sum(s.segmentos for s in self.sesiones.values()),
             "bytes": sum(s.bytes for s in self.sesiones.values()),
             "sesiones": sesiones_info,
@@ -1030,7 +1185,15 @@ class Grabador:
         self.cola_union: queue.Queue = queue.Queue()
         self._modelos = {}       # nombre_lower -> _ModeloDirecto
         self._lock = threading.RLock()
-        self._parar = threading.Event()
+        self._parar = threading.Event()   # deja de grabar
+        # Separado de _parar: _bucle_estado solia morir en cuanto se pedia
+        # la parada, justo cuando empezaba lo que mas tarda (la union,
+        # ESPERA_CIERRE_DIRECTO = hasta 1260s en motor.py). directo.json
+        # quedaba congelado con "grabando": true para todas las modelos
+        # que estaban grabando -- medido en vivo: 20 minutos con el
+        # archivo vencido. _fin es la señal real de "dejar de latir",
+        # recien al final de correr().
+        self._fin = threading.Event()
         self.degradado_global = False
 
     def parar(self) -> None:
@@ -1116,6 +1279,7 @@ class Grabador:
         hilo_union.join(1200)
         self.pool.shutdown(wait=True)
         self.escritor.detener()
+        self._fin.set()   # recien aca deja de latir _bucle_estado
         with contextlib.suppress(Exception):
             self._publicar_estado()
         log.info("[DIRECTO] listo")
@@ -1180,7 +1344,12 @@ class Grabador:
     # -- estado\directo.json: SIEMPRE se reescribe (su mtime es el latido) --
 
     def _bucle_estado(self) -> None:
-        while not self._parar.wait(INTERVALO_ESTADO):
+        # _fin, no _parar: ver el comentario de __init__. Mientras se
+        # esta parando pero todavia no se termino de unir, este bucle
+        # sigue latiendo -- self._modelos ya esta vacio para entonces
+        # (correr() lo vacia antes de esperar la union), asi que
+        # _publicar_estado() ya sale solo con streams=[] por si mismo.
+        while not self._fin.wait(INTERVALO_ESTADO):
             try:
                 self._publicar_estado()
             except Exception as e:
@@ -1198,6 +1367,12 @@ class Grabador:
             "degradado": self.degradado_global or any(f["degradado"] for f in filas),
             "ids": ids,
             "streams": filas,
+            # visibles en la ventana mientras dura la parada (puede ser
+            # @inactividad=120s por sesion, y la union es secuencial: se
+            # midieron 20 minutos para 10 sesiones) -- sin esto Nimbo
+            # parecia colgado con "streams": [] y nada que lo explique.
+            "parando": self._parar.is_set(),
+            "uniendo": self.cola_union.qsize(),
         }
         _escribir_atomico(ARCHIVO_ESTADO, json.dumps(datos, ensure_ascii=False))
 

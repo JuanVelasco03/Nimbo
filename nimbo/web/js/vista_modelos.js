@@ -4,6 +4,7 @@
 import { obtener, bandera } from "./api.js";
 import { inicialDe } from "./formato.js";
 import { cacheSitio, sincronizarMiniatura, urlImagenProxy } from "./sitio.js";
+import { agregarLog } from "./registro.js";
 
 // Favoritas locales (favoritas.json) + las que vienen de la cuenta real
 // del sitio y estan en linea ahora (estado.siguiendo, ver sesion.py) --
@@ -21,6 +22,11 @@ export function fusionarFavoritas(estado) {
   const siguiendo = (estado.siguiendo && estado.siguiendo.modelos) || [];
   const streams = (estado.detector && estado.detector.streams) || [];
   const emisiones = (estado.supervisor && estado.supervisor.emisiones) || [];
+  // El "generado" del propio detector.json/directo.json fusionado -- se
+  // guarda en cada fila para que grabacionDeFila() mida la edad de
+  // ultimoSegmento contra ESE reloj, nunca contra Date.now() (ver
+  // edadSegmento mas abajo).
+  const generado = (estado.detector && estado.detector.generado) || 0;
 
   const streamPorNombre = new Map(streams.map(s => [(s.modelo || "").toLowerCase(), s]));
   const emisionPorNombre = new Map(emisiones.map(e => [(e.nombre || "").toLowerCase(), e]));
@@ -39,6 +45,12 @@ export function fusionarFavoritas(estado) {
       // "grabando" (que tarda en confirmarse: ver @espera/@cambio del
       // detector) y de estar en grabar.txt.
       vivo: !!(s && s.sesiones && s.sesiones.length),
+      // hora del ultimo segmento REAL (puente.py/grabador_directo.py) y
+      // si el grabador esta congelado esperando volver a show publico --
+      // sin esto "grabando" no distingue de "grabando pero sin bytes".
+      ultimoSegmento: s && s.ultimo_segmento,
+      esperando: !!(s && s.esperando),
+      generado,
     };
   }
 
@@ -132,10 +144,56 @@ export function estadoDeFila(fila) {
   return { clase: "offline", texto: "OFFLINE", clave: "offline" };
 }
 
-// Indicador de grabacion, totalmente aparte del status del sitio. null si
-// no hay nada que mostrar (ni listada, ni grabando, ni guardada).
+// Cuanto hace que llego el ultimo segmento real, medido contra el reloj
+// del propio proceso que escribio el JSON ("generado"), nunca contra
+// Date.now(): el reloj del cliente y el del detector/grabador no son el
+// mismo, y asi el badge no se vuelve loco si el JSON queda viejo (eso lo
+// cubre estado_captura.py marcando la fuente como "sin_dato" aparte).
+// -> segundos, o null si no hay suficiente dato para decidir.
+export const SIN_SENAL_S = 20;
+
+export function edadSegmento(ultimoSegmento, generado) {
+  if (!ultimoSegmento || !generado) return null;
+  return generado - ultimoSegmento;
+}
+
+// Indicador de grabacion. null si no hay nada que mostrar (ni listada, ni
+// grabando, ni guardada).
+//
+// OJO: ya NO es independiente del status del sitio. El sitio (estadoSitio,
+// via siguiendo.json/supervisor.json -- se refresca cada 1-5s) es una señal
+// MAS RAPIDA y MAS DIRECTA que "esperando" (el flag que publica el propio
+// grabador, que recien lo nota en su propio ciclo de @inactividad/30s): si
+// el sitio YA dice p2p/privado/group show/ticket show, no hay nada
+// entrando de verdad aunque la sesion siga abierta unos segundos mas (el
+// margen de @inactividad antes de que grabador_directo.py la cierre) -- y
+// mostrar "REC" en ese momento es mentira, aunque sea por poco tiempo.
+// -> true si el sitio YA dice que no es show publico (p2p/privado/group
+// show/ticket show). Compartido por el badge, el filtro "Grabando" y el
+// orden de la lista -- los tres necesitan el mismo criterio de "esto no
+// cuenta como grabando de verdad", no cada uno el suyo.
+export function sitioEsNoPublico(fila) {
+  return ESTADOS_PRIVADOS.has((fila.estadoSitio || "").toLowerCase());
+}
+
 export function grabacionDeFila(fila) {
-  if (fila.grabando) return { clase: "grabando", texto: "REC" };
+  const sitioNoPublico = sitioEsNoPublico(fila);
+
+  if (fila.grabando && !sitioNoPublico) {
+    const edad = edadSegmento(fila.ultimoSegmento, fila.generado);
+    if (edad !== null && edad > SIN_SENAL_S) {
+      return { clase: "mal", texto: "SIN SENAL" };
+    }
+    return { clase: "grabando", texto: "REC" };
+  }
+  // Fuera de show publico (lo sepamos por el sitio o por el propio
+  // grabador): no se muestra como GRABANDO/REC aunque la sesion siga
+  // tecnicamente abierta -- es la misma "en lista, esperando volver a
+  // publico" que si nunca hubiera empezado a grabar.
+  if (sitioNoPublico || fila.esperando) {
+    if (fila.enLista) return { clase: "espera", texto: "EN LISTA" };
+    return null;
+  }
   if (fila.privadoDetector) return { clase: "privado", texto: "GUARDADO" };
   if (fila.detectado) return { clase: "espera", texto: "CONECTANDO" };
   if (fila.enLista) return { clase: "espera", texto: "EN LISTA" };
@@ -146,15 +204,22 @@ export function grabacionDeFila(fila) {
 // Multi-seleccion (OR entre los prendidos); ninguno prendido = se ven
 // todas. Cada filtro es un predicado sobre una fila ya fusionada.
 const FILTROS = [
-  { clave: "grabando", etiqueta: "Grabando", test: f => f.grabando },
+  // sitioEsNoPublico(): si el sitio ya dice que no es show publico, no
+  // cuenta como "grabando" aunque f.grabando (la sesion interna) todavia
+  // este abierta esperando el margen de @inactividad -- si no, el filtro
+  // "Grabando" seguia trayendo modelos en privado/p2p.
+  { clave: "grabando", etiqueta: "Grabando", test: f => f.grabando && !sitioEsNoPublico(f) },
   { clave: "en-lista", etiqueta: "En lista", test: f => f.enLista },
-  { clave: "publico", etiqueta: "Show publico", test: f => estadoDeFila(f).clase === "publico" },
+  // f._infoSitio lo precalcula renderBarraFiltros() una sola vez por
+  // fila (ver mas abajo) -- fallback a estadoDeFila(f) si algun llamador
+  // externo corre este test sin pasar por ahi.
+  { clave: "publico", etiqueta: "Show publico", test: f => (f._infoSitio || estadoDeFila(f)).clase === "publico" },
   { clave: "privado", etiqueta: "Privado", test: f => (f.estadoSitio || "").toLowerCase() === "private" || (f.estadoSitio || "").toLowerCase() === "virtualprivate" },
   { clave: "p2p", etiqueta: "P2P", test: f => (f.estadoSitio || "").toLowerCase() === "p2p" },
   { clave: "p2p-voice", etiqueta: "P2P voice", test: f => (f.estadoSitio || "").toLowerCase() === "p2pvoice" },
   { clave: "group-show", etiqueta: "Group show", test: f => (f.estadoSitio || "").toLowerCase() === "groupshow" },
   { clave: "ticket-show", etiqueta: "Ticket show", test: f => (f.estadoSitio || "").toLowerCase() === "ticketshow" },
-  { clave: "offline", etiqueta: "Offline", test: f => estadoDeFila(f).clase === "offline" },
+  { clave: "offline", etiqueta: "Offline", test: f => (f._infoSitio || estadoDeFila(f)).clase === "offline" },
   { clave: "vpn", etiqueta: "VPN", test: f => f.enVpn },
   { clave: "siguiendo", etiqueta: "Siguiendo", test: f => f.siguiendo },
 ];
@@ -162,14 +227,34 @@ const FILTROS = [
 const filtrosActivos = new Set();
 let ultimoEstadoModelos = null;
 
-function filaPasaFiltros(fila) {
-  if (filtrosActivos.size === 0) return true;
-  for (const clave of filtrosActivos) {
+// Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
+// se mezclan en la lista -- primero las que graban de verdad, despues las
+// que estan en lista (pero no grabando), despues las que estan en show
+// publico (pero ninguna de las anteriores). Una fila que no matchea
+// ninguno de los tres (pero si algun otro filtro activo, p.ej. VPN) queda
+// al final, en el orden que ya traia -- sort() es estable.
+const ORDEN_PRIORIDAD = ["grabando", "en-lista", "publico"];
+
+function rangoPrioridad(fila) {
+  for (let i = 0; i < ORDEN_PRIORIDAD.length; i++) {
+    const clave = ORDEN_PRIORIDAD[i];
+    if (!filtrosActivos.has(clave)) continue;
     const filtro = FILTROS.find(f => f.clave === clave);
-    if (filtro && filtro.test(fila)) return true;
+    if (filtro && filtro.test(fila)) return i;
   }
-  return false;
+  return ORDEN_PRIORIDAD.length;
 }
+
+// Nodos de los chips, cacheados una sola vez: antes renderBarraFiltros
+// hacia 11 filas.filter() completos (uno por filtro, cada uno recorriendo
+// TODAS las filas y recalculando estadoDeFila() para "publico"/"offline")
+// mas 22 querySelector por tick (uno por boton, uno por contador) -- a
+// 1 Hz, con N modelos eso es ~11*N comparaciones repetidas y 22
+// busquedas en el DOM por segundo. Ahora es una sola pasada sobre las
+// filas (estadoDeFila se calcula una vez por fila, no una vez por
+// filtro) y cero querySelector fuera de la construccion inicial.
+const chipsFiltro = new Map();   // clave -> {boton, cuenta}
+let elConteoModelos = null;
 
 function renderBarraFiltros(filas) {
   const cont = document.getElementById("barra-filtros-modelos");
@@ -182,18 +267,43 @@ function renderBarraFiltros(filas) {
         ${f.etiqueta} <span class="cuenta"></span>
       </button>`).join("")
       + '<span id="conteo-modelos" class="ml-auto font-mono text-[0.78rem] text-atenuado"></span>';
+    chipsFiltro.clear();
+  }
+  if (chipsFiltro.size === 0) {
+    for (const f of FILTROS) {
+      const boton = cont.querySelector(`[data-filtro="${f.clave}"]`);
+      chipsFiltro.set(f.clave, { boton, cuenta: boton.querySelector(".cuenta") });
+    }
+    elConteoModelos = document.getElementById("conteo-modelos");
   }
 
-  let visibles = 0;
-  for (const f of FILTROS) {
-    const n = filas.filter(f.test).length;
-    const boton = cont.querySelector(`[data-filtro="${f.clave}"]`);
-    boton.querySelector(".cuenta").textContent = n;
+  const cuentas = new Array(FILTROS.length).fill(0);
+  const haySeleccion = filtrosActivos.size > 0;
+  const visibles = [];
+  for (const fila of filas) {
+    // estadoDeFila(fila) se calcula UNA vez por fila aca (lo usan los
+    // filtros "publico"/"offline" via fila._infoSitio), no una vez por
+    // cada uno de los 11 filtros.
+    fila._infoSitio = estadoDeFila(fila);
+    let pasa = !haySeleccion;
+    for (let i = 0; i < FILTROS.length; i++) {
+      if (!FILTROS[i].test(fila)) continue;
+      cuentas[i]++;
+      if (filtrosActivos.has(FILTROS[i].clave)) pasa = true;
+    }
+    if (pasa) visibles.push(fila);
+  }
+
+  for (let i = 0; i < FILTROS.length; i++) {
+    const f = FILTROS[i];
+    const { boton, cuenta } = chipsFiltro.get(f.clave);
+    const n = cuentas[i];
+    if (cuenta.textContent !== String(n)) cuenta.textContent = n;
     boton.classList.toggle("prendido", filtrosActivos.has(f.clave));
     boton.classList.toggle("en-cero", n === 0);
   }
-  for (const fila of filas) if (filaPasaFiltros(fila)) visibles++;
-  document.getElementById("conteo-modelos").textContent = visibles + " de " + filas.length;
+  elConteoModelos.textContent = visibles.length + " de " + filas.length;
+  return visibles;
 }
 
 export function iniciarFiltros() {
@@ -255,6 +365,22 @@ function crearTarjetaModelo(nombre) {
   nom.textContent = nombre;
   nom.title = nombre;
   for (const b of div.querySelectorAll("[data-accion]")) b.dataset.nombre = nombre;
+  // Resuelto UNA vez por tarjeta, no una vez por tick: actualizarTarjetaModelo
+  // corre a 1 Hz (ver el comentario de mas abajo) y antes hacia ~12
+  // querySelector por tarjeta en cada vuelta -- con 48 modelos en
+  // siguiendo.json son ~600 busquedas en el DOM por segundo que no hacian
+  // falta, porque ningun nodo de una tarjeta ya creada cambia de lugar.
+  div._nodos = {
+    mini: div.querySelector(".miniatura-grande"),
+    sigue: div.querySelector(".etiqueta-sigue"),
+    vpn: div.querySelector(".etiqueta-vpn"),
+    badgeSitio: div.querySelector("[data-badge='sitio']"),
+    badgeRec: div.querySelector("[data-badge='rec']"),
+    check: div.querySelector("[data-accion='toggle-grabar']"),
+    botonVpn: div.querySelector("[data-accion='toggle-vpn']"),
+    quitar: div.querySelector("[data-accion='quitar-favorita']"),
+    agregar: div.querySelector("[data-accion='agregar-favorita']"),
+  };
   return div;
 }
 
@@ -276,35 +402,38 @@ function pintarBadge(badge, info) {
 
 function actualizarTarjetaModelo(el, fila) {
   const { nombre, local, siguiendo, enVpn, enLista } = fila;
-  const info = estadoDeFila(fila);
+  // fila._infoSitio ya lo calculo renderBarraFiltros() para esta misma
+  // fila en esta misma vuelta -- evita una tercera corrida de
+  // estadoDeFila() por tarjeta por tick.
+  const info = fila._infoSitio || estadoDeFila(fila);
   const rec = grabacionDeFila(fila);
+
+  const n = el._nodos;
 
   const estado = rec && rec.clase === "grabando" ? "grabando" : info.clase;
   if (el.dataset.estado !== estado) el.dataset.estado = estado;
-  sincronizarMiniatura(el.querySelector(".miniatura-grande"), nombre);
+  sincronizarMiniatura(n.mini, nombre);
 
-  el.querySelector(".etiqueta-sigue").classList.toggle("oculta", !siguiendo);
-  el.querySelector(".etiqueta-vpn").classList.toggle("oculta", !enVpn);
+  n.sigue.classList.toggle("oculta", !siguiendo);
+  n.vpn.classList.toggle("oculta", !enVpn);
 
-  pintarBadge(el.querySelector("[data-badge='sitio']"), info);
-  pintarBadge(el.querySelector("[data-badge='rec']"), rec);
+  pintarBadge(n.badgeSitio, info);
+  pintarBadge(n.badgeRec, rec);
 
   // No pisar el control que el usuario esta tocando justo ahora -- mismo
   // criterio que vista_ajustes.js:renderDirectivas, que ya salteaba el
   // campo con el foco para no comerse lo que se estaba escribiendo. Aca
   // importa igual: el click en el conmutador dispara un POST y un
   // refrescar(), y pisarle el checked en el medio lo haria parpadear.
-  const check = el.querySelector("[data-accion='toggle-grabar']");
-  if (check !== document.activeElement && check.checked !== enLista) {
-    check.checked = enLista;
+  if (n.check !== document.activeElement && n.check.checked !== enLista) {
+    n.check.checked = enLista;
   }
 
-  const botonVpn = el.querySelector("[data-accion='toggle-vpn']");
-  botonVpn.dataset.vpnActivo = enVpn ? "1" : "0";
-  ponerTexto(botonVpn, enVpn ? "quitar VPN" : "marcar VPN");
+  n.botonVpn.dataset.vpnActivo = enVpn ? "1" : "0";
+  ponerTexto(n.botonVpn, enVpn ? "quitar VPN" : "marcar VPN");
 
-  el.querySelector("[data-accion='quitar-favorita']").classList.toggle("oculta", !local);
-  el.querySelector("[data-accion='agregar-favorita']").classList.toggle("oculta", local);
+  n.quitar.classList.toggle("oculta", !local);
+  n.agregar.classList.toggle("oculta", local);
 }
 
 function vaciarFavoritas(cont, html) {
@@ -317,16 +446,15 @@ export function renderFavoritas(estado) {
   const cont = document.getElementById("favoritas");
   const filas = fusionarFavoritas(estado);
 
-  renderBarraFiltros(filas);
-
-  const visibles = filas.filter(filaPasaFiltros);
-  // con el filtro "Grabando" prendido, las que de verdad estan grabando
-  // van primero -- el filtro ya las incluye a todas (es OR con el resto
-  // de filtros prendidos), esto solo las prioriza arriba de la lista.
-  // sort() es estable: dentro de cada grupo (grabando / no grabando) el
-  // orden que ya traian no se mezcla.
-  if (filtrosActivos.has("grabando")) {
-    visibles.sort((a, b) => (b.grabando ? 1 : 0) - (a.grabando ? 1 : 0));
+  // El array que devuelve ya viene filtrado: una sola pasada sobre
+  // `filas` sirve para los contadores de la barra Y para esta lista, en
+  // vez de que cada uno recorra todo de nuevo con su propio criterio.
+  const visibles = renderBarraFiltros(filas);
+  // Grabando / En lista / Show publico son OR entre si (el filtro ya los
+  // incluye a todos en `visibles`), pero el usuario los quiere agrupados
+  // y no mezclados: ver ORDEN_PRIORIDAD/rangoPrioridad mas arriba.
+  if (ORDEN_PRIORIDAD.some(c => filtrosActivos.has(c))) {
+    visibles.sort((a, b) => rangoPrioridad(a) - rangoPrioridad(b));
   }
 
   if (filas.length === 0) {
@@ -383,6 +511,27 @@ export function renderSesion(estado) {
   const resumen = document.getElementById("resumen-sesion");
   const sesion = estado.sesion || { activa: false, guardado: null };
   const siguiendo = estado.siguiendo;
+
+  // El click en "Actualizar" (main.js) deja un timestamp en el dataset
+  // del boton y lo deshabilita. En cuanto siguiendo.json tiene un
+  // "generado" mas nuevo que ESE click, la vuelta de verdad termino --
+  // recien ahi se rehabilita y se avisa. Antes no habia ningun momento
+  // en que el usuario supiera que la actualizacion ya estaba lista (ni
+  // que habia fallado): el boton se podia apretar de nuevo en cualquier
+  // momento y el unico rastro era la linea "ya hay una actualizacion en
+  // curso" si llegabas a pisar la vuelta anterior.
+  const botonAct = document.getElementById("boton-actualizar-siguiendo");
+  if (botonAct && botonAct.dataset.actualizando) {
+    const desde = Number(botonAct.dataset.actualizando);
+    if (siguiendo && (siguiendo.generado || 0) > desde) {
+      delete botonAct.dataset.actualizando;
+      botonAct.disabled = false;
+      const enLinea = (siguiendo.modelos || []).length;
+      agregarLog("linea-ok", siguiendo.autenticado
+        ? "actualizacion lista -- " + enLinea + " en linea"
+        : "actualizacion lista -- " + (siguiendo.error || "sesion caducada"));
+    }
+  }
 
   if (siguiendo && siguiendo.autenticado === false) {
     punto.className = "punto mal";

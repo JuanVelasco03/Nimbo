@@ -278,15 +278,35 @@ function iniciarAcciones() {
     refrescar();
   });
 
-  document.getElementById("boton-actualizar-siguiendo").addEventListener("click", async () => {
+  document.getElementById("boton-actualizar-siguiendo").addEventListener("click", async (ev) => {
+    const boton = ev.currentTarget;
     try {
       // 202 {"ya_corriendo": true} = el dedupe de servidor.py:_lanzar_tarea
       // descarto este click porque la vuelta anterior todavia corre (hasta
-      // sesion.TOPE_TOTAL_S). Antes se descartaba igual pero sin decirlo, y
-      // se veia como un boton roto.
+      // sesion.TOPE_TOTAL_S, o el watchdog de TOPE_TAREA si quedo colgada).
+      // Antes se descartaba igual pero sin decirlo, y se veia como un
+      // boton roto.
       const r = await enviar("/api/sesion/actualizar", {});
       if (r && r.ya_corriendo) {
         agregarLog("linea-aviso", "ya hay una actualizacion en curso -- espera a que termine");
+      } else {
+        // El timestamp queda en el dataset para que renderSesion()
+        // (vista_modelos.js) sepa cuando la vuelta de verdad termino --
+        // ver siguiendo.generado alla. boton.disabled se cae solo desde
+        // ahi, o a los 90s por el watchdog del servidor en el peor caso.
+        boton.dataset.actualizando = String(Date.now() / 1000);
+        boton.disabled = true;
+        // Red de seguridad del lado del cliente: si siguiendo.json nunca
+        // llega a actualizarse (la tarea murio sin escribir nada, o esta
+        // pestana se quedo sola sin otro click que dispare el watchdog
+        // del servidor), el boton no tiene que quedar deshabilitado para
+        // siempre. Mismo tope que sesion.TOPE_TOTAL_S + margen.
+        setTimeout(() => {
+          if (boton.dataset.actualizando) {
+            delete boton.dataset.actualizando;
+            boton.disabled = false;
+          }
+        }, 60000);
       }
     } catch (err) { mostrarError(err); }
     refrescar();

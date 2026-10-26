@@ -275,7 +275,12 @@ export function iniciarGrabaciones() {
     if (boton) cargarParteEnVideo(boton.dataset.archivo);
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape" && grupoAbierto) cerrarModal();
+    if (ev.key !== "Escape" || !grupoAbierto) return;
+    // mismo motivo que vista_previa.js: si hay OTRO elemento en pantalla
+    // completa (el modal de previa tiene boton propio para eso), este
+    // Escape global no tiene que cerrar este modal tambien.
+    if (document.fullscreenElement) return;
+    cerrarModal();
   });
 }
 

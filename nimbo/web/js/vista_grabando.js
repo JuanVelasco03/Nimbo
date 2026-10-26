@@ -5,6 +5,7 @@
 import { bandera } from "./api.js";
 import { formatoMB, formatoDuracion, formatoGB } from "./formato.js";
 import { sincronizarMiniatura } from "./sitio.js";
+import { edadSegmento, SIN_SENAL_S } from "./vista_modelos.js";
 
 function estadoVivoSitio(estado) {
   // mismo vocabulario que ESTADOS_PUBLICOS+ESTADOS_PRIVADOS de
@@ -19,10 +20,34 @@ function estadoVivoSitio(estado) {
 
 // -- el estado que muestra una tarjeta (puro: ni DOM ni efectos) --------
 
-function estadoDeTarjeta(det, sup) {
+function estadoDeTarjeta(det, sup, generado) {
   let clase = "offline", texto = "detectando...", detalle = "";
 
-  if (det && det.grabando) {
+  // Estas dos ramas van ANTES que "det.grabando": ese campo solo dice
+  // "hay una sesion abierta", no "entran bytes" (ver grabador_directo.py
+  // fila_estado()/puente.py _publicar()) -- sin esto la tarjeta seguia
+  // mostrando GRABANDO para siempre con un 403/404 en bucle contra el CDN.
+  if (det && det.estado === "sin_dato") {
+    // estado_captura.fusionar() marco esta fila como vencida: el proceso
+    // que la escribe (puente.py/grabador_directo.py) no publico en los
+    // ultimos 15s -- probablemente esta parando y uniendo. No es
+    // "OFFLINE": no se sabe nada, no que se fue.
+    clase = "mal";
+    texto = "SIN DATO";
+    detalle = "el grabador no publica estado (¿parando?)";
+    return { clase, texto, detalle };
+  }
+
+  const edad = det && det.grabando ? edadSegmento(det.ultimo_segmento, generado) : null;
+  if (det && det.grabando && edad !== null && edad > SIN_SENAL_S) {
+    clase = "mal";
+    texto = "SIN SENAL";
+    detalle = "sin segmentos hace " + Math.round(edad) + "s";
+  } else if (det && det.estado === "esperando") {
+    clase = "privado";
+    texto = "ESPERANDO PUBLICO";
+    detalle = "guardado, reintento cada 30s";
+  } else if (det && det.grabando) {
     clase = "grabando";
     texto = "GRABANDO";
     detalle = [det.elegida || det.mejor || "", formatoDuracion(det.inicio), formatoMB(det.bytes)]
@@ -107,6 +132,17 @@ function crearTarjeta(nombre) {
   nom.textContent = nombre;
   nom.title = nombre;
   for (const b of div.querySelectorAll("[data-accion]")) b.dataset.nombre = nombre;
+  // Resuelto una sola vez por tarjeta (ver el mismo criterio en
+  // vista_modelos.js:crearTarjetaModelo): actualizarTarjeta corre a 1 Hz
+  // y ningun nodo de una tarjeta ya creada cambia de lugar.
+  div._nodos = {
+    mini: div.querySelector(".miniatura-grande"),
+    badge: div.querySelector(".estado-badge"),
+    texto: div.querySelector(".estado-badge .texto"),
+    detalle: div.querySelector(".detalle"),
+    vpn: div.querySelector(".etiqueta-vpn"),
+    verVivo: div.querySelector("[data-accion='ver-vivo']"),
+  };
   return div;
 }
 
@@ -117,21 +153,21 @@ function poner(nodo, texto) {
   if (nodo.textContent !== texto) nodo.textContent = texto;
 }
 
-function actualizarTarjeta(el, nombre, det, sup, enVpn) {
-  const { clase, texto, detalle } = estadoDeTarjeta(det, sup);
+function actualizarTarjeta(el, nombre, det, sup, enVpn, generado) {
+  const { clase, texto, detalle } = estadoDeTarjeta(det, sup, generado);
+  const n = el._nodos;
 
   if (el.dataset.estado !== clase) el.dataset.estado = clase;
-  sincronizarMiniatura(el.querySelector(".miniatura-grande"), nombre);
+  sincronizarMiniatura(n.mini, nombre);
 
-  const badge = el.querySelector(".estado-badge");
   const claseBadge = "estado-badge " + clase;
-  if (badge.className !== claseBadge) badge.className = claseBadge;
-  poner(badge.querySelector(".texto"), texto);
-  poner(el.querySelector(".detalle"), detalle);
+  if (n.badge.className !== claseBadge) n.badge.className = claseBadge;
+  poner(n.texto, texto);
+  poner(n.detalle, detalle);
 
-  el.querySelector(".etiqueta-vpn").classList.toggle("oculta", !enVpn);
+  n.vpn.classList.toggle("oculta", !enVpn);
   const vivo = !!(det && det.sesiones && det.sesiones.length);
-  el.querySelector("[data-accion='ver-vivo']").classList.toggle("oculta", !vivo);
+  n.verVivo.classList.toggle("oculta", !vivo);
 }
 
 // -- la grilla ----------------------------------------------------------
@@ -156,6 +192,7 @@ export function renderTarjetas(estado) {
   const streams = (estado.detector && estado.detector.streams) || [];
   const emisiones = (estado.supervisor && estado.supervisor.emisiones) || [];
   const vpn = new Set(estado.lista.vpn || []);
+  const generado = (estado.detector && estado.detector.generado) || 0;
 
   // El "antes" del experimento (localStorage.nimbo_tarjetas_in_place =
   // "0"): la reconstruccion completa de antes del 25/10/2026, para poder
@@ -169,7 +206,7 @@ export function renderTarjetas(estado) {
       actualizarTarjeta(el, nombre,
                         streams.find(s => (s.modelo || "").toLowerCase() === nombre.toLowerCase()),
                         emisiones.find(e => e.nombre.toLowerCase() === nombre.toLowerCase()),
-                        vpn.has(nombre.toLowerCase()));
+                        vpn.has(nombre.toLowerCase()), generado);
       cont.appendChild(el);
     }
     return;
@@ -188,7 +225,7 @@ export function renderTarjetas(estado) {
     actualizarTarjeta(el, nombre,
                       streams.find(s => (s.modelo || "").toLowerCase() === nombre.toLowerCase()),
                       emisiones.find(e => e.nombre.toLowerCase() === nombre.toLowerCase()),
-                      vpn.has(nombre.toLowerCase()));
+                      vpn.has(nombre.toLowerCase()), generado);
     // appendChild sobre un nodo que ya esta en el DOM lo MUEVE al final,
     // no lo recrea: la <img> no se vuelve a pedir. Haciendolo en el orden
     // de `nombres` queda ordenado igual que grabar.txt, y para el caso
@@ -214,5 +251,22 @@ export function renderBarraGlobal(estado) {
     resumenTunel.className = det.pedidos_tunel > 40 ? "alerta" : "";
   } else {
     resumenTunel.textContent = "";
+  }
+
+  // Durante la parada, el camino directo puede tardar varios minutos
+  // uniendo (@inactividad + la cola de union, secuencial) sin que haya
+  // nada mas que mostrar -- sin este aviso parecia que Nimbo se habia
+  // colgado. Ver grabador_directo.py:_publicar_estado (parando/uniendo).
+  const directoInfo = det && det.directo;
+  const resumenUniendo = document.getElementById("resumen-uniendo");
+  if (resumenUniendo) {
+    if (directoInfo && (directoInfo.parando || directoInfo.uniendo > 0)) {
+      resumenUniendo.textContent = directoInfo.uniendo > 0
+        ? "parando -- uniendo " + directoInfo.uniendo + " grabacion(es)..."
+        : "parando...";
+      resumenUniendo.classList.remove("oculta");
+    } else {
+      resumenUniendo.classList.add("oculta");
+    }
   }
 }

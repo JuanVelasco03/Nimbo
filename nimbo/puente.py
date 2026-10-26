@@ -244,6 +244,11 @@ class Puente:
                     "privado_desde": st.privado_desde or None,
                     "inicio": st.inicio or None,
                     "ultimo_visto": st.ultimo_visto,
+                    # el detector ya lo mantiene (detectar_m3u8.py:674,
+                    # sellado en el vigilante de @inactividad) -- nadie lo
+                    # publicaba. Es la señal que el frontend usa para
+                    # distinguir "grabando" de "grabando pero sin bytes".
+                    "ultimo_segmento": st.ultimo_segmento or None,
                     "segmentos": st.segmentos,
                     "bytes": st.bytes,
                     "sesiones": self._sesiones_de(st),

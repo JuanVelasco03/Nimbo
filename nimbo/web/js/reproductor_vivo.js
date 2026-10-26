@@ -30,6 +30,12 @@ const SEGMENTOS_ATRAS = 3;
 // arranque y contestaba salto=true en cada tick (ver vivo.py,
 // GRUPOS_BACKLOG_SALTO).
 const MAX_POR_TICK = 24;
+// Cuantos ticks seguidos fallando se toleran antes de avisar el error de
+// verdad (que vuelve al snapshot, ver vista_previa.js:_volverASnapshot).
+// Antes UN solo 404/hipo de red en /api/vivo/segmentos tiraba toda la
+// reproduccion -- con esto un hipo transitorio de 1-1.5s (2-3 ticks de
+// 500ms) no se nota.
+const TOLERANCIA_FALLOS = 3;
 const VENTANA_MAX_S = 90;
 const VENTANA_OBJETIVO_S = 45;
 const DERIVA_MAX_S = 6.0;
@@ -122,6 +128,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
   let cola = [];               // [{tipo:"append"|"remove", ...}]
   let destruido = false;
   let tickEnVuelo = false;     // ver _tick(): el worker no espera al await
+  let fallosSeguidos = 0;      // ver TOLERANCIA_FALLOS en _tick()
   let ultimaClave = null;      // [epoch, secuencia, parte] ya appendeado
   let diag = _diagNuevo();     // solo se llena si nimbo_diag_vivo (_medir)
   let rangosPrevios = 0;
@@ -318,11 +325,29 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
       }
 
       const trozos = [];
+      let faltante = false;
       for (const seg of g.partes) {
-        trozos.push(await obtenerBytes(
-          "/api/vivo/segmento?sesion=" + encodeURIComponent(mia)
-          + "&nombre=" + encodeURIComponent(seg.nombre)));
+        try {
+          trozos.push(await obtenerBytes(
+            "/api/vivo/segmento?sesion=" + encodeURIComponent(mia)
+            + "&nombre=" + encodeURIComponent(seg.nombre)));
+        } catch (e) {
+          // Un 404 de una sola parte (el detector roto la sesion, o
+          // cosecha_streams.py barrio la carpeta) ya no va a aparecer
+          // nunca: insistir no sirve, y antes esto se propagaba hasta
+          // _tick() y volaba TODA la reproduccion de vuelta al snapshot
+          // por un hipo transitorio. Se abandona este grupo y se avanza
+          // el cursor -- no se pierde nada mas que el (como mucho) medio
+          // segundo que cubria.
+          faltante = true;
+          break;
+        }
         if (sesion !== mia) return null;   // se desmonto/roto mientras bajaba
+      }
+      if (faltante) {
+        cursorNuevo = ultimaParte.cursor;
+        if (claveMax) ultimaClave = claveMax;
+        continue;
       }
       _encolarAppend(_concatenar(trozos));
       diag.appends += 1;
@@ -345,9 +370,18 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
         cursorNuevo = seg.cursor;
         continue;
       }
-      const bytes = await obtenerBytes(
-        "/api/vivo/segmento?sesion=" + encodeURIComponent(mia)
-        + "&nombre=" + encodeURIComponent(seg.nombre));
+      let bytes;
+      try {
+        bytes = await obtenerBytes(
+          "/api/vivo/segmento?sesion=" + encodeURIComponent(mia)
+          + "&nombre=" + encodeURIComponent(seg.nombre));
+      } catch (e) {
+        // mismo criterio que _appendearGrupos: un 404 no vuelve, se
+        // salta este archivo en vez de tirar toda la reproduccion.
+        if (clave) ultimaClave = clave;
+        cursorNuevo = seg.cursor;
+        continue;
+      }
       if (sesion !== mia) return null;
       _encolarAppend(bytes);
       diag.appends += 1;
@@ -481,8 +515,10 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
       _vigilarDeriva();
       _medir();
       avisarEstado({ vivo: !!r.vivo });
+      fallosSeguidos = 0;
     } catch (e) {
-      avisarError(e);
+      fallosSeguidos += 1;
+      if (fallosSeguidos >= TOLERANCIA_FALLOS) avisarError(e);
     } finally {
       tickEnVuelo = false;
     }
@@ -547,6 +583,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
     sesion = sesionNueva;
     cursor = null;
     ultimaClave = null;
+    fallosSeguidos = 0;
     saltoPendiente = false;
     avisarEstado({ empalmada: sesionNueva });
     return true;
@@ -561,6 +598,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
     cursor = null;
     saltoPendiente = false;
     ultimaClave = null;
+    fallosSeguidos = 0;
     diag = _diagNuevo();
     rangosPrevios = 0;
     appendPorGrupo = _bandera("nimbo_append_por_grupo", true);
@@ -656,6 +694,7 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
     sesion = null;
     cursor = null;
     ultimaClave = null;
+    fallosSeguidos = 0;
   }
 
   function destruir() {
