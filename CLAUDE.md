@@ -200,6 +200,27 @@ El resumen de lo que hizo el hijo sale de su **stderr** y su stdout
 (`logging` escribe en stderr, leer solo stdout dejaba el resumen
 siempre vacío).
 
+**La unión intenta leer desde el disco de TEMP, no desde `streams\`
+directo**, si eso de verdad cambia de disco
+(`detectar_m3u8.py:_preparar_escenario`). Unir es leer miles de archivos
+chicos de a uno (y, si `ffmpeg` se atasca, `MAX_REPARACIONES` los relee
+hasta 6 veces desde cero), y eso es justo lo que `_Freno` ya frenaba
+porque le compite el disco a las grabaciones en curso
+(`RITMO_UNION`, más arriba). Si `streams\` vive en un HDD y `%TEMP%`
+cae en el SSD del sistema (lo normal en Windows), copiar la sesión una
+vez al SSD antes de unir saca esas relecturas del HDD sin mover
+`streams\` ni el `.mp4` final, que siguen en `GRABACIONES_DIR` tal cual
+— la copia en sí se hace con el mismo `_Freno` que ya protegía al
+`_alimentar` original, porque sigue leyendo del HDD. Si TEMP está en el
+mismo disco que la sesión, o no hay margen (`MARGEN_ESCENARIO = 1.15`,
+más chico que `MARGEN_DISCO` porque es solo una copia transitoria, no el
+tamaño del `.mp4` final), no copia nada y lee in situ como antes — el
+escenario se borra siempre al terminar, con `try/finally`, sin acumular
+nada entre uniones (una por vez: la unión ya es serial por diseño).
+Probado en la instalación real (`F:` HDD, `%TEMP%` en `C:` SSD):
+3.966 archivos, 512 MB, copiados y unidos sin tocar `streams\` ni el
+destino final.
+
 `nucleo\scripts\mouflon.py`, en cambio, **sí es importable sin peligro**
 desde cualquier lado: es protocolo puro (descifrado MOUFLON v2, lectura
 del master `.m3u8`, elección de la mejor rendición, HTTP mínimo), sin

@@ -1265,6 +1265,68 @@ def _secuencia_atascada(cortes, bytes_salida):
     return atascada
 
 
+# Margen de disco para el escenario de staging (ver _preparar_escenario):
+# ahi solo se guarda una COPIA de lo que ya existe en streams, asi que el
+# margen es mas chico que MARGEN_DISCO (que reserva para el .mp4 final).
+MARGEN_ESCENARIO = 1.15
+
+
+def _preparar_escenario(inits, segmentos, carpeta_sesion, etiqueta, total):
+    """Si TEMP vive en otro disco que carpeta_sesion, copia ahi init +
+    segmentos antes de unir. -> (inits, segmentos, carpeta_tmp).
+
+    El motivo: leer miles de archivos chicos (y, con MAX_REPARACIONES,
+    releerlos hasta 6 veces) es lo que mas pesa de la union, y eso le
+    compite el disco a las grabaciones en curso si streams\\ vive en un
+    HDD. Copiarlos una vez a donde vive TEMP (en la instalacion real, el
+    SSD del sistema) hace que esas relecturas salgan de ahi en vez de
+    HDD -- sin mover streams\\ ni el .mp4 final, que siguen en
+    GRABACIONES_DIR tal cual.
+
+    Si TEMP esta en el mismo disco que carpeta_sesion (o no hay margen)
+    copiar no ayuda en nada y solo duplica E/S: se sigue leyendo in situ,
+    carpeta_tmp da None y no hay nada que limpiar despues."""
+    tmp_base = tempfile.gettempdir()
+    if os.path.splitdrive(tmp_base)[0].lower() == \
+            os.path.splitdrive(carpeta_sesion)[0].lower():
+        return inits, segmentos, None
+    try:
+        libre = shutil.disk_usage(tmp_base).free
+    except OSError:
+        return inits, segmentos, None
+    if libre < total * MARGEN_ESCENARIO:
+        log.info("[UNIR] %s: sin lugar en %s para el escenario rapido "
+                  "(hacen falta ~%.1f GB); leo del disco de origen",
+                  etiqueta, os.path.splitdrive(tmp_base)[0] or tmp_base,
+                  total * MARGEN_ESCENARIO / 1073741824)
+        return inits, segmentos, None
+    carpeta_tmp = tempfile.mkdtemp(prefix="nimbo_union_", dir=tmp_base)
+    try:
+        # La copia lee del MISMO disco (streams\, el HDD) que las
+        # grabaciones en curso: tiene que respetar el mismo freno que
+        # _alimentar, o se vuelve a competirles el disco justo en la parte
+        # que esto queria evitar.
+        freno = _Freno()
+        nuevos_inits = []
+        for ruta in inits:
+            destino = os.path.join(carpeta_tmp, os.path.basename(ruta))
+            shutil.copyfile(ruta, destino)
+            nuevos_inits.append(destino)
+            freno.paso(os.path.getsize(destino))
+        nuevos_segs = []
+        for ruta in segmentos:
+            destino = os.path.join(carpeta_tmp, os.path.basename(ruta))
+            shutil.copyfile(ruta, destino)
+            nuevos_segs.append(destino)
+            freno.paso(os.path.getsize(destino))
+    except OSError as e:
+        log.warning("[UNIR] %s: fallo copiando al escenario rapido (%s); "
+                    "leo del disco de origen", etiqueta, e)
+        shutil.rmtree(carpeta_tmp, ignore_errors=True)
+        return inits, segmentos, None
+    return nuevos_inits, nuevos_segs, carpeta_tmp
+
+
 def _init_de_hermana(carpeta_sesion: str) -> str:
     """El init de otra sesion del mismo stream y la misma variante, si hay.
 
@@ -1339,73 +1401,86 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
     saltar = set()
     salida = None
 
-    for intento in range(MAX_REPARACIONES + 1):
-        rutas, cortes, total = _plan(inits, segmentos, saltar)
-        if not intento:
-            if not _hay_espacio(total, etiqueta):
-                return None
-            log.info("[UNIR] %s | %d segmentos | %.1f MB -> remuxeando...",
-                     etiqueta, len(segmentos), total / 1048576)
+    total_origen = sum(os.path.getsize(p) for p in inits[:1]) + \
+        sum(os.path.getsize(p) for p in segmentos)
+    inits, segmentos, carpeta_tmp = _preparar_escenario(
+        inits, segmentos, carpeta_sesion, etiqueta, total_origen)
+    if carpeta_tmp:
+        log.info("[UNIR] %s: %d archivos copiados a %s para leerlos de ahi",
+                  etiqueta, len(inits) + len(segmentos),
+                  os.path.splitdrive(carpeta_tmp)[0] or carpeta_tmp)
 
-        if not ffmpeg:
-            # sin ffmpeg no hay mp4 posible: queda el pegote en crudo, que el
-            # reproductor no abre pero conserva todo el contenido
-            if not _hay_espacio(total, etiqueta, MARGEN_DISCO + 1):
-                return None
-            if _escribir_crudo(rutas, crudo) is None:
-                return None
-            if remux:
-                log.warning("[UNIR] ffmpeg no encontrado, queda %s", crudo)
-            salida = crudo
-            break
+    try:
+        for intento in range(MAX_REPARACIONES + 1):
+            rutas, cortes, total = _plan(inits, segmentos, saltar)
+            if not intento:
+                if not _hay_espacio(total, etiqueta):
+                    return None
+                log.info("[UNIR] %s | %d segmentos | %.1f MB -> remuxeando...",
+                         etiqueta, len(segmentos), total / 1048576)
 
-        # Por tuberia: ffmpeg lee los fragmentos directamente y no se escribe
-        # el pegote intermedio. Ahorra una copia entera de la grabacion en
-        # disco por intento (el pico baja de 3x a 2x su tamano).
-        hecho = _remuxear_tubo(ffmpeg, rutas, final, etiqueta)
-        if hecho is None:
-            # red de seguridad: si por tuberia no sale, se hace como antes
-            hecho = _remuxear_disco(ffmpeg, rutas, crudo, final, etiqueta, total)
-        if hecho is None:
-            salida = crudo if os.path.exists(crudo) else None
-            break
-        salida, cadena = hecho
-        if not intento and cadena.reinicios:
-            log.info("[UNIR] %s: %d reinicio(s) de emision; los tiempos se "
-                     "reencadenaron para que el video no se corte",
-                     etiqueta, cadena.reinicios)
-        if not intento and cadena.huecos:
-            log.info("[UNIR] %s: %d corte(s) que no llegaron a bajarse "
-                     "(%.0f s en total); cerrados, el video corre seguido y "
-                     "dura eso menos", etiqueta, cadena.huecos,
-                     cadena.segundos_huecos)
+            if not ffmpeg:
+                # sin ffmpeg no hay mp4 posible: queda el pegote en crudo, que el
+                # reproductor no abre pero conserva todo el contenido
+                if not _hay_espacio(total, etiqueta, MARGEN_DISCO + 1):
+                    return None
+                if _escribir_crudo(rutas, crudo) is None:
+                    return None
+                if remux:
+                    log.warning("[UNIR] ffmpeg no encontrado, queda %s", crudo)
+                salida = crudo
+                break
 
-        # Si el mp4 sale mucho mas chico que el pegote, ffmpeg dejo de leer a
-        # mitad: hay un segmento que no le gusta. Se busca cual, se deja fuera
-        # y se vuelve a intentar; perder 2 segundos es mejor que perder horas.
-        hechos = os.path.getsize(salida)
-        if hechos >= total * FRACCION_MINIMA or intento == MAX_REPARACIONES:
-            if saltar:
-                log.warning("[UNIR] %s: se dejaron fuera %d segmento(s) que "
-                            "atascaban a ffmpeg (%s); son unos pocos segundos",
-                            etiqueta, len(saltar),
-                            ", ".join(str(x) for x in sorted(saltar)))
-            break
+            # Por tuberia: ffmpeg lee los fragmentos directamente y no se escribe
+            # el pegote intermedio. Ahorra una copia entera de la grabacion en
+            # disco por intento (el pico baja de 3x a 2x su tamano).
+            hecho = _remuxear_tubo(ffmpeg, rutas, final, etiqueta)
+            if hecho is None:
+                # red de seguridad: si por tuberia no sale, se hace como antes
+                hecho = _remuxear_disco(ffmpeg, rutas, crudo, final, etiqueta, total)
+            if hecho is None:
+                salida = crudo if os.path.exists(crudo) else None
+                break
+            salida, cadena = hecho
+            if not intento and cadena.reinicios:
+                log.info("[UNIR] %s: %d reinicio(s) de emision; los tiempos se "
+                         "reencadenaron para que el video no se corte",
+                         etiqueta, cadena.reinicios)
+            if not intento and cadena.huecos:
+                log.info("[UNIR] %s: %d corte(s) que no llegaron a bajarse "
+                         "(%.0f s en total); cerrados, el video corre seguido y "
+                         "dura eso menos", etiqueta, cadena.huecos,
+                         cadena.segundos_huecos)
 
-        atascada = _secuencia_atascada(cortes, hechos)
-        if atascada is None or atascada in saltar:
-            log.warning("[UNIR] %s: el remux sale corto (%.0f%%) y no logro "
-                        "localizar el segmento culpable", etiqueta,
-                        100.0 * hechos / total)
-            break
-        log.warning("[UNIR] %s: ffmpeg se paro en el %.0f%%; salto la "
-                    "secuencia %s y reintento", etiqueta,
-                    100.0 * hechos / total, atascada)
-        saltar.add(atascada)
-        try:
-            os.remove(salida)
-        except OSError:
-            pass
+            # Si el mp4 sale mucho mas chico que el pegote, ffmpeg dejo de leer a
+            # mitad: hay un segmento que no le gusta. Se busca cual, se deja fuera
+            # y se vuelve a intentar; perder 2 segundos es mejor que perder horas.
+            hechos = os.path.getsize(salida)
+            if hechos >= total * FRACCION_MINIMA or intento == MAX_REPARACIONES:
+                if saltar:
+                    log.warning("[UNIR] %s: se dejaron fuera %d segmento(s) que "
+                                "atascaban a ffmpeg (%s); son unos pocos segundos",
+                                etiqueta, len(saltar),
+                                ", ".join(str(x) for x in sorted(saltar)))
+                break
+
+            atascada = _secuencia_atascada(cortes, hechos)
+            if atascada is None or atascada in saltar:
+                log.warning("[UNIR] %s: el remux sale corto (%.0f%%) y no logro "
+                            "localizar el segmento culpable", etiqueta,
+                            100.0 * hechos / total)
+                break
+            log.warning("[UNIR] %s: ffmpeg se paro en el %.0f%%; salto la "
+                        "secuencia %s y reintento", etiqueta,
+                        100.0 * hechos / total, atascada)
+            saltar.add(atascada)
+            try:
+                os.remove(salida)
+            except OSError:
+                pass
+    finally:
+        if carpeta_tmp:
+            shutil.rmtree(carpeta_tmp, ignore_errors=True)
 
     if not salida:
         return None
