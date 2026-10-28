@@ -27,7 +27,10 @@ rem 1c) completo pero sin el Chromium headed (660 MB; rompe "ver navegador")
 python empaquetado\construir.py --descargar --completo --solo-shell
 
 rem 2) compilar el instalador -> dist\NimboSetup.exe
-"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" empaquetado\nimbo.iss
+rem ojo con la ruta: el instalador de Inno es per-user por defecto y
+rem deja ISCC.exe en %LOCALAPPDATA%\Programs\Inno Setup 6\, no en
+rem Program Files
+"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe" empaquetado\nimbo.iss
 ```
 
 `--descargar` es lo único que sale a internet (baja el embeddable de

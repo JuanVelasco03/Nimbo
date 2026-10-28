@@ -18,13 +18,15 @@
 ; y el acceso directo tiene que apuntar ahi. Si no, al pythonw embebido
 ; contra nimbo\app.py. Se detecta solo para que no haya dos .iss que
 ; mantener en paralelo.
-#if FileExists(AddBackslash(SourcePath) + Origen + "\nimbo\Nimbo.exe")
-  #define Lanzador "{app}\nimbo\Nimbo.exe"
-  #define Parametros ""
-#else
-  #define Lanzador "{app}\runtime\python\pythonw.exe"
-  #define Parametros """{app}\nimbo\app.py"""
-#endif
+;
+; Las lineas de [Icons]/[Run] se duplican por rama en vez de armar el
+; Parameters con un #define. No es por gusto: el valor que necesita el
+; caso sin compilar lleva comillas adentro (hay que entrecomillar la ruta
+; del .py, que puede tener espacios), y un #define con comillas metido en
+; un "{#...}" emite ""{app}\nimbo\app.py"" -- "Mismatched or misplaced
+; quotes on parameter Parameters", que es justo como fallo la primera
+; compilacion.
+#define Compilado FileExists(AddBackslash(SourcePath) + Origen + "\nimbo\Nimbo.exe")
 
 [Setup]
 AppId={{B2F4E1C7-5A9D-4F3E-8C21-6D0A7B4E9F12}
@@ -67,12 +69,21 @@ Source: "{#Origen}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs cre
 ; embebido (o nimbo\Nimbo.exe si el paquete vino compilado -- ver el #if de
 ; arriba). arrancar.bat sigue existiendo para el arranque con Windows: es
 ; a lo que apunta el shim de inicio_automatico.py.
-Name: "{group}\{#NombreApp}"; Filename: "{#Lanzador}"; Parameters: "{#Parametros}"; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"
+#if Compilado
+Name: "{group}\{#NombreApp}"; Filename: "{app}\nimbo\Nimbo.exe"; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"
+Name: "{autodesktop}\{#NombreApp}"; Filename: "{app}\nimbo\Nimbo.exe"; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"; Tasks: escritorio
+#else
+Name: "{group}\{#NombreApp}"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"
+Name: "{autodesktop}\{#NombreApp}"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"; Tasks: escritorio
+#endif
 Name: "{group}\Desinstalar {#NombreApp}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#NombreApp}"; Filename: "{#Lanzador}"; Parameters: "{#Parametros}"; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"; Tasks: escritorio
 
 [Run]
-Filename: "{#Lanzador}"; Parameters: "{#Parametros}"; WorkingDir: "{app}"; Description: "Abrir Nimbo ahora"; Flags: nowait postinstall skipifsilent
+#if Compilado
+Filename: "{app}\nimbo\Nimbo.exe"; WorkingDir: "{app}"; Description: "Abrir Nimbo ahora"; Flags: nowait postinstall skipifsilent
+#else
+Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; Description: "Abrir Nimbo ahora"; Flags: nowait postinstall skipifsilent
+#endif
 
 [UninstallDelete]
 ; Lo que Nimbo genera solo y no es del usuario. Las grabaciones (datos\),

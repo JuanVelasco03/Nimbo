@@ -415,6 +415,26 @@ def poner_licencia(salida, clave_publica, url, anon):
 
 # -- control final ---------------------------------------------------------
 
+def limpiar_pycache(salida):
+    """Saca los __pycache__\\ del paquete.
+
+    _copiar_arbol no los copia (solo copia archivos de un nivel), pero
+    aparecen igual en cuanto algo corre Python adentro de dist\\ -- por
+    ejemplo una verificacion a mano antes de empaquetar. Son inofensivos
+    (bytecode de los .py que viajan al lado), pero no tienen por que
+    estar, y uno viejo de otra version de Python es ruido al depurar.
+    """
+    n = 0
+    for base, carpetas, _ in os.walk(salida):
+        for d in list(carpetas):
+            if d == "__pycache__":
+                shutil.rmtree(os.path.join(base, d), ignore_errors=True)
+                carpetas.remove(d)
+                n += 1
+    if n:
+        _log("  %d __pycache__\\ sacados" % n)
+
+
 def auditar(salida):
     """Que no se haya colado nada de _PROHIBIDOS. Aborta si encuentra algo."""
     malos = []
@@ -529,6 +549,7 @@ def main(argv=None):
                        args.anon_licencia)
 
     _log("5/5 auditoria")
+    limpiar_pycache(salida)
     auditar(salida)
 
     with open(os.path.join(salida, "paquete.json"), "w", encoding="utf-8") as f:
