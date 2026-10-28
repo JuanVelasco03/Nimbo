@@ -40,6 +40,13 @@ DIR_WEB = os.path.join(_AQUI, "web")
 # cosmetico: supervisor.py y detectar_m3u8.py la reconocen por nombre
 # (SUBCARPETAS_SCRIPT) para calcular su propia base.
 DIR_NUCLEO = os.path.join(RAIZ, "nucleo")
+# Lo que trae el instalador para no depender de nada instalado en la
+# maquina: Python embebido, mitmdump standalone y (si se armo el paquete
+# completo) los navegadores de Playwright. En la copia de desarrollo esta
+# carpeta no existe y todo cae a lo que haya en el sistema, como siempre
+# -- ver localizar_python / localizar_mitmdump y
+# specs\distribucion_instalador.md S4.
+DIR_RUNTIME = os.path.join(RAIZ, "runtime")
 # Grabaciones y streams: viven en Nimbo (ver M3U8_BASE en
 # _arrancar_detector, nimbo\motor.py). Nunca se sube a git -- son .mp4
 # y segmentos crudos, no codigo.
@@ -82,15 +89,70 @@ _NUCLEO_REQUERIDO = ("detectar_m3u8.py", "supervisor.py", "mouflon.py",
                      "grabador_directo.py")
 
 
+def compilado() -> bool:
+    """Si esto corre dentro del binario compilado con Nuitka.
+
+    Cambia una sola cosa: como se arranca el camino directo. Compilado no
+    hay un lanzador_directo.py suelto que pasarle a un interprete, asi
+    que motor.py relanza el propio binario con --modo directo (ver
+    nimbo\\modos.py y specs\\distribucion_instalador.md S5.2). El
+    supervisor y la union siguen yendo por el Python embebido en los dos
+    casos: supervisor.py y detectar_m3u8.py viven en disco de todas
+    formas (mitmdump los carga por ruta).
+    """
+    return "__compiled__" in globals() or getattr(sys, "frozen", False)
+
+
 def nucleo_incompleto(ruta_scripts: str) -> list:
     """Que archivos imprescindibles faltan en nucleo\\scripts\\."""
     return [n for n in _NUCLEO_REQUERIDO
             if not os.path.isfile(os.path.join(ruta_scripts, n))]
 
 
+def mitmdump_embarcado() -> str:
+    """El mitmdump que trae el instalador, o "" si esta es una copia de
+    desarrollo.
+
+    Va primero que todo: si Nimbo se instalo con su runtime adentro no
+    tiene por que depender de lo que el usuario tenga instalado aparte,
+    ni heredar su version. Es el zip standalone de mitmproxy copiado tal
+    cual, con su _internal\\ al lado (ver
+    specs\\distribucion_instalador.md S2.1).
+    """
+    ruta = os.path.join(DIR_RUNTIME, "mitmproxy", "mitmdump.exe")
+    return ruta if os.path.isfile(ruta) else ""
+
+
+def python_embarcado() -> str:
+    """El Python embebido que trae el instalador, o "" si no esta.
+
+    Es el zip "embeddable" de python.org con las dependencias ya puestas
+    adentro (ver empaquetado\\construir.py). Trae pythonw.exe al lado de
+    python.exe, asi que _sin_consola sigue funcionando sin tocarlo.
+    """
+    ruta = os.path.join(DIR_RUNTIME, "python", "python.exe")
+    return ruta if os.path.isfile(ruta) else ""
+
+
+def navegadores_embarcados() -> str:
+    """La carpeta de navegadores de Playwright del paquete completo, o ""
+    si se armo el liviano (sin respaldo de navegador).
+
+    Playwright la busca por PLAYWRIGHT_BROWSERS_PATH, que cargar() mete
+    en el entorno de este proceso -- motor.py le pasa a sus hijos una
+    copia de os.environ, asi que el supervisor la hereda sin que motor.py
+    tenga que saber nada de esto.
+    """
+    ruta = os.path.join(DIR_RUNTIME, "navegadores")
+    return ruta if os.path.isdir(ruta) else ""
+
+
 def localizar_mitmdump() -> str:
     """mitmdump.exe. El instalador de mitmproxy no lo pone en el PATH de
     todas las consolas, asi que tambien se mira donde lo deja por defecto."""
+    propio = mitmdump_embarcado()
+    if propio:
+        return propio
     hallado = shutil.which("mitmdump")
     if hallado:
         return hallado
@@ -117,6 +179,17 @@ def localizar_python() -> str:
     (3.10, 3.12 y 3.13) y Playwright solo esta en el 3.12, que es justo el
     que NO es el de 'py' por defecto.
     """
+    # Si el paquete trae su propio Python, ese manda y se corta aca --
+    # sin preguntar por Playwright. Es a proposito: en el paquete liviano
+    # el embebido NO tiene Playwright, y preguntar hacia que la busqueda
+    # lo descartara y se fuera a buscar un Python del sistema, que puede
+    # ser cualquier cosa (otra version, otro juego de dependencias) o no
+    # existir. Que falte el respaldo de navegador ya lo dice preflight.py;
+    # no es motivo para salirse de la instalacion.
+    propio = python_embarcado()
+    if propio:
+        return propio
+
     candidatos = [sys.executable]
     for nombre in ("python", "python3"):
         hallado = shutil.which(nombre)
@@ -136,8 +209,16 @@ def _sin_consola(python: str) -> str:
     Los hijos se lanzan con CREATE_NO_WINDOW, pero pythonw evita tambien el
     parpadeo de la consola en el arranque.
     """
-    alterno = python.replace("python.exe", "pythonw.exe")
-    return alterno if os.path.isfile(alterno) else python
+    # Sobre el basename y sin mirar mayusculas: shutil.which() devuelve lo
+    # que diga el PATHEXT del sistema y en esta maquina da "python.EXE",
+    # con lo que un replace("python.exe", ...) no cambiaba nada y se
+    # seguia usando el exe con consola.
+    carpeta, nombre = os.path.split(python)
+    if nombre.lower() == "python.exe":
+        alterno = os.path.join(carpeta, "pythonw.exe")
+        if os.path.isfile(alterno):
+            return alterno
+    return python
 
 
 # -- la configuracion ------------------------------------------------------
@@ -266,6 +347,14 @@ def cargar(completar: bool = True) -> Ajustes:
             datos = json.load(f)
     except (OSError, ValueError):
         pass                          # primera vez, o archivo roto: defectos
+    # Antes que nada: si el paquete trae navegadores propios, dejarlo
+    # dicho en el entorno de este proceso. setdefault y no asignacion --
+    # un valor puesto a mano afuera manda, mismo criterio que M3U8_BASE
+    # en motor.py.
+    navegadores = navegadores_embarcados()
+    if navegadores:
+        os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", navegadores)
+
     a = Ajustes(datos)
     if completar and a.completar():
         try:

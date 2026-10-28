@@ -105,6 +105,18 @@
   }
   .aviso-preflight ul { @apply mt-1.5 ml-5 list-disc space-y-0.5; }
   .aviso-preflight .accion { @apply text-atenuado; }
+  /* el "arreglo" de una falla: hoy solo el certificado de mitmproxy
+     (ver preflight.js) */
+  .aviso-preflight .boton-arreglo {
+    @apply ml-1 rounded-[3px] border px-2 py-0.5 text-[12px] cursor-pointer
+           transition-colors duration-150;
+    border-color: color-mix(in srgb, var(--color-tally-privado) 55%, transparent);
+    color: var(--color-tally-privado);
+  }
+  .aviso-preflight .boton-arreglo:hover {
+    background: color-mix(in srgb, var(--color-tally-privado) 18%, transparent);
+  }
+  .aviso-preflight .boton-arreglo:disabled { @apply opacity-50 cursor-default; }
 
   /* -- grilla de monitoreo ---------------------------------------------- */
 

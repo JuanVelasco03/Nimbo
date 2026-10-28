@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activar Nimbo</title>
+<!-- Estilos embebidos a proposito: esta pagina la sirve el servidor
+     minimo de activacion.py, que atiende tres rutas y no sirve estaticos.
+     Los colores son los mismos tokens que tailwind.css, copiados (son
+     cinco valores y evitan tener que compilar CSS para una pantalla que
+     se ve una vez). -->
+<style>
+  :root {
+    --grafito: #121316;
+    --panel: #1b1d22;
+    --panel-alto: #23262d;
+    --borde: #2b2e36;
+    --texto: #e7e8ec;
+    --atenuado: #8a8d99;
+    --rec: #e5484d;
+    --vivo: #3ddc84;
+    --azul: #4f8fe0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--grafito); color: var(--texto);
+    font: 14px/1.5 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    -webkit-user-select: none; user-select: none;
+  }
+  .caja {
+    width: 100%; max-width: 420px; padding: 28px;
+    background: var(--panel); border: 1px solid var(--borde);
+    border-radius: 6px;
+  }
+  h1 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
+  .sub { margin: 0 0 20px; color: var(--atenuado); font-size: 13px; }
+  label { display: block; margin-bottom: 6px; font-size: 12px; color: var(--atenuado); }
+  input {
+    width: 100%; padding: 9px 10px;
+    background: var(--panel-alto); color: var(--texto);
+    border: 1px solid var(--borde); border-radius: 4px;
+    font-family: "IBM Plex Mono", Consolas, monospace; font-size: 13px;
+    letter-spacing: 0.04em;
+    -webkit-user-select: text; user-select: text;
+  }
+  input:focus { outline: none; border-color: var(--azul); }
+  .fila { display: flex; gap: 8px; margin-top: 16px; }
+  button {
+    flex: 1; padding: 9px 12px; border-radius: 4px; cursor: pointer;
+    font-size: 13px; font-family: inherit;
+    border: 1px solid var(--borde); background: var(--panel-alto);
+    color: var(--texto); transition: filter .15s, border-color .15s;
+  }
+  button.principal { background: var(--azul); border-color: var(--azul); color: #0d1420; font-weight: 600; }
+  button:hover:not(:disabled) { filter: brightness(1.12); }
+  button:disabled { opacity: .5; cursor: default; }
+  .mensaje { margin-top: 14px; font-size: 13px; min-height: 19px; }
+  .mensaje.error { color: var(--rec); }
+  .mensaje.bien { color: var(--vivo); }
+  .pie { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--borde);
+         color: var(--atenuado); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="caja">
+  <h1>Activar Nimbo</h1>
+  <p class="sub">Esta copia necesita una clave para funcionar.</p>
+
+  <label for="clave">Clave de activación</label>
+  <input id="clave" type="text" autocomplete="off" spellcheck="false"
+         placeholder="pegá la clave acá" autofocus>
+
+  <div class="fila">
+    <button id="activar" class="principal">Activar</button>
+    <button id="salir">Salir</button>
+  </div>
+
+  <div id="mensaje" class="mensaje"></div>
+
+  <div class="pie">
+    Se valida una vez contra el servidor y después funciona sin conexión
+    hasta que vence.
+  </div>
+</div>
+
+<script>
+  const t = new URLSearchParams(location.search).get("t") || "";
+  const campo = document.getElementById("clave");
+  const botonActivar = document.getElementById("activar");
+  const botonSalir = document.getElementById("salir");
+  const mensaje = document.getElementById("mensaje");
+
+  function decir(texto, clase) {
+    mensaje.textContent = texto;
+    mensaje.className = "mensaje" + (clase ? " " + clase : "");
+  }
+
+  async function activar() {
+    const clave = campo.value.trim();
+    if (!clave) { decir("Ingresá la clave.", "error"); campo.focus(); return; }
+    botonActivar.disabled = true;
+    decir("Validando...");
+    try {
+      const r = await fetch("/activar?t=" + encodeURIComponent(t), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clave }),
+      });
+      const datos = await r.json();
+      if (datos.ok) {
+        // El servidor de activación se apaga apenas responde esto, así
+        // que no hay nada más que pedirle: solo avisar y esperar a que
+        // Nimbo abra su propia ventana.
+        decir("Listo. Abriendo Nimbo...", "bien");
+        botonActivar.textContent = "Activada";
+        campo.disabled = true;
+        botonSalir.disabled = true;
+        return;
+      }
+      decir(datos.motivo || "No se pudo activar.", "error");
+      botonActivar.disabled = false;
+    } catch (err) {
+      decir("No se pudo hablar con Nimbo. Cerrá la ventana y volvé a abrir.", "error");
+      botonActivar.disabled = false;
+    }
+  }
+
+  botonActivar.addEventListener("click", activar);
+  campo.addEventListener("keydown", (e) => { if (e.key === "Enter") activar(); });
+  botonSalir.addEventListener("click", async () => {
+    botonSalir.disabled = true;
+    try { await fetch("/salir?t=" + encodeURIComponent(t), { method: "POST" }); } catch (e) {}
+    decir("Cerrando...");
+  });
+</script>
+</body>
+</html>

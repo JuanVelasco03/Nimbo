@@ -43,7 +43,27 @@ rem diagnostico del camino directo (no toca grabar.txt ni estado\)
 python nucleo\scripts\grabador_directo.py --una-vez <modelo> --minutos 5
 ```
 
-No hay suite de tests ni linter configurados en el repo.
+Empaquetado para otra máquina (no hace falta para desarrollar — ver
+"Empaquetado para otra máquina" más abajo y `empaquetado\LEEME.md`):
+
+```bat
+rem armar dist\Nimbo\ con todo adentro (Python, mitmdump, ffmpeg)
+python empaquetado\construir.py --descargar [--completo]
+
+rem el instalador -> dist\NimboSetup.exe
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" empaquetado\nimbo.iss
+
+rem licencia: par de claves, y probar el cliente sin red ni backend
+python empaquetado\licencia\claves.py --generar
+python empaquetado\licencia\claves.py --probar
+
+rem que cierra y que no al compilar (no compila, solo informa)
+python empaquetado\compilar.py --comprobar
+```
+
+No hay suite de tests ni linter configurados en el repo. Lo más parecido es
+`empaquetado\licencia\claves.py --probar` (camino completo de la licencia) y
+los medidores de `pruebas\`.
 
 ### Al correr fuera de la instalación real
 
@@ -547,6 +567,49 @@ copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
   `vista_registro.js` solo lo mandan de vuelta tal cual.
 - Nada está clavado a una letra de unidad: la raíz se calcula desde la
   ubicación de `ajustes.py`.
+
+### Empaquetado para otra máquina
+
+`empaquetado\` produce un instalador que lleva **todo adentro** (Python
+embebido, `mitmdump.exe`, `ffmpeg.exe`, `wireproxy.exe` y opcionalmente
+Chromium): el que lo recibe no instala nada aparte. No corre en el día a
+día — ver `specs\distribucion_instalador.md` y `empaquetado\LEEME.md`.
+
+Lo que hay que saber si se toca algo de ahí:
+
+- **La copia de desarrollo no cambia en nada.** `ajustes.python_embarcado()`
+  / `mitmdump_embarcado()` / `navegadores_embarcados()` devuelven `""` si no
+  existe `runtime\`, y `licencia.activa()` devuelve `False` si no existe
+  `nimbo\licencia_publica.json` (que el repo no trae: lo inyecta el build, y
+  está en `.gitignore`). Sin esos dos archivos, todo se resuelve igual que
+  antes.
+- `construir.py` copia por **lista blanca** (`_ARBOL`), nunca por "el repo
+  menos exclusiones", y antes de terminar `auditar()` **aborta** si en el
+  paquete apareció un `.conf` (claves privadas de WireGuard), `sesion.json`,
+  `grabar.txt` o `config.json`. Si se agrega una carpeta al runtime hay que
+  sumarla a `_ARBOL` a mano — es a propósito: una lista negra olvidada es
+  como se filtra una credencial.
+- El Python *embeddable* trae un `._pth`, y eso **apaga el agregado
+  automático de la carpeta del script a `sys.path`** — justo lo que hace
+  funcionar los imports planos (abajo). `_habilitar_site()` agrega
+  `..\..\nimbo` ahí; sin esa línea Nimbo no arranca en el paquete.
+- La CA de mitmproxy **no** la instala el instalador: es un botón en el
+  banner de puesta a punto (`preflight.instalar_certificado`, `certutil
+  -user -addstore ROOT`, sin admin). Un instalador que agrega una CA raíz en
+  silencio hace lo mismo que un malware.
+- La licencia (`licencia.py` + `firma.py`, Ed25519 en stdlib pura) verifica
+  un token **firmado** con `exp` adentro, y tolera estar sin red mientras el
+  token viva: si exigiera red en cada arranque, un corte de internet dejaría
+  la noche sin grabar. Si vence con grabaciones en curso, `_bucle_licencia`
+  avisa y llama a `Motor.parar()` — nunca mata nada a lo bruto.
+- Compilar con Nuitka (`empaquetado\compilar.py`) es **opcional** y cierra
+  `nimbo\` + `grabador_directo.py`. Lo único que cambia en runtime es que
+  `motor.py` arranca el camino directo con `[sys.executable, "--modo",
+  "directo"]` (ver `modos.py` y `ajustes.compilado()`) en vez de
+  `[python, lanzador_directo.py]`. **No** cierra `detectar_m3u8.py`,
+  `puente.py`, `supervisor.py` ni `mouflon.py`: los dos primeros los carga
+  mitmdump por ruta, y `mouflon.py` lo importa el detector al correr, así
+  que la tabla de claves MOUFLON queda en disco igual.
 
 ### Imports planos
 

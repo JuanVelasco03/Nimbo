@@ -1,0 +1,99 @@
+# Empaquetado: armar el instalador
+
+Implementa `specs\distribucion_instalador.md`. Nada de esto corre en la
+instalación de todos los días — es solo para producir el `.exe` que se le
+pasa a otra persona.
+
+## Lo que hace falta en la máquina que construye
+
+| Qué | Para qué |
+|---|---|
+| Python 3.12 con `pip` | corre `construir.py` y baja las ruedas del runtime embebido |
+| El zip *embeddable* de python.org | es el intérprete que va adentro del paquete |
+| mitmproxy instalado (o su zip standalone) | se copia su `bin\` tal cual |
+| `nucleo\scripts\ffmpeg.exe` y `wireproxy.exe` | ya están en la copia de desarrollo |
+| [Inno Setup 6](https://jrsoftware.org/isdl.php) | compila el `.iss` final |
+
+## Los dos comandos
+
+```bat
+rem 1) armar dist\Nimbo\ (liviano, ~195 MB: sin respaldo de navegador)
+python empaquetado\construir.py --descargar
+
+rem 1b) o completo (~645 MB: incluye Playwright + Chromium)
+python empaquetado\construir.py --descargar --completo
+
+rem 2) compilar el instalador -> dist\NimboSetup.exe
+"C:\Program Files (x86)\Inno Setup 6\ISCC.exe" empaquetado\nimbo.iss
+```
+
+`--descargar` es lo único que sale a internet (baja el embeddable de
+python.org). Si preferís bajarlo a mano, pasá `--python-zip <ruta>` y no
+toca la red.
+
+### Liviano o completo
+
+El liviano **no trae el supervisor de navegador**. Las modelos marcadas
+`@directo=1` en `grabar.txt` graban igual (el camino directo no usa
+navegador); el resto no graba. Si el destinatario va a usar el respaldo,
+armá el completo.
+
+## Qué garantiza el build
+
+`construir.py` copia por **lista blanca** (`_ARBOL`), no por "todo el repo
+menos unas exclusiones". Y antes de terminar corre `auditar()`, que aborta
+si en el paquete apareció alguno de estos:
+
+- cualquier `.conf` — son las claves privadas de WireGuard de la cuenta de
+  Proton de quien construye
+- `sesion.json` — equivale a la contraseña de la cuenta real
+- `config.json`, `instancia.json`, `grabar.txt`, `activos.txt`
+
+Si el build aborta por esto, **no** lo saltees: revisá qué filtro se
+aflojó.
+
+## El certificado de mitmproxy
+
+El instalador **no** lo instala. Sin la CA de mitmproxy en el store de
+Windows no se puede grabar, así que al primer arranque el banner de puesta
+a punto muestra la falla con un botón "Instalar el certificado" que corre
+`certutil -user -addstore ROOT` (sin permisos de administrador).
+
+Es a propósito que sea un clic visible y no un paso silencioso: un
+instalador que agrega una CA raíz sin decirlo hace exactamente lo que hace
+un malware. La CA la genera mitmdump en la primera corrida y es distinta
+en cada instalación — no va ninguna compartida en el paquete.
+
+## Dónde instala
+
+`%LOCALAPPDATA%\Programs\Nimbo`, sin elevación. No es cosmético: `config.json`,
+`estado\`, `datos\` y `nucleo\scripts\grabar.txt` cuelgan de la misma raíz
+que el código (`ajustes.py`), así que en `Program Files` no serían
+escribibles. Ver `specs\distribucion_instalador.md` §3.
+
+Al desinstalar quedan `datos\` (las grabaciones), `config.json` y
+`grabar.txt`. Es deliberado: son horas de video y la lista de a quién se
+graba.
+
+## Licencia (opcional)
+
+Sin `--clave-publica`, el paquete **no pide ninguna clave**: `licencia.py`
+se apaga sola cuando no hay clave pública embebida. Para activarla:
+
+```bat
+rem una sola vez: genera el par de claves
+python empaquetado\licencia\claves.py --generar
+
+rem en cada build
+python empaquetado\construir.py --descargar --clave-publica <la publica>
+```
+
+La privada **no va a git ni al paquete** — solo al backend. Ver
+`empaquetado\licencia\LEEME.md`.
+
+## Lo que va a pasar igual
+
+SmartScreen va a marcar un `.exe` sin firma que levanta un proxy. Firmar
+cuesta plata y no cambia nada técnico. Y distribuir `ffmpeg.exe` obliga a
+incluir su licencia (GPL/LGPL según el build), igual que mitmproxy (MIT),
+wireproxy (MIT) y Chromium (BSD).

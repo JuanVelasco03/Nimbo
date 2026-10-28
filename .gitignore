@@ -27,3 +27,11 @@ nucleo/detector.log
 # primer arranque si no existe (ver detectar_m3u8.py, Detector.__init__).
 nucleo/scripts/grabar.txt
 nucleo/scripts/grabar.txt.bak
+
+# empaquetado (ver specs\distribucion_instalador.md): lo que produce el
+# build y lo que no se distribuye.
+dist/
+empaquetado/cache/
+# lo inyecta construir.py --clave-publica dentro del paquete; si existe en
+# la copia de desarrollo, Nimbo se pone a pedir clave (ver licencia.activa)
+nimbo/licencia_publica.json

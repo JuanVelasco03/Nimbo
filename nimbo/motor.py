@@ -52,6 +52,10 @@ except (ImportError, ValueError):   # no es Windows: el watchdog no hace nada
     ctypes = None
     wintypes = None
 
+# Solo para ajustes.compilado() (ver _cmd_directo). El resto de motor.py
+# recibe el objeto Ajustes ya armado, no lo carga el mismo.
+import ajustes as ajustes_mod
+
 _AQUI = os.path.dirname(os.path.abspath(__file__))
 PUENTE = os.path.join(_AQUI, "puente.py")
 LANZADOR_SUPERVISOR = os.path.join(_AQUI, "lanzador_supervisor.py")
@@ -105,6 +109,24 @@ CONF_TUNEL_GENERADA = "tunel_wireproxy.conf"
 # Lo que wireproxy escupe cada vez que alguien abre y cierra sin pedir
 # nada (_Tunel.RUIDO, misma lista).
 RUIDO_TUNEL = ("read request failed",)
+
+
+def _cmd_directo(ajustes):
+    """Como se arranca el camino directo.
+
+    Compilado no hay lanzador_directo.py suelto que pasarle a un
+    interprete: el binario se relanza a si mismo con --modo directo (ver
+    nimbo\\modos.py y specs\\distribucion_instalador.md S5.2). Sin
+    compilar, el camino de siempre.
+
+    Es el unico hijo que cambia. El detector lo carga mitmdump por ruta
+    (-s detectar_m3u8.py), el supervisor necesita Playwright con su
+    driver de Node y la union es un `detectar_m3u8.py --unir` aparte: los
+    tres siguen igual en los dos casos.
+    """
+    if ajustes_mod.compilado():
+        return [sys.executable, "--modo", "directo"]
+    return [ajustes["python"], LANZADOR_DIRECTO]
 
 
 def _parsear_proxy(proxy: str):
@@ -474,7 +496,7 @@ class Motor:
         # redirige streams\ a datos\ sin tocar M3U8_GRABAR (grabar.txt
         # sigue junto al script, resuelto solo por grabador_directo.py).
         env.setdefault("M3U8_BASE", a.dir_datos)
-        cmd = [a["python"], LANZADOR_DIRECTO]
+        cmd = _cmd_directo(a)
         self._aviso("arrancando el camino directo (sin navegador)...")
         self.directo = subprocess.Popen(
             cmd, cwd=a.scripts, env=env,

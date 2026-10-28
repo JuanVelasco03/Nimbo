@@ -64,6 +64,7 @@ import estado_captura as estado_captura_mod
 import favoritas as favoritas_mod
 import grabaciones as grabaciones_mod
 import inicio_automatico as inicio_mod
+import licencia as licencia_mod
 import lista as lista_mod
 import motor as motor_mod
 import preflight as preflight_mod
@@ -98,6 +99,10 @@ INTERVALO_LIMPIEZA = 600.0      # cada cuanto se barre datos\streams\ --
                                  # el listdir de dos niveles no es gratis
 INTERVALO_SITIO = 15.0          # mismo intervalo que tenia el setInterval
                                  # del lado del cliente
+INTERVALO_LICENCIA = 21600.0    # 6 h. La licencia se revisa al arrancar
+                                 # (app.py) y despues cada tanto: el token
+                                 # tiene dias de vida, no hay por que
+                                 # golpear la red mas seguido
 CUPO_SITIO = 4                  # pedidos salientes simultaneos al sitio
 CUPO_IMAGEN = 3                 # miniaturas simultaneas: el navegador puede
                                  # pedir N por segundo (una por tarjeta) y
@@ -491,6 +496,33 @@ async def _bucle_cosecha(app):
                 }
 
 
+async def _bucle_licencia(app):
+    """Revisa la licencia cada INTERVALO_LICENCIA (si el paquete la trae).
+
+    Si vence con grabaciones en curso **no se mata nada**: se avisa por el
+    canal `motor` y se para por el camino ordenado (Motor.parar, que manda
+    "parar\\n" por stdin). Matar a lo bruto deja grabaciones sin unir -- ver
+    CLAUDE.md, "Cuatro procesos".
+    """
+    if not licencia_mod.activa():
+        return                     # copia de desarrollo: nada que revisar
+    while True:
+        await asyncio.sleep(INTERVALO_LICENCIA)
+        with contextlib.suppress(Exception):
+            r = await app.a_hilo(licencia_mod.revisar, app.ajustes.dir_estado)
+            if r.get("aviso"):
+                app._publicar("motor", "aviso",
+                              {"texto": "licencia: " + r["aviso"],
+                               "nivel": "aviso"})
+            if r["ok"]:
+                continue
+            app._publicar("motor", "aviso",
+                          {"texto": "la licencia vencio -- parando todo de "
+                                    "forma ordenada",
+                           "nivel": "error"})
+            _lanzar_tarea(app, "motor_parar", app.motor.parar)
+
+
 def _nombres_sin_estado(estado):
     """Mismo calculo que hacia main.js:nombresSinEstado -- las favoritas
     puramente locales, sin dato de "siguiendo" ni del supervisor, son las
@@ -757,6 +789,12 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             "Content-Type": tipo,
             "Cache-Control": "public, max-age=86400, immutable",
         }, datos)
+    elif ruta == "/api/licencia":
+        # Solo la foto (nunca la clave: ver licencia.estado). En un
+        # paquete sin licencia devuelve {"activa": false} y la interfaz
+        # no muestra nada.
+        await _json(writer, 200,
+                    await app.a_hilo(licencia_mod.estado, app.ajustes.dir_estado))
     elif ruta == "/api/preflight":
         filas = await app.a_hilo(preflight_mod.comprobar, app.ajustes)
         await _json(writer, 200, {"filas": filas})
@@ -956,6 +994,11 @@ async def _despachar_post(app, ruta, cuerpo):
         app.ajustes[clave] = bool(cuerpo["valor"])
         await app.a_hilo(app.ajustes.guardar)
         return 200, {clave: app.ajustes[clave]}
+    elif ruta == "/api/preflight/certificado":
+        # El unico "arreglo" que ofrece el banner de puesta a punto (ver
+        # preflight.instalar_certificado): certutil es un subprocess, va
+        # al pool como todo lo sincrono.
+        return 200, await app.a_hilo(preflight_mod.instalar_certificado)
     elif ruta == "/api/sistema/inicio_automatico":
         if cuerpo.get("activo"):
             await app.a_hilo(inicio_mod.activar)
@@ -1161,6 +1204,7 @@ class Servidor:
         self._loop.create_task(_bucle_estado(self.app))
         self._loop.create_task(_bucle_cosecha(self.app))
         self._loop.create_task(_bucle_sitio(self.app))
+        self._loop.create_task(_bucle_licencia(self.app))
 
     async def _cerrar(self):
         if self._servidor_asyncio is not None:

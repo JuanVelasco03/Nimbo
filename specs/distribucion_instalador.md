@@ -1,7 +1,17 @@
 # Distribución: instalador único, código cerrado y clave con vencimiento
 
-Especificación de diseño. Estado: **nada implementado**. Escrita antes de tocar
-código, a pedido, para decidir qué entra y qué no.
+Especificación de diseño, con lo implementado marcado abajo. Rama de trabajo:
+`03-distribucion`.
+
+| § | Qué | Estado |
+|---|---|---|
+| 4 | Instalador con todo adentro | **hecho y probado** — `empaquetado\construir.py` + `nimbo.iss`; paquete de 206 MB armado y arrancado con su propio Python |
+| 6 | Clave con vencimiento | **hecho**; cliente probado de punta a punta sin red (`claves.py --probar`). Falta desplegar la Edge Function en Supabase |
+| 5 | Cerrar el código con Nuitka | **parcial**: el `--modo` del binario está hecho y probado; la compilación en sí **no se corrió** (Nuitka no está instalado). Alcance recortado — ver §5.1 |
+
+Lo que sigue de esta línea es la spec tal como se escribió antes de
+implementar, con las correcciones que la implementación obligó a hacer
+marcadas en su lugar y resumidas en §8.
 
 El objetivo que la motiva: pasarle Nimbo a una segunda persona con **un solo
 instalador** (sin que instale Python, mitmproxy, ffmpeg ni Playwright por
@@ -118,6 +128,12 @@ Solo `ajustes.py`:
 
 Son ~20 líneas en total. Nada de `motor.py`, nada del núcleo.
 
+> Al implementarlo los tres puntos quedaron así, con dos arreglos de más que
+> el paquete dejó a la vista: `localizar_python()` tiene que **cortar** en el
+> embarcado y no seguir buscando (§8.3), `_sin_consola()` estaba roto con
+> rutas en mayúsculas (§8.4) y la fila de Playwright del preflight se partió
+> en dos (§8.5). `motor.py` sí se tocó, pero por §5.2, no por esto.
+
 ### 4.1 Lo que el instalador hace además de copiar
 
 - Acceso directo que llama al `pythonw.exe` embebido contra `nimbo\app.py`
@@ -162,7 +178,8 @@ Esto es lo que de verdad define el alcance, y sale de cómo arrancan los hijos
 | `nimbo\app.py`, `servidor.py`, `motor.py`, `vivo.py`, `lista.py`, `sitio.py`, `mp4.py`, … | **Sí** | Es un proceso propio. Nuitka standalone con `--follow-imports` los toma todos. Ojo con los **imports planos** (`import ajustes as ajustes_mod`, ver `CLAUDE.md` "Imports planos"): hay que compilar con `nimbo\` como raíz, no como paquete. |
 | `nucleo\scripts\detectar_m3u8.py`, `nimbo\puente.py` | **No** | mitmdump los carga con `-s <ruta.py>`, como archivos en disco, dentro de su runtime **3.14**. A lo sumo `.pyc` compilado específicamente con 3.14 — y un `.pyc` se decompila. Queda expuesto el detector entero: HLS/CMAF, unión con ffmpeg, el túnel. |
 | `nucleo\scripts\supervisor.py` | **No, mientras lo importe `lanzador_supervisor.py` como `.py`** | Y `sitio.py` también lo importa (para `RE_ESTADO`). |
-| `nucleo\scripts\grabador_directo.py`, `mouflon.py` | **Sí, pero requiere un cambio** | Ver §5.2. Es la parte valiosa: el descifrado MOUFLON v2 y la tabla de claves. |
+| `nucleo\scripts\grabador_directo.py` | **Sí, con el cambio de §5.2** | Hecho: `--include-module=grabador_directo` en `empaquetado\compilar.py`. |
+| `nucleo\scripts\mouflon.py` | **No** (corregido al implementar) | `detectar_m3u8.py:124` hace `import mouflon` al correr, bajo el intérprete de mitmdump. El archivo tiene que seguir en disco; compilarlo adentro del binario no lo saca de ahí. **La tabla de claves MOUFLON queda expuesta.** |
 
 **Corrección a lo que dije antes en la conversación:** compilar `nimbo\` con
 Nuitka **no** protege el camino directo por sí solo. `motor.py:477` lanza
@@ -196,14 +213,25 @@ cerrar de todos modos.
 ### 5.3 Conclusión del punto 3
 
 Con Nuitka sobre `nimbo\` + el cambio de §5.2 se cierra: la interfaz, el
-servidor, el motor de arranque, el reproductor en vivo, la cosecha, y **el
-camino directo con la tabla de claves MOUFLON**. Queda abierto el detector
-(`detectar_m3u8.py` + `puente.py`) y el supervisor. No hay forma de evitarlo
-sin reescribir cómo mitmproxy carga sus addons, que es justo la cirugía que
-esta spec quiere evitar.
+servidor, el motor de arranque, el reproductor en vivo, la cosecha y **la
+lógica del camino directo** (`grabador_directo.py`).
 
-Si eso no alcanza, la respuesta honesta no es técnica: no compartir el
-binario.
+Queda abierto: el detector (`detectar_m3u8.py` + `puente.py`), el supervisor
+y **`mouflon.py`** — con su `KEY_MAP`.
+
+Eso último es una corrección a lo que esta spec decía antes de
+implementarse, y cambia el balance: el protocolo MOUFLON **no** se puede
+cerrar, porque el detector lo importa como `.py` en tiempo de ejecución bajo
+el intérprete de mitmdump (3.14), que no ve nada de lo compilado. Cerrarlo
+pediría partir `mouflon.py` en dos (un módulo abierto con lo que usa el
+detector —`leer_master`/`mejor_rendicion`/`puntaje`— y uno compilado con el
+descifrado y la tabla), y eso toca el núcleo copiado y su contrato de
+sincronización a mano. No se hizo: es más cirugía que lo que esta spec
+quiere, y conviene decidirlo aparte.
+
+Entonces lo que Nuitka compra hoy es que no se lea la interfaz ni el motor
+de Nimbo. Si lo que importa es el protocolo, no alcanza — y ahí la respuesta
+honesta no es técnica: no compartir el binario.
 
 ---
 
@@ -279,3 +307,61 @@ neutralizar la verificación dentro de un binario Nuitka". Para el caso de uso
    camino directo importa cerrarlo.
 
 Cada paso es útil solo; ninguno bloquea al siguiente.
+
+---
+
+## 8. Lo que encontró la implementación
+
+Cinco cosas que no se veían leyendo código y aparecieron al armar y
+**correr** el paquete. Las tres primeras habrían hecho que el instalador
+llegara roto o mintiendo a la máquina del otro.
+
+### 8.1 Un `._pth` apaga el `sys.path` del script — Nimbo no arrancaba
+
+El zip *embeddable* trae un `python312._pth`, y la sola presencia de ese
+archivo hace que Python **no** agregue la carpeta del script a `sys.path`.
+Los módulos de `nimbo\` se importan sin paquete (`import ajustes`, ver
+`CLAUDE.md` "Imports planos") **justamente** porque `app.py` corre como
+script y su carpeta queda en el path. Con el embeddable eso deja de pasar:
+
+```
+File "...\nimbo\app.py", line 35, in <module>
+    import ajustes as ajustes_mod
+ModuleNotFoundError: No module named 'ajustes'
+```
+
+El build quedaba perfecto y el `.exe` no abría. Se arregla con una línea
+`..\..\nimbo` en el `._pth` (`construir.py:_habilitar_site`; las rutas de
+ese archivo son relativas a la carpeta que lo contiene).
+
+### 8.2 La CA de mitmproxy puede estar en el store de la máquina
+
+La comprobación nueva mirando solo `certutil -user -store ROOT` daba "falta
+el certificado" **en la instalación de desarrollo, que graba perfecto**: el
+instalador de mitmproxy la pone en el store de la máquina (con elevación).
+`preflight._ca_en_el_store()` mira los dos; cualquiera alcanza. Nimbo sigue
+instalando en el del usuario, que es el que se escribe sin admin.
+
+### 8.3 `localizar_python()` se iba del paquete
+
+`localizar_python()` descarta todo intérprete que no tenga Playwright. En el
+paquete liviano el embebido **no** lo tiene, así que la búsqueda lo
+descartaba y se iba a buscar un Python del sistema — en una máquina con otro
+Python instalado, el paquete terminaba corriendo el supervisor con un
+intérprete ajeno. Ahora, si hay Python embarcado, manda y se corta ahí; que
+falte el respaldo de navegador lo dice `preflight.py`.
+
+### 8.4 `_sin_consola()` no servía con `shutil.which()`
+
+Hacía `python.replace("python.exe", "pythonw.exe")`, y `which()` devuelve lo
+que diga `PATHEXT`: en esta máquina, `python.EXE`. El replace no cambiaba
+nada y se seguía usando el exe con consola. Ahora compara el basename sin
+mirar mayúsculas. Es un bug que ya existía, no algo que trajo el paquete.
+
+### 8.5 La fila "Python con Playwright" mentía
+
+Solo comprobaba que el archivo existiera. En el paquete liviano daba OK
+sobre un intérprete sin Playwright. Se partió en dos filas: que haya
+intérprete, y que haya navegador de respaldo.
+
+---

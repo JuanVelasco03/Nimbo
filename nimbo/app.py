@@ -11,16 +11,29 @@ apunta a un servidor que de verdad responde), esta segunda ejecucion solo
 abre otra ventana contra ESE servidor y termina -- no arranca un segundo
 motor, que se pelearia por el puerto 8080 y por el perfil del navegador.
 """
-import json
-import os
-import shutil
-import socket
-import subprocess
 import sys
-import threading
-import time
 
-import ajustes as ajustes_mod
+# -- multi-entrada del binario compilado ---------------------------------
+# Tiene que ir ANTES de los imports de abajo, no es un descuido: cuando
+# Nimbo va compilado, motor.py arranca el camino directo relanzando este
+# mismo binario con --modo directo (ver nimbo\modos.py y
+# specs\distribucion_instalador.md S5.2), y ese hijo no necesita el
+# servidor, ni websockets, ni la bandeja. Sin compilar esta rama no se
+# toma nunca.
+if "--modo" in sys.argv:
+    import modos                 # noqa: E402
+    sys.exit(modos.correr(sys.argv))
+
+import json                      # noqa: E402
+import os                        # noqa: E402
+import shutil                    # noqa: E402
+import socket                    # noqa: E402
+import subprocess                # noqa: E402
+import threading                 # noqa: E402
+import time                      # noqa: E402
+
+import ajustes as ajustes_mod    # noqa: E402
+import licencia as licencia_mod
 import vivo_temporal as vivo_temporal_mod
 
 try:
@@ -208,6 +221,22 @@ def main():
         abrir_ventana("http://127.0.0.1:%d/?t=%s" %
                       (existente["puerto"], existente["token"]))
         return 0
+
+    # La licencia, si este paquete la trae (ver licencia.activa: en la
+    # copia de desarrollo esto no corre nunca). Va antes del servidor a
+    # proposito: lo que decide es si Nimbo puede arrancar, y la pantalla
+    # de activacion se sirve sola, sin levantar el resto (ver
+    # activacion.py).
+    if licencia_mod.activa():
+        r = licencia_mod.revisar(a.dir_estado)
+        if r.get("aviso"):
+            _log("licencia: %s (sigue valida por ahora)" % r["aviso"])
+        if not r["ok"]:
+            _log("licencia: " + str(r.get("motivo") or "no valida"))
+            import activacion as activacion_mod
+            if not activacion_mod.pantalla(a.dir_estado, abrir_ventana):
+                _log("sin licencia activa -- Nimbo no arranca")
+                return 1
 
     # Aplicacion() ya existe en este punto (el constructor de Servidor la
     # crea sincronico, antes de levantar el loop) -- se puede purgar
