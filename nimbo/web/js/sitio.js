@@ -58,7 +58,11 @@ export function sincronizarMiniatura(contenedor, nombre) {
 
   const url = urlImagenProxy(info.avatar);
   if (img) {
-    if (img.getAttribute("src") !== url) img.setAttribute("src", url);
+    if (img.getAttribute("src") !== url) {
+      img.classList.add("cargando");
+      img.onload = () => img.classList.remove("cargando");
+      img.setAttribute("src", url);
+    }
     return;
   }
   // onerror="this.remove()" igual que construirMiniatura: si la miniatura
@@ -67,7 +71,9 @@ export function sincronizarMiniatura(contenedor, nombre) {
   const nuevo = document.createElement("img");
   nuevo.alt = "";
   nuevo.loading = "lazy";
+  nuevo.classList.add("cargando");
   nuevo.onerror = () => nuevo.remove();
+  nuevo.onload = () => nuevo.classList.remove("cargando");
   nuevo.setAttribute("src", url);
   contenedor.textContent = "";
   contenedor.appendChild(nuevo);

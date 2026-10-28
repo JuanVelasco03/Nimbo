@@ -104,7 +104,7 @@ INTERVALO_LICENCIA = 21600.0    # 6 h. La licencia se revisa al arrancar
                                  # tiene dias de vida, no hay por que
                                  # golpear la red mas seguido
 CUPO_SITIO = 4                  # pedidos salientes simultaneos al sitio
-CUPO_IMAGEN = 3                 # miniaturas simultaneas: el navegador puede
+CUPO_IMAGEN = 6                 # miniaturas simultaneas: el navegador puede
                                  # pedir N por segundo (una por tarjeta) y
                                  # cada una es un HTTPS saliente -- sin tope
                                  # se comen el pool entero y no responde
