@@ -1,5 +1,20 @@
 # Licencia: puesta en marcha
 
+> **Ya está desplegado** (28/10/2026). Proyecto de Supabase **Nimbo Licencias**
+> (`oudbzuvcyzpzcuophhvd`, us-east-2): tabla `licencias`, tabla
+> `licencia_claves`, vista `licencias_resumen` y función `validar` con
+> `verify_jwt=false`. La URL, la anon key y la clave pública quedaron en
+> `proyecto.local.json`, y el par de claves en `claves.local.json` — los dos
+> gitignorados. Para armar el paquete con licencia alcanza con
+> `construir.py --licencia`.
+>
+> Probado contra el despliegue real: clave válida → token firmado que el
+> cliente verifica; clave inventada, cortada (`activa=false`), vencida y
+> desde otra máquina → rechazadas; y ni la anon key ni la publishable key
+> pueden leer ninguna de las tres tablas.
+>
+> Lo que sigue es cómo se hace desde cero (o cómo rotar).
+
 Implementa `specs\distribucion_instalador.md` §6. Tres piezas:
 
 | Pieza | Dónde corre |
@@ -29,7 +44,6 @@ rem   -> empaquetado\licencia\esquema.sql
 
 rem la funcion
 supabase functions deploy validar --no-verify-jwt
-supabase secrets set LICENCIA_PRIV_D=<la privada> LICENCIA_PUB_X=<la publica>
 ```
 
 `--no-verify-jwt` es necesario: quien llama es Nimbo con la anon key, no un
@@ -38,6 +52,20 @@ usuario logueado.
 `esquema.sql` deja RLS **prendido y sin ninguna policy**. Eso es lo que hace
 que la anon key que viaja dentro del paquete no sirva para leer la tabla de
 claves; la única que la toca es la función, con la `service_role`.
+
+### Dónde vive la clave privada
+
+Dos caminos, y la función prefiere el primero:
+
+1. Variables de entorno `LICENCIA_PRIV_D` / `LICENCIA_PUB_X`. Se ponen
+   **solo desde el panel** (Edge Functions → validar → Secrets) o con
+   `supabase secrets set`; la API de gestión no las expone.
+2. La tabla `licencia_claves`, fila `actual`.
+
+El despliegue de hoy usa el camino 2, porque se hizo por API. Mover la clave
+al panel después no rompe nada: `parDeClaves()` en `index.ts` mira el entorno
+primero. El nivel de protección es el mismo — las dos se leen con la
+`service_role` y ninguna con la anon.
 
 ## 3. Emitir una licencia
 
@@ -53,6 +81,10 @@ un equipo.
 ## 4. Armar el paquete con licencia
 
 ```bat
+rem con el backend ya desplegado (toma todo de proyecto.local.json)
+python empaquetado\construir.py --descargar --completo --licencia
+
+rem o a mano, si apuntas a otro proyecto
 python empaquetado\construir.py --descargar ^
     --clave-publica <la publica> ^
     --url-licencia https://<proyecto>.supabase.co/functions/v1/validar ^

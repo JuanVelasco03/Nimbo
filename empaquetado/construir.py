@@ -388,7 +388,27 @@ def main(argv=None):
                         "(https://<proyecto>.supabase.co/functions/v1/validar)")
     p.add_argument("--anon-licencia", default="",
                    help="anon key del proyecto de Supabase (es publica)")
+    p.add_argument("--licencia", action="store_true",
+                   help="activar la licencia tomando los datos de "
+                        "empaquetado\\licencia\\proyecto.local.json (lo que "
+                        "quedo del despliegue); equivale a pasar "
+                        "--clave-publica/--url-licencia/--anon-licencia a mano")
     args = p.parse_args(argv)
+
+    if args.licencia:
+        ruta = os.path.join(AQUI, "licencia", "proyecto.local.json")
+        try:
+            with open(ruta, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (OSError, ValueError):
+            raise SystemExit(
+                "--licencia necesita %s (lo escribe el despliegue del "
+                "backend -- ver empaquetado\\licencia\\LEEME.md)" % ruta)
+        args.clave_publica = args.clave_publica or cfg.get("clave_publica", "")
+        args.url_licencia = args.url_licencia or cfg.get("url", "")
+        args.anon_licencia = args.anon_licencia or cfg.get("anon", "")
+        if not args.clave_publica:
+            raise SystemExit("%s no trae clave_publica" % ruta)
 
     salida = os.path.abspath(args.salida)
     if os.path.isdir(salida):

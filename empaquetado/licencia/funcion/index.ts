@@ -51,11 +51,28 @@ function error(mensaje: string, codigo = 400): Response {
 
 let clavePrivada: CryptoKey | null = null;
 
-async function cargarClave(): Promise<CryptoKey> {
-  if (clavePrivada) return clavePrivada;
+// De donde sale el par Ed25519. Primero las variables de entorno; si no
+// estan, la tabla licencia_claves. Los dos caminos existen porque las
+// variables de la funcion solo se pueden poner desde el panel (la API no
+// las expone), y esto se desplego por API -- asi que la clave arranco en
+// la tabla. Mover despues al panel no rompe nada: el entorno gana.
+async function parDeClaves(): Promise<{ d: string; x: string }> {
   const d = Deno.env.get("LICENCIA_PRIV_D");
   const x = Deno.env.get("LICENCIA_PUB_X");
-  if (!d || !x) throw new Error("faltan LICENCIA_PRIV_D / LICENCIA_PUB_X");
+  if (d && x) return { d, x };
+
+  const r = await rest("/licencia_claves?id=eq.actual&select=privada,publica");
+  if (!r.ok) throw new Error("no se pudo leer licencia_claves");
+  const filas = await r.json();
+  if (!filas.length) {
+    throw new Error("no hay clave: ni LICENCIA_PRIV_D ni licencia_claves");
+  }
+  return { d: filas[0].privada, x: filas[0].publica };
+}
+
+async function cargarClave(): Promise<CryptoKey> {
+  if (clavePrivada) return clavePrivada;
+  const { d, x } = await parDeClaves();
   // JWK OKP: "d" es la semilla de 32 bytes (lo que genera claves.py) y
   // "x" la publica. WebCrypto no acepta pkcs8 armado a mano facil, jwk si.
   clavePrivada = await crypto.subtle.importKey(

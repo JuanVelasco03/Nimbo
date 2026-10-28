@@ -35,3 +35,5 @@ empaquetado/cache/
 # lo inyecta construir.py --clave-publica dentro del paquete; si existe en
 # la copia de desarrollo, Nimbo se pone a pedir clave (ver licencia.activa)
 nimbo/licencia_publica.json
+# claves de la licencia: la privada firma los tokens. Nunca a git.
+empaquetado/licencia/*.local.json
