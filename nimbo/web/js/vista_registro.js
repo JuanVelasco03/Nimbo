@@ -33,17 +33,30 @@ function parametrosActuales() {
   return { fuente, nivel, q };
 }
 
+// 24hs a proposito: toLocaleTimeString() daba "8:43:31 p. m.", y ese
+// "p. m." no entraba en la columna de la hora -- partia cada fila en
+// dos renglones y empujaba todo lo demas.
 function formatoHora(t) {
-  return new Date(t * 1000).toLocaleTimeString();
+  return new Date(t * 1000).toLocaleTimeString("es-AR", { hour12: false });
 }
 
+// Sin innerHTML: el mensaje es texto ajeno (log del detector / del sitio)
+// y cualquier "<" suelto rompia la fila.
 function filaHtml(fila) {
   const nivel = (fila.nivel || "INFO").toLowerCase();
   const div = document.createElement("div");
   div.className = "fila-registro nivel-" + nivel;
-  div.innerHTML = `<span class="hora">${formatoHora(fila.t)}</span>`
-    + `<span class="prefijo">${fila.prefijo || ""}</span>`
-    + `<span class="mensaje">${fila.mensaje || ""}</span>`;
+  const hora = document.createElement("span");
+  hora.className = "hora";
+  hora.textContent = formatoHora(fila.t);
+  const prefijo = document.createElement("span");
+  prefijo.className = "prefijo";
+  prefijo.textContent = fila.prefijo || "";
+  prefijo.title = fila.prefijo || "";   // el nombre completo, que la columna corta
+  const mensaje = document.createElement("span");
+  mensaje.className = "mensaje";
+  mensaje.textContent = fila.mensaje || "";
+  div.append(hora, prefijo, mensaje);
   return div;
 }
 

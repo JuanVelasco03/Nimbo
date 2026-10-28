@@ -381,13 +381,22 @@
     @apply border-tally-conectando outline-none;
   }
 
+  /* Las tres columnas son de ancho fijo salvo el mensaje, y las dos
+     primeras NO pueden desbordar sobre la tercera: la hora va en 24hs
+     sin "p. m." (que partia la celda en dos renglones) y el prefijo
+     -- <modelo>/<variante>, que se estira tanto como el nombre --
+     se corta con elipsis y deja el nombre entero en el title. */
   .fila-registro {
-    @apply grid gap-2 border-b border-borde/60 px-1 py-0.5;
-    grid-template-columns: 5.5rem 6rem 1fr;
+    @apply grid items-baseline gap-3 border-b border-borde/60 px-1 py-0.5;
+    grid-template-columns: 4.25rem minmax(0, 12rem) minmax(0, 1fr);
   }
-  .fila-registro .hora { @apply text-apagado; }
-  .fila-registro .prefijo { @apply font-semibold text-atenuado; }
-  .fila-registro .mensaje { @apply break-words text-texto; }
+  .fila-registro .hora {
+    @apply text-apagado whitespace-nowrap tabular-nums;
+  }
+  .fila-registro .prefijo {
+    @apply font-semibold text-atenuado overflow-hidden text-ellipsis whitespace-nowrap;
+  }
+  .fila-registro .mensaje { @apply min-w-0 break-words text-texto; }
   .fila-registro.nivel-info .prefijo { color: var(--color-atenuado); }
   .fila-registro.nivel-warning .prefijo { color: var(--color-tally-privado); }
   .fila-registro.nivel-error .prefijo { color: var(--color-tally-rec); }
