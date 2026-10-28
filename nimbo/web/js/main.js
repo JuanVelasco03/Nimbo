@@ -7,7 +7,7 @@ import { obtener, enviar, conectarWS } from "./api.js";
 import { agregarLog, mostrarError } from "./registro.js";
 import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
-import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros } from "./vista_modelos.js";
+import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, marcarReordenModelos } from "./vista_modelos.js";
 import { renderDirectivas, cargarPreferencias } from "./vista_ajustes.js";
 import { revisarPreflight } from "./preflight.js";
 import { renderPrevia, iniciarPrevia, abrirPreviaEnVivo } from "./vista_previa.js";
@@ -172,6 +172,9 @@ function iniciarNavegacion() {
       salirDeGrabaciones();
 
       if (boton.dataset.vista === "modelos") {
+        // Borde explicito: al volver a esta pestana si corresponde
+        // reagrupar por prioridad (ver vista_modelos.js:pedirReordenModelos).
+        marcarReordenModelos();
         ws.enviar({ tipo: "suscribir", canales: ["sitio"] });
       } else if (boton.dataset.vista === "registro") {
         entrarARegistro();

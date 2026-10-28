@@ -227,6 +227,15 @@ const FILTROS = [
 const filtrosActivos = new Set();
 let ultimoEstadoModelos = null;
 
+// Pide que la proxima renderFavoritas() reacomode de verdad el orden
+// fisico de la grilla (reordenarse SOLA mientras el usuario esta
+// tildando conmutadores abajo del todo es justo lo que no se quiere --
+// ver el comentario largo en renderFavoritas). Se prende al cambiar los
+// chips de prioridad y al entrar a la pestana; se apaga sola al final de
+// cada render.
+let pedirReordenModelos = true;
+export function marcarReordenModelos() { pedirReordenModelos = true; }
+
 // Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
 // se mezclan en la lista -- primero las que graban de verdad, despues las
 // que estan en lista (pero no grabando), despues las que estan en show
@@ -313,6 +322,9 @@ export function iniciarFiltros() {
     const clave = boton.dataset.filtro;
     if (filtrosActivos.has(clave)) filtrosActivos.delete(clave);
     else filtrosActivos.add(clave);
+    // Cambiar el filtro SI es el borde explicito donde corresponde
+    // reacomodar todo -- ver pedirReordenModelos.
+    marcarReordenModelos();
     if (ultimoEstadoModelos) renderFavoritas(ultimoEstadoModelos);
   });
 }
@@ -453,17 +465,25 @@ export function renderFavoritas(estado) {
   // Grabando / En lista / Show publico son OR entre si (el filtro ya los
   // incluye a todos en `visibles`), pero el usuario los quiere agrupados
   // y no mezclados: ver ORDEN_PRIORIDAD/rangoPrioridad mas arriba.
-  if (ORDEN_PRIORIDAD.some(c => filtrosActivos.has(c))) {
+  const hayPrioridad = ORDEN_PRIORIDAD.some(c => filtrosActivos.has(c));
+  if (hayPrioridad) {
     visibles.sort((a, b) => rangoPrioridad(a) - rangoPrioridad(b));
   }
+  // Guardado por fila para que el bucle de abajo no tenga que
+  // recalcularlo: una tarjeta nueva se inserta segun este rango, pero una
+  // que ya estaba no se mueve salvo que pedirReordenModelos este prendido
+  // (ver mas abajo).
+  for (const fila of visibles) fila._rango = hayPrioridad ? rangoPrioridad(fila) : 0;
 
   if (filas.length === 0) {
     vaciarFavoritas(cont, '<div class="vacio">Sin favoritas todavia. Agrega un nombre arriba, '
       + 'o pega tu sesion para ver a quien segui en linea.</div>');
+    pedirReordenModelos = true;   // la proxima vez que haya filas, reagrupar de cero
     return;
   }
   if (visibles.length === 0) {
     vaciarFavoritas(cont, '<div class="vacio">Ninguna favorita coincide con el filtro elegido.</div>');
+    pedirReordenModelos = true;
     return;
   }
 
@@ -486,22 +506,43 @@ export function renderFavoritas(estado) {
   for (const fila of visibles) {
     vistos.add(fila.nombre);
     let el = tarjetasModelos.get(fila.nombre);
-    if (!el) {
+    const esNueva = !el;
+    if (esNueva) {
       el = crearTarjetaModelo(fila.nombre);
       tarjetasModelos.set(fila.nombre, el);
     }
     actualizarTarjetaModelo(el, fila);
-    // appendChild sobre un nodo que ya esta en el DOM lo MUEVE, no lo
-    // recrea: la <img> no se vuelve a pedir. Recorriendo `visibles` en
-    // orden queda ordenado, y si nada cambio de lugar el navegador no
-    // toca nada.
-    cont.appendChild(el);
+    el._rango = fila._rango;
+
+    if (pedirReordenModelos) {
+      // Borde explicito (cambio de filtro, entrar a la pestana, primera
+      // pintada): reagrupar todo de cero. appendChild sobre un nodo que
+      // ya esta en el DOM lo MUEVE, no lo recrea -- la <img> no se vuelve
+      // a pedir. Recorriendo `visibles` ya ordenado por rango, si nada
+      // cambio de lugar el navegador no toca nada.
+      cont.appendChild(el);
+    } else if (esNueva) {
+      // Tarjeta que recien aparece (una modelo nueva en linea): se
+      // inserta en la posicion que le toca por rango SIN mover ninguna
+      // de las que ya estaban -- eso es lo que el usuario esta mirando
+      // mientras tilda conmutadores de a una, y moverlas bajo el cursor
+      // es justo el problema que esto evita (ver pedirReordenModelos).
+      let destino = null;
+      for (const hijo of cont.children) {
+        if (hijo !== el && (hijo._rango || 0) > el._rango) { destino = hijo; break; }
+      }
+      cont.insertBefore(el, destino);
+    }
+    // si no es nueva y no se pidio reorden: no se toca -- ni una
+    // operacion de DOM, ni para las que no cambiaron de rango ni para
+    // las que si (esas esperan al proximo borde explicito).
   }
   for (const [nombre, el] of tarjetasModelos) {
     if (vistos.has(nombre)) continue;
     el.remove();
     tarjetasModelos.delete(nombre);
   }
+  pedirReordenModelos = false;
 }
 
 // -- estado de la sesion de la cuenta real ----------------------------------
