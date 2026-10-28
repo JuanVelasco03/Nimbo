@@ -125,7 +125,10 @@ def _cmd_directo(ajustes):
     tres siguen igual en los dos casos.
     """
     if ajustes_mod.compilado():
-        return [sys.executable, "--modo", "directo"]
+        # ajustes.ejecutable(), NO sys.executable: compilado ese apunta a
+        # un python.exe que no existe y Popen tira FileNotFoundError (ver
+        # el docstring de ajustes.ejecutable, con la medicion).
+        return [ajustes_mod.ejecutable(), "--modo", "directo"]
     return [ajustes["python"], LANZADOR_DIRECTO]
 
 
@@ -496,6 +499,22 @@ class Motor:
         # redirige streams\ a datos\ sin tocar M3U8_GRABAR (grabar.txt
         # sigue junto al script, resuelto solo por grabador_directo.py).
         env.setdefault("M3U8_BASE", a.dir_datos)
+        if ajustes_mod.compilado():
+            # ...pero compilado no hay "junto al script": grabador_directo
+            # esta adentro del binario y su __file__ nocional cae en
+            # nimbo\, asi que _al_lado("grabar.txt") busca
+            # <paquete>\nimbo\grabar.txt y <paquete>\datos\grabar.txt, no
+            # encuentra ninguno y el hilo se queda sin lista para siempre
+            # (sin un solo error en el log: lee un archivo que no existe
+            # cada 2s). M3U8_GRABAR existe justo para esto, y de ahi sale
+            # tambien activos.txt (ACTIVOS = dirname(SELECCION)).
+            env.setdefault("M3U8_GRABAR",
+                           os.path.join(a.scripts, "grabar.txt"))
+            # Y el interprete para la union ("detectar_m3u8.py --unir"
+            # como subproceso): el mismo que usan el supervisor y el
+            # detector. grabador_directo.PYTHON_EXE es sys.executable, y
+            # compilado eso no existe -- ver lanzador_directo.
+            env["NIMBO_PYTHON"] = a["python"]
         cmd = _cmd_directo(a)
         self._aviso("arrancando el camino directo (sin navegador)...")
         self.directo = subprocess.Popen(
@@ -882,6 +901,19 @@ class Motor:
                     self._arrancar_directo()
             self._aviso("motor reiniciado (intento %d)" %
                        self._reintentos[cual])
+        except Exception as e:
+            # Si _arrancar_* no llega a crear el Popen (comando que no
+            # existe, cwd que no esta), self.X queda en None: la rama
+            # "se cerro solo" de _bucle_vigilancia no se entera, nadie
+            # llama a _agendar_reinicio y esto se reintenta cada
+            # INTERVALO_VIGILANCIA para siempre, sin backoff y sin una
+            # sola linea en el log -- la excepcion se perdia con el hilo.
+            # Asi se veia el camino directo roto en el paquete compilado:
+            # 90 relanzados en tres minutos y ni un error. Ver
+            # ajustes.ejecutable().
+            self._aviso("no pude arrancar el %s: %s: %s"
+                        % (cual, type(e).__name__, e), nivel="error")
+            self._agendar_reinicio(cual)
         finally:
             self._reiniciando = None
 

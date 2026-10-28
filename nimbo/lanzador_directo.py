@@ -103,7 +103,59 @@ class _Eventos:
         pass
 
 
+# Nuitka le pone __compiled__ a cada modulo que compila. Es el mismo
+# marcador que usa ajustes.compilado(); aca se mira el propio globals()
+# en vez de importar ajustes para no agregarle al hijo un import que hoy
+# no tiene (este modulo corre bajo otro interprete cuando NO esta
+# compilado, y ese camino funciona: no se lo toca).
+_COMPILADO = "__compiled__" in globals()
+
+
+def _rutas_compilado():
+    """Compilado hay que decirle a grabador_directo donde esta todo.
+
+    Sus constantes se calculan de `__file__`, y adentro del binario ese
+    `__file__` es nocional: cae en `<paquete>\\nimbo\\`, no en
+    `nucleo\\scripts\\`. Tres cosas quedan mal, y las tres son silenciosas:
+
+      AQUI         el cwd del subproceso de la union
+      DETECTAR_PY  <paquete>\\nimbo\\detectar_m3u8.py -- no existe, asi
+                   que la union tira FileNotFoundError y la grabacion se
+                   queda en segmentos crudos para siempre
+      PYTHON_EXE   sys.executable, que en Nuitka standalone apunta a un
+                   python.exe que **no existe** (ver ajustes.ejecutable)
+
+    Se parchean desde afuera, que es lo que este lanzador ya hace por
+    diseno (igual que lanzador_supervisor.py con las clases del
+    supervisor): `grabador_directo.py` no se toca. Son globals del
+    modulo y _unir_en_fondo las lee en cada llamada, asi que alcanza con
+    pisarlas antes de main().
+
+    grabar.txt no se arregla aca sino con M3U8_GRABAR, que el propio
+    modulo ya ofrece como variable de entorno y motor.py le pasa.
+    """
+    grabador_directo.AQUI = GRABADOR_SCRIPTS
+    detectar = os.path.join(GRABADOR_SCRIPTS, "detectar_m3u8.py")
+    if os.path.isfile(detectar):
+        grabador_directo.DETECTAR_PY = detectar
+    else:
+        _log("OJO: no encuentro %s -- la union va a fallar" % detectar)
+    # El interprete lo resuelve motor.py (es el mismo que usa para el
+    # supervisor y para la union del detector) y lo pasa por el entorno:
+    # aca no hay forma de encontrarlo sin duplicar ajustes.py.
+    python = os.environ.get("NIMBO_PYTHON", "")
+    if python and os.path.isfile(python):
+        grabador_directo.PYTHON_EXE = python
+    else:
+        _log("OJO: NIMBO_PYTHON no sirve (%r) -- la union va a fallar"
+             % python)
+    _log("compilado: union con %s %s"
+         % (grabador_directo.PYTHON_EXE, grabador_directo.DETECTAR_PY))
+
+
 def main():
+    if _COMPILADO:
+        _rutas_compilado()
     grabador_directo.configurar_log()
     logging.getLogger("directo").addHandler(_Eventos(ARCHIVO_EVENTOS))
     os.makedirs(DIR_ESTADO, exist_ok=True)

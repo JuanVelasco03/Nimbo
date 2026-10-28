@@ -3,9 +3,12 @@
     python empaquetado\\compilar.py                 (deja dist\\compilado\\)
     python empaquetado\\compilar.py --comprobar     (solo dice que se cierra y que no)
 
-Es **opcional**: el instalador funciona igual sin esto, solo que con el
-codigo de la interfaz legible. Lo que esto cambia es que `nimbo\\*.py` y
-el **camino directo** pasan a ser codigo maquina en vez de fuente.
+No hace falta correrlo a mano: `construir.py --todo` lo llama el mismo
+(`construir.compilar_con_nuitka`), y eso es el default desde la spec 08 --
+antes era opcional y, por serlo, nunca se usaba. Lo que esto cambia es que
+`nimbo\\*.py` y el **camino directo** pasan a ser codigo maquina en vez de
+fuente. El instalador funciona igual sin esto (`--sin-compilar`), solo que
+con el codigo de la interfaz legible.
 
 Lo que NO cierra, y no hay forma de evitarlo sin reescribir como
 mitmproxy carga sus addons:
@@ -52,6 +55,7 @@ ABIERTOS = {
     "nucleo\\scripts\\mouflon.py": "detectar_m3u8.py hace import mouflon",
     "nucleo\\scripts\\supervisor.py": "lo carga el lanzador; lo importa sitio.py",
     "nimbo\\lanzador_supervisor.py": "corre bajo el Python embebido, no compilado",
+    "nimbo\\__init__.py": "inofensivo; construir.py lo deja igual",
 }
 
 
@@ -118,7 +122,8 @@ def compilar(salida, consola):
     dist = os.path.join(salida, "app.dist")
     _log("listo:", dist)
     _log("")
-    _log("Ahora, para armar el paquete con esto adentro:")
+    _log("Ahora, para armar el paquete con esto adentro (reusando este")
+    _log("app.dist\\ en vez de recompilar):")
     _log("  python empaquetado\\construir.py --descargar --completo "
          "--licencia ^")
     _log("      --compilado \"%s\"" % dist)

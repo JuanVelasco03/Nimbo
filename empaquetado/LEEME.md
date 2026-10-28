@@ -13,6 +13,8 @@ pasa a otra persona.
 | mitmproxy instalado (o su zip standalone) | se copia su `bin\` tal cual |
 | `nucleo\scripts\ffmpeg.exe` y `wireproxy.exe` | ya están en la copia de desarrollo |
 | [Inno Setup 6](https://jrsoftware.org/isdl.php) | compila el `.iss` final |
+| `pip install nuitka` | cierra el código de `nimbo\` (`--todo` lo usa siempre) |
+| Node + `npm install` (opcional) | minifica los `.js`; si falta, el build avisa y sigue |
 
 ## El comando
 
@@ -20,13 +22,14 @@ pasa a otra persona.
 python empaquetado\construir.py --todo
 ```
 
-Eso es todo: arma el paquete completo con licencia y compila el instalador.
-Deja **`dist\NimboSetup.exe`** listo para mandar. Equivale a
-`--descargar --completo --licencia --instalador`.
+Eso es todo: **cierra el código con Nuitka**, minifica el frontend, arma el
+paquete completo con licencia y compila el instalador. Deja
+**`dist\NimboSetup.exe`** listo para mandar. Equivale a `--descargar
+--completo --licencia --compilado --instalador`.
 
-Tarda. En la instalación real: unos minutos de descarga del navegador, y
-3m27s de compresión para un paquete de 1,1 GB que terminó en un `.exe` de
-317 MB.
+Tarda. En la instalación real: varios minutos de Nuitka, unos minutos de
+descarga del navegador, y 3m27s de compresión para un paquete de 1,1 GB que
+terminó en un `.exe` de 317 MB.
 
 ## Los pasos por separado
 
@@ -50,6 +53,51 @@ rem Program Files
 `--descargar` es lo único que sale a internet (baja el embeddable de
 python.org). Si preferís bajarlo a mano, pasá `--python-zip <ruta>` y no
 toca la red.
+
+Ojo: los pasos de arriba sin `--compilado` dejan los `.py` de `nimbo\` en
+claro. Eso sirve para iterar sobre el empaquetado, no para mandar.
+
+## El código cerrado
+
+El paquete que se manda sale **compilado**: `--todo` corre
+`empaquetado\compilar.py` (Nuitka standalone) y después el paquete lleva
+`nimbo\Nimbo.exe` en vez de los 24 `.py` de la interfaz. En disco quedan
+solo tres, y cada uno por un motivo que está escrito en
+`_PY_EN_DISCO_COMPILADO`:
+
+| Queda en disco | Por qué |
+|---|---|
+| `nimbo\puente.py` | lo carga `mitmdump` por ruta (`-s`) |
+| `nimbo\lanzador_supervisor.py` | corre bajo el Python embebido (Playwright necesita su driver de Node) |
+| `nimbo\__init__.py` | inofensivo |
+| `nucleo\scripts\detectar_m3u8.py`, `supervisor.py`, `mouflon.py` | los carga mitmdump/Playwright, y el detector hace `import mouflon` bajo el intérprete de mitmdump (3.14), que no ve nada de lo compilado |
+
+`python empaquetado\compilar.py --comprobar` lista eso sin compilar nada.
+
+Dos escapes y una red:
+
+```bat
+rem reusar un app.dist\ ya compilado (no recompilar mientras se itera)
+python empaquetado\construir.py --descargar --compilado dist\compilado\app.dist
+
+rem armar el paquete ABIERTO a proposito, para depurarlo leyendo los .py
+python empaquetado\construir.py --descargar --sin-compilar
+
+rem no pasar los .js por esbuild
+python empaquetado\construir.py --todo --sin-minificar
+```
+
+La red es `auditar()`: en un build compilado **aborta** si quedó algún
+`nimbo\*.py` que no sea de los tres, si falta `nimbo\Nimbo.exe` (señal de
+que el paso de compilar no se aplicó) o si se coló
+`nucleo\scripts\grabador_directo.py`. Y `paquete.json` deja escrito
+`"compilado": true` / `"js_minificado": true`, para poder contestar después
+"¿este `.exe` que mandé estaba cerrado?" sin abrirlo.
+
+Lo que esto **no** es: ofuscación. Nuitka compila a código máquina pero
+deja nombres de módulo, docstrings y constantes en el binario. Sirve contra
+copiar y pegar, no contra alguien decidido — y la tabla de claves MOUFLON
+sigue en `mouflon.py` en disco (ver `specs\08-cobertura_codigo.md`).
 
 ### Liviano o completo
 

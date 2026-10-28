@@ -1,13 +1,15 @@
 {
   "name": "nimbo-web",
   "private": true,
-  "description": "Build de Tailwind para la interfaz de nimbo/web. No toca nada del grabador ni hace falta en runtime (app.css ya sale compilado).",
+  "description": "Build de Tailwind para la interfaz de nimbo/web, y el esbuild que minifica los modulos ES al empaquetar. No toca nada del grabador ni hace falta en runtime (app.css ya sale compilado y construir.py sigue si falta Node).",
   "scripts": {
     "build:css": "tailwindcss -i nimbo/web/tailwind.css -o nimbo/web/app.css --minify",
-    "watch:css": "tailwindcss -i nimbo/web/tailwind.css -o nimbo/web/app.css --watch"
+    "watch:css": "tailwindcss -i nimbo/web/tailwind.css -o nimbo/web/app.css --watch",
+    "minify:js": "esbuild nimbo/web/js/*.js --minify --outdir=dist/js-minificado"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",
+    "esbuild": "^0.25.0",
     "tailwindcss": "^4.3.3"
   }
 }

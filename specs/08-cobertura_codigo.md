@@ -1,6 +1,6 @@
 # SPEC 08 — Que el paquete que se manda salga con el código cerrado
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 02 (`empaquetado\compilar.py`, `--compilado`, `ajustes.compilado()`)
 > **Fecha:** 2026-10-28
 > **Objetivo:** Que el comando de un solo paso (`construir.py --todo`) compile `nimbo\` con Nuitka y minifique el frontend, y que el build aborte si algún `.py` de la interfaz se cuela legible en el paquete.
@@ -174,25 +174,98 @@ Sumar `"compilado"` y `"js_minificado"` al dict de `:673-680`.
 
 ## Criterios de aceptación
 
-- [ ] `python empaquetado\construir.py --todo` termina dejando
-      `dist\NimboSetup.exe` sin pasos manuales intermedios.
-- [ ] `dir dist\Nimbo\nimbo\*.py` lista **exactamente** `puente.py`,
-      `lanzador_supervisor.py` y `__init__.py`.
-- [ ] `dist\Nimbo\nimbo\Nimbo.exe` existe y abre la interfaz.
-- [ ] `dist\Nimbo\nucleo\scripts\grabador_directo.py` **no** existe.
-- [ ] `dist\Nimbo\nucleo\scripts\mouflon.py` **sí** existe (queda abierto a
+- [x] `python empaquetado\construir.py --todo` termina dejando
+      `dist\NimboSetup.exe` sin pasos manuales intermedios. (354 MB; Nuitka
+      + paquete + ISCC 213s.)
+- [x] `dir dist\Nimbo\nimbo\*.py` lista **exactamente** `puente.py`,
+      `lanzador_supervisor.py` y `__init__.py`. (Y ninguno más en todo el
+      árbol: el `app.dist\` de Nuitka no deja un solo `.py`.)
+- [x] `dist\Nimbo\nimbo\Nimbo.exe` existe y abre la interfaz. (35 MB; sirve
+      `/` con `js/main.js` y responde `/api/lista`, `/api/estado`,
+      `/api/grabaciones`.)
+- [x] `dist\Nimbo\nucleo\scripts\grabador_directo.py` **no** existe.
+- [x] `dist\Nimbo\nucleo\scripts\mouflon.py` **sí** existe (queda abierto a
       propósito; si desapareciera, el detector no graba).
-- [ ] Los `.js` de `dist\Nimbo\nimbo\web\js\` están minificados y la ventana
-      pinta las seis pestañas sin error en la consola.
-- [ ] Copiar un `nimbo\*.py` cualquiera dentro de `dist\Nimbo\nimbo\` y
-      correr la auditoría: aborta nombrando el archivo.
-- [ ] Armar con `--sin-compilar` deja los 24 `.py` y **no** aborta.
-- [ ] `paquete.json` dice `"compilado": true`.
-- [ ] El paquete instalado graba de punta a punta: detector, supervisor y
+- [x] Los `.js` de `dist\Nimbo\nimbo\web\js\` están minificados (149 KB →
+      58 KB, 14 archivos) y la ventana pinta las pestañas sin error en la
+      consola: recorridas en navegador, **0 errores de consola y 0 pedidos
+      fallidos**. (El header tiene cinco pestañas, no seis: Favoritas y
+      Siguiendo son filtros dentro de Modelos.)
+- [x] Copiar un `nimbo\*.py` cualquiera dentro de `dist\Nimbo\nimbo\` y
+      correr la auditoría: aborta nombrando el archivo. (También sin
+      `Nimbo.exe` y con `grabador_directo.py`.)
+- [x] Armar con `--sin-compilar` deja los `.py` (26 hoy) y **no** aborta.
+- [x] `paquete.json` dice `"compilado": true` y `"js_minificado": true`.
+- [x] El paquete instalado graba de punta a punta: detector, supervisor y
       camino directo (`--modo directo` relanzando el binario), y une un
-      `.mp4`.
-- [ ] `python empaquetado\compilar.py --comprobar` sigue informando la lista
+      `.mp4`. Medido sobre el paquete: dos modelos en vivo a la vez, una
+      por cada camino, 4 sesiones, 4 `unido.json`, y los `.mp4`
+      verificados con `ffmpeg -i` (detector 2:39 @1920x1080 h264+aac;
+      directo 1:00 y 0:06 @720x960 h264+aac). Parada ordenada por stdin:
+      los seis hijos cerraron solos.
+- [x] `python empaquetado\compilar.py --comprobar` sigue informando la lista
       correcta de lo que queda abierto.
+
+---
+
+## Lo que apareció al verificar (y hubo que arreglar)
+
+El camino compilado estaba escrito desde SPEC 02 S5 y **nunca se había
+ejecutado**. Hacerlo el default destapó tres fallas, todas del mismo tipo
+—código que calcula rutas de sí mismo— y todas **silenciosas**: el paquete
+abría igual y no se quejaba de nada.
+
+La raíz de las tres, medida con una sonda compilada aparte (Nuitka 4.3.1):
+
+| | en el binario |
+|---|---|
+| `sys.executable` | `<dist>\python.exe` — **no existe** |
+| `sys.argv[0]` | el `.exe` de verdad |
+| `sys.frozen` | no definido (es de PyInstaller) |
+| `__compiled__` | `True` — el único marcador bueno, el que ya usaba `ajustes.compilado()` |
+| `<módulo>.__file__` | nocional: cae en `<paquete>\nimbo\`, no donde vivía el `.py` |
+
+1. **El camino directo no arrancaba nunca.**
+   `motor._cmd_directo` devolvía `[sys.executable, "--modo", "directo"]`, o
+   sea un `python.exe` inexistente → `Popen` tiraba `FileNotFoundError`.
+   Peor: `_reiniciar` tenía `try/finally` sin `except`, así que la
+   excepción se perdía con el hilo, `self.directo` quedaba en `None` (la
+   rama "se cerró solo" no se enteraba), nadie llamaba a
+   `_agendar_reinicio` y el watchdog relanzaba **cada 2s para siempre, sin
+   backoff y sin una línea en el log** — 90 relanzados en tres minutos y
+   ni un error. Arreglado con `ajustes.ejecutable()` y con un `except` que
+   avisa (`nivel="error"`) y agenda el backoff.
+2. **El directo no leía `grabar.txt`.** `grabador_directo.AQUI` sale de su
+   `__file__`, que compilado cae en `nimbo\`, así que
+   `_al_lado("grabar.txt")` buscaba `<paquete>\nimbo\grabar.txt` y
+   `<paquete>\datos\grabar.txt`. No encontraba ninguno y el hilo se
+   quedaba sin lista, releyendo un archivo que no existe cada 2s.
+   Arreglado pasándole `M3U8_GRABAR` desde `motor.py` — la variable que el
+   propio módulo ya ofrece para esto (y de ahí sale también
+   `activos.txt`).
+3. **La unión habría fallado siempre.** `grabador_directo.PYTHON_EXE` es
+   `sys.executable` y `DETECTAR_PY` es `AQUI\detectar_m3u8.py`: compilado,
+   los dos apuntan a archivos que no existen, así que cada grabación del
+   directo se habría quedado en segmentos crudos sin `.mp4`. Arreglado
+   desde `lanzador_directo.py`, que pisa esas tres globales
+   (`AQUI`/`DETECTAR_PY`/`PYTHON_EXE`) antes de llamar a `main()` — el
+   mismo patrón de "parchear desde afuera" que ya usa
+   `lanzador_supervisor.py`, para no tocar el núcleo. El intérprete lo
+   pasa `motor.py` por `NIMBO_PYTHON`.
+
+Y una cuarta, cosmética pero fea: el banner de puesta a punto decía
+**"falta `grabador_directo.py` — Reinstala Nimbo"** en todo paquete
+compilado, porque `ajustes.nucleo_incompleto()` lo pedía en disco cuando
+es justo el archivo que `_NUCLEO_FUERA_COMPILADO` saca a propósito.
+Arreglado con `ajustes.nucleo_requerido()`, que ahora es también de donde
+sale el texto del arreglo (así no vuelven a divergir).
+
+Lo que **sí** estaba bien y se confirmó: `copiar_compilado` poniendo el
+`.exe` dentro de `nimbo\` (los cinco `_AQUI` resuelven igual que sin
+compilar), `ajustes.compilado()`, `arrancar.bat` detectando
+`nimbo\Nimbo.exe` para el inicio automático, `OCULTOS` de `compilar.py`
+(el canario de MOUFLON da OK adentro del binario), la parada ordenada por
+stdin y las miniaturas (`ffmpeg` del paquete).
 
 ---
 
@@ -315,10 +388,21 @@ de los specs.
 | Archivo | Qué |
 |---|---|
 | `specs\08-cobertura_codigo.md` | **nuevo** — este documento |
-| `empaquetado\construir.py` | `--todo` compila, llama a `compilar.py`, `--sin-compilar`, `minificar_js()`, compuerta en `auditar()`, `paquete.json` |
+| `empaquetado\construir.py` | `--todo` compila, llama a `compilar.py`, `--sin-compilar`, `--sin-minificar`, `minificar_js()`, compuerta en `auditar()`, `paquete.json` |
 | `package.json` | `esbuild` en `devDependencies` + script `minify:js` |
 | `CLAUDE.md` | comando de referencia `--todo`; compilar deja de ser "opcional" |
-| `empaquetado\LEEME.md` | mismo cambio |
+| `empaquetado\LEEME.md` | mismo cambio + sección "El código cerrado" |
+| `empaquetado\compilar.py` | `__init__.py` a `ABIERTOS` (lo deja en disco `construir.py`) y el docstring deja de decir "opcional" |
+
+No estaban en el plan, pero sin ellos el paquete compilado no graba — ver
+"Lo que apareció al verificar":
+
+| Archivo | Qué |
+|---|---|
+| `nimbo\ajustes.py` | `ejecutable()` (el `sys.executable` de Nuitka no existe) y `nucleo_requerido()` |
+| `nimbo\motor.py` | `_cmd_directo` usa `ajustes.ejecutable()`; `M3U8_GRABAR` y `NIMBO_PYTHON` al hijo directo; `_reiniciar` ya no se come la excepción |
+| `nimbo\lanzador_directo.py` | `_rutas_compilado()`: pisa `AQUI`/`DETECTAR_PY`/`PYTHON_EXE` de `grabador_directo` para que la unión encuentre con qué unir |
+| `nimbo\preflight.py` | el texto del arreglo sale de `ajustes.nucleo_requerido()` |
 
 ---
 

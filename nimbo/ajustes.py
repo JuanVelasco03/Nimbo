@@ -103,9 +103,47 @@ def compilado() -> bool:
     return "__compiled__" in globals() or getattr(sys, "frozen", False)
 
 
+def ejecutable() -> str:
+    """El programa a relanzar para abrir un proceso hijo de Nimbo.
+
+    **Compilado NO sirve `sys.executable`.** Nuitka standalone lo deja
+    apuntando a un `python.exe` dentro de la carpeta del binario que no
+    existe (medido con Nuitka 4.3.1: `sys.executable` ->
+    `<dist>\\python.exe`, `os.path.isfile()` -> False, mientras
+    `sys.argv[0]` es el .exe de verdad). Pasarselo a subprocess.Popen
+    tira FileNotFoundError, y eso es lo que dejaba al camino directo
+    relanzandose cada 2s sin grabar nunca en el paquete compilado.
+
+    Tampoco sirve `sys.frozen`: Nuitka no lo define (es de PyInstaller).
+    El marcador bueno es `__compiled__`, que es el que usa compilado().
+    """
+    if not compilado():
+        return sys.executable
+    for cand in (sys.argv[0], os.path.join(_AQUI, "Nimbo.exe")):
+        if cand and os.path.isfile(cand):
+            return os.path.abspath(cand)
+    return sys.executable    # no deberia pasar; que falle diciendo que es
+
+
+def nucleo_requerido() -> tuple:
+    """Lo que de verdad tiene que estar en disco en esta instalacion.
+
+    Compilado, grabador_directo.py **no tiene que estar**: vive adentro
+    del binario y se arranca con --modo directo (ver compilado() arriba y
+    empaquetado\\construir.py:_NUCLEO_FUERA_COMPILADO, que es quien lo
+    saca del paquete a proposito). Sin esta excepcion el paquete
+    compilado abre con el banner de puesta a punto en rojo diciendo
+    "Reinstala Nimbo" por un archivo que falta porque asi se armo --
+    encontrado corriendo el paquete, no leyendo codigo.
+    """
+    if not compilado():
+        return _NUCLEO_REQUERIDO
+    return tuple(n for n in _NUCLEO_REQUERIDO if n != "grabador_directo.py")
+
+
 def nucleo_incompleto(ruta_scripts: str) -> list:
     """Que archivos imprescindibles faltan en nucleo\\scripts\\."""
-    return [n for n in _NUCLEO_REQUERIDO
+    return [n for n in nucleo_requerido()
             if not os.path.isfile(os.path.join(ruta_scripts, n))]
 
 

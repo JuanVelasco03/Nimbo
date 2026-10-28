@@ -1,7 +1,9 @@
 """Arma la carpeta que el instalador va a copiar: Nimbo con todo adentro.
 
+    python empaquetado\\construir.py --todo            (el comando normal: cierra el codigo)
     python empaquetado\\construir.py --mitmproxy "C:\\Program Files\\mitmproxy\\bin"
     python empaquetado\\construir.py --completo        (con respaldo de navegador)
+    python empaquetado\\construir.py --descargar --sin-compilar   (paquete abierto, para depurar)
 
 El resultado queda en dist\\Nimbo\\ y es **autocontenido**: se puede copiar a
 una maquina sin Python, sin mitmproxy y sin ffmpeg y Nimbo arranca igual.
@@ -100,6 +102,11 @@ _PY_EN_DISCO_COMPILADO = ("puente.py", "lanzador_supervisor.py",
 # SI, porque detectar_m3u8.py hace `import mouflon` al correr bajo el
 # interprete de mitmdump, que no ve nada de lo compilado.
 _NUCLEO_FUERA_COMPILADO = ("grabador_directo.py",)
+
+# Valor de --compilado cuando se pide el flag pelado (o viene de --todo):
+# "compila vos mismo con Nuitka antes de armar el paquete", en vez de
+# "usa este app.dist\\ que ya esta hecho".
+COMPILAR_AHORA = "<nuitka>"
 
 # Archivos sueltos de la raiz.
 _SUELTOS = ["arrancar.bat", "LEEME.md", "requirements.txt"]
@@ -384,6 +391,78 @@ def copiar_compilado(salida, origen):
     return destino
 
 
+def compilar_con_nuitka():
+    """Corre empaquetado\\compilar.py y devuelve el app.dist\\ que dejo.
+
+    Esto es lo que hace que `--todo` salga cerrado. La maquinaria de
+    compilar existia desde la S5 de specs\\02-distribucion_instalador.md y
+    no la usaba nadie, porque el camino comodo (`--todo`) no pasaba por
+    ella: dos comandos encadenados a mano es exactamente como se saltea el
+    segundo, y cada build apurado salia con los 24 .py de nimbo\\ en claro.
+
+    Se importa en vez de lanzarse como subproceso para que un fallo de
+    Nuitka corte este build con su propio SystemExit, sin tener que
+    reinterpretar un codigo de salida.
+    """
+    if AQUI not in sys.path:
+        sys.path.insert(0, AQUI)
+    import compilar as compilar_mod
+    salida = os.path.join(RAIZ, "dist", "compilado")
+    compilar_mod.compilar(salida, consola=False)
+    return os.path.join(salida, "app.dist")
+
+
+# -- frontend minificado --------------------------------------------------
+
+def minificar_js(salida):
+    """Minifica en el lugar los modulos ES de nimbo\\web\\js\\ del paquete.
+
+    Sin --bundle a proposito: los modulos se importan por nombre desde
+    index.html y entre si (main.js -> vista_*.js), asi que tiene que
+    seguir habiendo un archivo por archivo con su nombre. Bundlear
+    obligaria a tocar los <script type="module"> y no agrega nada.
+
+    Si no hay npx/esbuild **avisa y sigue**: el build no puede depender de
+    Node. runtime\\ no lo lleva y app.css ya viene compilado en el repo
+    justo por eso (CLAUDE.md, "Servidor y frontend"). Un build sin Node
+    tiene que seguir saliendo.
+
+    Devuelve si de verdad minifico algo (va a paquete.json).
+    """
+    dir_js = os.path.join(salida, "nimbo", "web", "js")
+    if not os.path.isdir(dir_js):
+        _log("  OJO: no hay nimbo\\web\\js\\ en el paquete")
+        return False
+    archivos = [os.path.join(dir_js, n) for n in sorted(os.listdir(dir_js))
+                if n.endswith(".js")]
+    if not archivos:
+        _log("  OJO: no hay .js que minificar")
+        return False
+    npx = shutil.which("npx")
+    if not npx:
+        _log("  OJO: no hay npx en el PATH -- los .js van sin minificar")
+        return False
+    antes = sum(os.path.getsize(ruta) for ruta in archivos)
+    # --no-install: que no baje esbuild de la nada en medio de un build.
+    # Si no esta instalado (npm install), esto falla y seguimos sin
+    # minificar, que es el comportamiento querido.
+    cmd = ([npx, "--no-install", "esbuild"] + archivos
+           + ["--minify", "--outdir=" + dir_js, "--allow-overwrite"])
+    r = subprocess.run(cmd, cwd=RAIZ, capture_output=True, text=True,
+                       errors="replace")
+    if r.returncode != 0:
+        for linea in ((r.stderr or "") + (r.stdout or "")).splitlines()[:6]:
+            if linea.strip():
+                _log("   ", linea.strip())
+        _log("  OJO: esbuild no corrio -- los .js van sin minificar "
+             "(npm install para tenerlo)")
+        return False
+    despues = sum(os.path.getsize(ruta) for ruta in archivos)
+    _log("  %d .js minificados: %.0f KB -> %.0f KB"
+         % (len(archivos), antes / 1024, despues / 1024))
+    return True
+
+
 def poner_licencia(salida, clave_publica, url, anon):
     """Inyecta la clave publica y a donde validar, en el paquete.
 
@@ -539,8 +618,15 @@ def limpiar_pycache(salida):
         _log("  %d __pycache__\\ sacados" % n)
 
 
-def auditar(salida):
-    """Que no se haya colado nada de _PROHIBIDOS. Aborta si encuentra algo."""
+def auditar(salida, compilado=False):
+    """Que no se haya colado nada de _PROHIBIDOS. Aborta si encuentra algo.
+
+    Con `compilado`, audita ademas que el paquete este **de verdad**
+    cerrado. Mismo razonamiento que la lista blanca de copiar_codigo: un
+    --compilado que silenciosamente no se aplico es el mismo tipo de fallo
+    que un .conf que se cuela, y merece el mismo SystemExit. Es una red,
+    no el mecanismo: lo que filtra los .py es copiar_codigo.
+    """
     malos = []
     for base, _, archivos in os.walk(salida):
         # runtime\ es codigo ajeno (CPython, mitmproxy, Chromium): trae
@@ -555,6 +641,33 @@ def auditar(salida):
         raise SystemExit("ABORTADO: el paquete incluye archivos que no se "
                          "distribuyen:\n  " + "\n  ".join(malos))
     _log("  auditoria: sin credenciales ni datos de usuario")
+
+    if not compilado:
+        return
+    abiertos = []
+    dir_nimbo = os.path.join(salida, "nimbo")
+    # Solo el primer nivel: adentro de nimbo\ vive tambien el arbol que
+    # dejo Nuitka (copiar_compilado), y ahi puede haber .py de terceros
+    # que no son codigo nuestro en claro.
+    if os.path.isdir(dir_nimbo):
+        for n in sorted(os.listdir(dir_nimbo)):
+            if (n.endswith(".py") and os.path.isfile(os.path.join(dir_nimbo, n))
+                    and n not in _PY_EN_DISCO_COMPILADO):
+                abiertos.append("nimbo\\" + n)
+    if not os.path.isfile(os.path.join(dir_nimbo, "Nimbo.exe")):
+        abiertos.append("falta nimbo\\Nimbo.exe "
+                        "(copiar_compilado no corrio)")
+    for n in _NUCLEO_FUERA_COMPILADO:
+        if os.path.isfile(os.path.join(salida, "nucleo", "scripts", n)):
+            abiertos.append("nucleo\\scripts\\" + n)
+    if abiertos:
+        raise SystemExit(
+            "ABORTADO: se pidio un paquete compilado y quedo codigo "
+            "abierto:\n  " + "\n  ".join(abiertos)
+            + "\n\nSi alguno de esos .py tiene que estar en disco, sumalo "
+              "a _PY_EN_DISCO_COMPILADO con el motivo.")
+    _log("  auditoria: codigo cerrado (solo %s en disco)"
+         % ", ".join(_PY_EN_DISCO_COMPILADO))
 
 
 def _medir(ruta):
@@ -597,17 +710,26 @@ def main(argv=None):
                         "(https://<proyecto>.supabase.co/functions/v1/validar)")
     p.add_argument("--anon-licencia", default="",
                    help="anon key del proyecto de Supabase (es publica)")
-    p.add_argument("--compilado", default="",
-                   help="carpeta app.dist\\ que dejo empaquetado\\compilar.py; "
-                        "con esto los .py de nimbo\\ NO van al paquete (salvo "
-                        "puente.py y lanzador_supervisor.py, que se cargan "
-                        "por ruta)")
+    p.add_argument("--compilado", nargs="?", const=COMPILAR_AHORA, default="",
+                   help="cerrar el codigo: los .py de nimbo\\ NO van al "
+                        "paquete (salvo puente.py y lanzador_supervisor.py, "
+                        "que se cargan por ruta). Solo, compila con Nuitka "
+                        "aca mismo; con una ruta, usa ese app.dist\\ ya "
+                        "armado (para no recompilar cinco minutos mientras "
+                        "se itera sobre el empaquetado)")
+    p.add_argument("--sin-compilar", action="store_true",
+                   help="armar el paquete ABIERTO a proposito (depurar el "
+                        "paquete leyendo los .py). Gana sobre --todo; que "
+                        "exista este escape es lo que permite que el default "
+                        "sea cerrado")
+    p.add_argument("--sin-minificar", action="store_true",
+                   help="no pasar los .js por esbuild")
     p.add_argument("--instalador", action="store_true",
                    help="al terminar, compilar empaquetado\\nimbo.iss con "
                         "Inno Setup y dejar dist\\NimboSetup.exe")
     p.add_argument("--todo", action="store_true",
                    help="el comando de un solo paso: equivale a --descargar "
-                        "--completo --licencia --instalador")
+                        "--completo --licencia --compilado --instalador")
     p.add_argument("--licencia", action="store_true",
                    help="activar la licencia tomando los datos de "
                         "empaquetado\\licencia\\proyecto.local.json (lo que "
@@ -616,13 +738,22 @@ def main(argv=None):
     args = p.parse_args(argv)
 
     if args.todo:
-        # El comando de un solo paso. Son los cuatro que se usan para
+        # El comando de un solo paso. Son los cinco que se usan para
         # armar lo que se le manda a otra persona; cada uno sigue
         # existiendo suelto para armar variantes (p.ej. --completo
         # --solo-shell, o sin licencia para probar).
         args.descargar = args.completo = True
         args.licencia = args.instalador = True
+        if not args.compilado:
+            args.compilado = COMPILAR_AHORA
+    if args.sin_compilar:
+        # El escape explicito gana sobre --todo.
+        args.compilado = ""
 
+    # OJO con el orden: la clave publica de la licencia se resuelve ACA,
+    # antes de Nuitka. Es la unica dependencia de orden entre esta spec y
+    # la 07 (que mete la clave adentro del binario): si se compilara
+    # primero, la clave no entraria.
     if args.licencia:
         ruta = os.path.join(AQUI, "licencia", "proyecto.local.json")
         try:
@@ -638,6 +769,10 @@ def main(argv=None):
         if not args.clave_publica:
             raise SystemExit("%s no trae clave_publica" % ruta)
 
+    if args.compilado == COMPILAR_AHORA:
+        _log("0/5 cerrando el codigo con Nuitka")
+        args.compilado = compilar_con_nuitka()
+
     salida = os.path.abspath(args.salida)
     if os.path.isdir(salida):
         _log("limpiando", salida)
@@ -648,6 +783,11 @@ def main(argv=None):
     copiar_codigo(salida, compilado=bool(args.compilado))
     if args.compilado:
         copiar_compilado(salida, os.path.abspath(args.compilado))
+    if args.sin_minificar:
+        _log("  .js sin minificar (--sin-minificar)")
+        js_minificado = False
+    else:
+        js_minificado = minificar_js(salida)
 
     _log("2/5 Python embebido")
     dir_python = armar_python(salida, args.python_zip, args.version_python,
@@ -668,7 +808,7 @@ def main(argv=None):
 
     _log("5/5 auditoria")
     limpiar_pycache(salida)
-    auditar(salida)
+    auditar(salida, compilado=bool(args.compilado))
 
     with open(os.path.join(salida, "paquete.json"), "w", encoding="utf-8") as f:
         json.dump({
@@ -676,6 +816,10 @@ def main(argv=None):
             "version_python": args.version_python,
             "completo": bool(args.completo),
             "licencia": bool(args.clave_publica),
+            # Para contestar "este .exe que mande estaba cerrado?" sin
+            # tener que abrirlo.
+            "compilado": bool(args.compilado),
+            "js_minificado": bool(js_minificado),
         }, f, indent=2)
         f.write("\n")
 

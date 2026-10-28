@@ -47,10 +47,16 @@ Empaquetado para otra máquina (no hace falta para desarrollar — ver
 "Empaquetado para otra máquina" más abajo y `empaquetado\LEEME.md`):
 
 ```bat
-rem armar dist\Nimbo\ con todo adentro (Python, mitmdump, ffmpeg)
-python empaquetado\construir.py --descargar [--completo]
+rem el comando de referencia: arma dist\Nimbo\ con todo adentro (Python,
+rem mitmdump, ffmpeg), compila nimbo\ con Nuitka, minifica los .js y deja
+rem dist\NimboSetup.exe listo para mandar
+python empaquetado\construir.py --todo
 
-rem el instalador -> dist\NimboSetup.exe
+rem variantes: paquete suelto, o abierto a proposito para depurarlo
+python empaquetado\construir.py --descargar [--completo]
+python empaquetado\construir.py --descargar --sin-compilar
+
+rem el instalador a mano (--todo ya lo hace)
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" empaquetado\nimbo.iss
 
 rem licencia: par de claves, y probar el cliente sin red ni backend
@@ -612,14 +618,45 @@ Lo que hay que saber si se toca algo de ahí:
   token viva: si exigiera red en cada arranque, un corte de internet dejaría
   la noche sin grabar. Si vence con grabaciones en curso, `_bucle_licencia`
   avisa y llama a `Motor.parar()` — nunca mata nada a lo bruto.
-- Compilar con Nuitka (`empaquetado\compilar.py`) es **opcional** y cierra
-  `nimbo\` + `grabador_directo.py`. Lo único que cambia en runtime es que
-  `motor.py` arranca el camino directo con `[sys.executable, "--modo",
-  "directo"]` (ver `modos.py` y `ajustes.compilado()`) en vez de
-  `[python, lanzador_directo.py]`. **No** cierra `detectar_m3u8.py`,
-  `puente.py`, `supervisor.py` ni `mouflon.py`: los dos primeros los carga
-  mitmdump por ruta, y `mouflon.py` lo importa el detector al correr, así
-  que la tabla de claves MOUFLON queda en disco igual.
+- Compilar con Nuitka (`empaquetado\compilar.py`) es el **default** de
+  `--todo`, no un paso opcional: `construir.py` lo llama él mismo
+  (`compilar_con_nuitka()`) y `--sin-compilar` es el escape para armar un
+  paquete abierto a propósito. Cierra `nimbo\` + `grabador_directo.py`. **No**
+  cierra `detectar_m3u8.py`, `puente.py`, `supervisor.py` ni `mouflon.py`:
+  los dos primeros los carga mitmdump por ruta, y `mouflon.py` lo importa
+  el detector al correr, así que la tabla de claves MOUFLON queda en disco
+  igual (`specs\08-cobertura_codigo.md`, Decisiones: cerrarla es su propio
+  spec).
+- **Adentro del binario no se puede calcular una ruta desde uno mismo.**
+  Nuitka deja `sys.executable` apuntando a un `python.exe` que **no
+  existe**, y el `__file__` de cada módulo es nocional: cae en
+  `<paquete>\nimbo\`, no donde vivía el `.py`. Lo que sí vale es
+  `sys.argv[0]` y el marcador `__compiled__` (`sys.frozen` es de
+  PyInstaller, Nuitka no lo define). De ahí salen cuatro cosas que no son
+  opcionales, las tres primeras para que el camino directo grabe:
+  `ajustes.ejecutable()` para relanzarse (`motor._cmd_directo`),
+  `M3U8_GRABAR` al hijo directo (si no, `grabador_directo` busca
+  `grabar.txt` al lado de un `__file__` que no existe y se queda sin lista
+  en silencio), y `lanzador_directo._rutas_compilado()`, que le pisa
+  `AQUI`/`DETECTAR_PY`/`PYTHON_EXE` para que `detectar_m3u8.py --unir`
+  tenga con qué correr — parchear desde afuera, como
+  `lanzador_supervisor.py`, para no tocar el núcleo. La cuarta es
+  `ajustes.nucleo_requerido()`, que no pide `grabador_directo.py` en disco
+  cuando está adentro del binario. Las cuatro fallaban **sin un solo error
+  en el log** (`specs\08-cobertura_codigo.md`, "Lo que apareció al
+  verificar").
+- `auditar(salida, compilado)` es la red: con un build compilado **aborta**
+  si quedó cualquier `nimbo\*.py` fuera de `_PY_EN_DISCO_COMPILADO`, si
+  falta `nimbo\Nimbo.exe` o si se coló `grabador_directo.py`. Un
+  `--compilado` que silenciosamente no se aplicó es el mismo tipo de fallo
+  que un `.conf` que se cuela. `paquete.json` deja escrito
+  `"compilado"`/`"js_minificado"` para poder contestar después "¿este
+  `.exe` que mandé estaba cerrado?".
+- Los `.js` del paquete se minifican con `esbuild` **sin bundlear** (los
+  módulos se importan por nombre entre sí). Si no hay `npx`/`esbuild`,
+  `minificar_js()` avisa y sigue: `runtime\` no lleva Node y un build sin
+  Node tiene que seguir saliendo, igual que `app.css` va versionado por el
+  mismo motivo.
 
 ### Imports planos
 

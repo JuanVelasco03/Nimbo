@@ -119,9 +119,12 @@ def comprobar(ajustes) -> list:
     fila(ok, "Motor de captura",
          "nucleo\\scripts\\ completo" if ok else
          "falta en nucleo\\scripts\\: " + ", ".join(faltan),
+         # El listado del arreglo sale de la misma constante que la
+         # comprobacion, asi no vuelve a decir "tiene que traer
+         # grabador_directo.py" en un paquete compilado, donde ese
+         # archivo esta adentro del binario a proposito.
          "" if ok else "Reinstala Nimbo: nucleo\\scripts\\ tiene que traer "
-                       "detectar_m3u8.py, supervisor.py, mouflon.py y "
-                       "grabador_directo.py")
+                       + ", ".join(ajustes_mod.nucleo_requerido()))
 
     ok = bool(ajustes["mitmdump"]) and os.path.isfile(ajustes["mitmdump"])
     fila(ok, "mitmproxy",
