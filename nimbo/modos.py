@@ -34,6 +34,19 @@ def correr(argv) -> int:
         return 2
 
     if nombre == "directo":
+        # La puerta de licencia (ver ajustes.cargar() / licencia.exigir,
+        # specs\07-licencia_inviolable.md): este hijo entra por otra
+        # puerta (Nimbo.exe --modo directo, no python app.py) asi que
+        # tiene que pasar por la misma a mano. **A2 cerrado**: sin esto,
+        # relanzar el binario con --modo directo grababa sin pedir nunca
+        # una licencia.
+        import ajustes as ajustes_mod
+        import licencia as licencia_mod
+        try:
+            ajustes_mod.cargar()
+        except licencia_mod.SinLicencia as e:
+            print("[NIMBO] licencia: " + str(e.motivo), file=sys.stderr)
+            return 3
         # Import adentro de la rama: el hijo del camino directo no necesita
         # el servidor, ni la bandeja, ni websockets.
         import lanzador_directo

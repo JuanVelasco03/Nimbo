@@ -25,6 +25,8 @@ import shutil
 import subprocess
 import sys
 
+import licencia as licencia_mod
+
 # -- raiz del proyecto -----------------------------------------------------
 
 # ajustes.py vive en <raiz>\nimbo\, asi que la raiz es dos niveles arriba.
@@ -410,4 +412,12 @@ def cargar(completar: bool = True) -> Ajustes:
             os.makedirs(d, exist_ok=True)
         except OSError:
             pass
+
+    # La puerta unica de licencia (specs\07-licencia_inviolable.md): los
+    # tres entrypoints llaman a cargar() antes de hacer cualquier otra
+    # cosa, asi que exigir() aca cubre a todos sin que cada uno tenga que
+    # acordarse. Sin parametro para saltearlo a proposito -- no hay un
+    # cargar(exigir_licencia=False) que un parche de una linea pueda
+    # forzar. DIR_ESTADO ya existe por el bucle de arriba.
+    licencia_mod.exigir(DIR_ESTADO)
     return a

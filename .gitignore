@@ -32,8 +32,14 @@ nucleo/scripts/grabar.txt.bak
 # build y lo que no se distribuye.
 dist/
 empaquetado/cache/
-# lo inyecta construir.py --clave-publica dentro del paquete; si existe en
-# la copia de desarrollo, Nimbo se pone a pedir clave (ver licencia.activa)
+# lo inyecta construir.py --clave-publica dentro del paquete: ya solo trae
+# url/anon, no la clave publica (ver nimbo/licencia_clave.py mas abajo y
+# specs\07-licencia_inviolable.md)
 nimbo/licencia_publica.json
+# generado por construir.py justo antes de compilar con Nuitka y borrado
+# apenas termina (try/finally) -- si queda colgado por un build
+# interrumpido, la copia de desarrollo se pone a pedir clave; se borra a
+# mano y listo (ver licencia.activa, specs\07-licencia_inviolable.md)
+nimbo/licencia_clave.py
 # claves de la licencia: la privada firma los tokens. Nunca a git.
 empaquetado/licencia/*.local.json

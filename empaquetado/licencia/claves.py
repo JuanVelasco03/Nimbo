@@ -25,6 +25,7 @@ import base64
 import json
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.join(
@@ -117,9 +118,11 @@ def cmd_probar():
     maquina = licencia.id_maquina()
     print("maquina de prueba:", maquina)
 
-    # La verificacion del cliente lee la clave publica del config; se la
-    # inyectamos en memoria para no escribir nada en el repo.
-    licencia._cfg = {"clave_publica": b64e(publica)}
+    # La verificacion del cliente lee la clave publica de
+    # licencia._CLAVE_COMPILADA (specs\07-licencia_inviolable.md -- antes
+    # era un .json en disco); se la inyectamos en memoria para no escribir
+    # nada ni compilar nada.
+    licencia._CLAVE_COMPILADA = b64e(publica)
 
     bueno = emitir(privada, "CLAVE-DE-PRUEBA", maquina, 7)
     payload = licencia.leer_token(bueno)
@@ -149,9 +152,38 @@ def cmd_probar():
         "paso un payload manipulado"
     print("  payload manipulado      -> rechazado")
 
-    licencia._cfg = {}
-    assert not licencia.activa(), "activa() tendria que ser False sin clave"
-    print("  sin clave publica       -> licencia apagada (copia de desarrollo)")
+    # activa() ya no depende de la clave publica sino de si el proceso
+    # esta compilado (specs\07-licencia_inviolable.md): la copia de
+    # desarrollo (este script) nunca lo esta.
+    licencia._DESARROLLO = True
+    assert not licencia.activa(), \
+        "activa() tendria que ser False en la copia de desarrollo"
+    print("  copia de desarrollo     -> licencia apagada (activa() == False)")
+
+    # Simular un build compilado (sin tocar __compiled__ de verdad, que
+    # Nuitka pone solo): el default invertido exige licencia salvo marca
+    # de desarrollo, y falla cerrado si la clave quedo vacia (build roto).
+    licencia.__dict__["__compiled__"] = True
+    try:
+        licencia._DESARROLLO = False
+        licencia._CLAVE_COMPILADA = ""
+        try:
+            licencia.exigir(tempfile.mkdtemp())
+            raise AssertionError("exigir() no levanto con la clave vacia")
+        except licencia.SinLicencia as e:
+            print("  compilado sin clave     -> exigir() levanta (%s)"
+                  % e.motivo)
+
+        licencia._CLAVE_COMPILADA = b64e(publica)
+        try:
+            licencia.exigir(tempfile.mkdtemp())
+            raise AssertionError("exigir() no levanto sin activar")
+        except licencia.SinLicencia as e:
+            print("  compilado sin activar   -> exigir() levanta (%s)"
+                  % e.motivo)
+    finally:
+        del licencia.__dict__["__compiled__"]
+
     print("\nTODO BIEN")
 
 

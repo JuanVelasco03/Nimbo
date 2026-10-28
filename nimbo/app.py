@@ -213,7 +213,21 @@ def ejecutar_sin_bandeja(app):
 # -- arranque -------------------------------------------------------------
 
 def main():
-    a = ajustes_mod.cargar()
+    # La puerta de licencia vive adentro de ajustes_mod.cargar() (ver
+    # licencia.exigir, specs\07-licencia_inviolable.md) -- en la copia de
+    # desarrollo nunca levanta nada. Va antes de la instancia unica a
+    # proposito: lo que decide es si Nimbo puede arrancar, y la pantalla
+    # de activacion se sirve sola, sin levantar el resto (ver
+    # activacion.py).
+    try:
+        a = ajustes_mod.cargar()
+    except licencia_mod.SinLicencia as e:
+        _log("licencia: " + str(e.motivo))
+        import activacion as activacion_mod
+        if not activacion_mod.pantalla(ajustes_mod.DIR_ESTADO, abrir_ventana):
+            _log("sin licencia activa -- Nimbo no arranca")
+            return 1
+        a = ajustes_mod.cargar()      # ya se activo: ahora pasa la puerta
 
     existente = _instancia_viva()
     if existente:
@@ -221,22 +235,6 @@ def main():
         abrir_ventana("http://127.0.0.1:%d/?t=%s" %
                       (existente["puerto"], existente["token"]))
         return 0
-
-    # La licencia, si este paquete la trae (ver licencia.activa: en la
-    # copia de desarrollo esto no corre nunca). Va antes del servidor a
-    # proposito: lo que decide es si Nimbo puede arrancar, y la pantalla
-    # de activacion se sirve sola, sin levantar el resto (ver
-    # activacion.py).
-    if licencia_mod.activa():
-        r = licencia_mod.revisar(a.dir_estado)
-        if r.get("aviso"):
-            _log("licencia: %s (sigue valida por ahora)" % r["aviso"])
-        if not r["ok"]:
-            _log("licencia: " + str(r.get("motivo") or "no valida"))
-            import activacion as activacion_mod
-            if not activacion_mod.pantalla(a.dir_estado, abrir_ventana):
-                _log("sin licencia activa -- Nimbo no arranca")
-                return 1
 
     # Aplicacion() ya existe en este punto (el constructor de Servidor la
     # crea sincronico, antes de levantar el loop) -- se puede purgar

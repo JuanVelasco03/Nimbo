@@ -1,6 +1,6 @@
 # SPEC 07 — Licencia que no se saca borrando un archivo
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 02 (empaquetado, `--compilado`, `ajustes.compilado()`), SPEC 08 (es la que hace que el paquete salga compilado por defecto)
 > **Fecha:** 2026-10-28
 > **Objetivo:** Que la licencia deje de poder quitarse borrando un archivo, corriendo otro entrypoint o moviendo el reloj, pasando la verificación a una puerta única que falla cerrada en todo build compilado.

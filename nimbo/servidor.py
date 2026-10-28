@@ -1281,7 +1281,15 @@ class Servidor:
 if __name__ == "__main__":
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    a = ajustes_mod.cargar()
+    # Este entrypoint es para depurar con la consola a la vista, no para
+    # el usuario final -- sin pantalla de activacion (A3,
+    # specs\07-licencia_inviolable.md): si la puerta de ajustes.cargar()
+    # no deja pasar, se imprime el motivo y se sale.
+    try:
+        a = ajustes_mod.cargar()
+    except licencia_mod.SinLicencia as e:
+        print("[NIMBO] licencia: " + str(e.motivo))
+        sys.exit(3)
     servidor = Servidor(a, ajustes_mod.DIR_WEB)
     servidor.arrancar()
     print("Nimbo escuchando en http://127.0.0.1:%d/?t=%s" % (servidor.puerto, servidor.token))

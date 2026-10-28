@@ -113,10 +113,19 @@ _SUELTOS = ["arrancar.bat", "LEEME.md", "requirements.txt"]
 
 # Si alguno de estos llega al paquete, el build se aborta. Es la red de
 # seguridad de la lista blanca: si un filtro se afloja por error, esto lo
-# caza antes de que el .exe salga de la maquina.
+# caza antes de que el .exe salga de la maquina. licencia_clave.py es la
+# clave publica en claro (specs\07-licencia_inviolable.md): si aparece es
+# que se compilo mal y la clave viaja legible al lado del binario.
 _PROHIBIDOS = (".conf", "sesion.json", "config.json", "instancia.json",
                "grabar.txt", "grabar.txt.bak", "activos.txt",
-               "vpn_tunel.txt", "licencia.json", "licencia_privada.pem")
+               "vpn_tunel.txt", "licencia.json", "licencia_privada.pem",
+               "licencia_clave.py")
+
+# Donde construir.py escribe la clave publica ANTES de compilar, para que
+# entre al binario como codigo (ver generar_clave_licencia). En el repo
+# no existe -- va a .gitignore -- y se borra con borrar_clave_licencia()
+# al terminar, pase lo que pase.
+RUTA_CLAVE_LICENCIA = os.path.join(RAIZ, "nimbo", "licencia_clave.py")
 
 
 def _log(*a):
@@ -463,20 +472,48 @@ def minificar_js(salida):
     return True
 
 
-def poner_licencia(salida, clave_publica, url, anon):
-    """Inyecta la clave publica y a donde validar, en el paquete.
+def generar_clave_licencia(clave_publica):
+    """Escribe nimbo\\licencia_clave.py en el REPO, antes de compilar.
 
-    Sin este archivo el paquete no pide ninguna clave: licencia.py se
-    apaga sola cuando no hay clave publica (ver licencia.activa()). Asi la
-    copia de desarrollo nunca queda bloqueada por este mecanismo, y por
-    eso el archivo esta en .gitignore.
+    specs\\07-licencia_inviolable.md: Nuitka lo compila junto con el resto
+    de nimbo\\ y la clave publica entra al binario como codigo, no como
+    dato legible al lado (lo que era el viejo licencia_publica.json con
+    clave_publica adentro -- A1/A5). Se borra con borrar_clave_licencia()
+    en un try/finally alrededor de la compilacion, para que la copia de
+    desarrollo vuelva a quedar sin licencia sola apenas termina el build.
+    """
+    contenido = (
+        "# generado por empaquetado\\construir.py -- no editar, no versionar\n"
+        "CLAVE_PUBLICA = %r\n"
+        "DESARROLLO = False\n"
+    ) % clave_publica
+    with open(RUTA_CLAVE_LICENCIA, "w", encoding="utf-8") as f:
+        f.write(contenido)
+    _log("  clave de licencia escrita en nimbo\\licencia_clave.py (temporal, "
+         "se borra al terminar)")
+
+
+def borrar_clave_licencia():
+    try:
+        os.remove(RUTA_CLAVE_LICENCIA)
+    except OSError:
+        pass
+
+
+def poner_licencia(salida, url, anon):
+    """Inyecta adonde validar la licencia, en el paquete.
+
+    Ya no lleva la clave publica (eso lo hace generar_clave_licencia(),
+    adentro del binario): sin este archivo Nimbo se queda sin a donde
+    validar, no sin licencia -- borrarlo ya no apaga nada (ver
+    licencia.activa(), specs\\07-licencia_inviolable.md).
 
     La anon key de Supabase va adentro del paquete y eso esta bien: es
     publica por diseno y la tabla de licencias tiene RLS sin policies, asi
     que no sirve para leer nada (ver empaquetado\\licencia\\esquema.sql).
     La **privada** de la firma no va: vive solo en la Edge Function.
     """
-    datos = {"clave_publica": clave_publica}
+    datos = {}
     if url:
         datos["url"] = url
     if anon:
@@ -769,9 +806,27 @@ def main(argv=None):
         if not args.clave_publica:
             raise SystemExit("%s no trae clave_publica" % ruta)
 
+    # specs\07-licencia_inviolable.md: sin binario, la clave compilada
+    # seria un .py legible al lado y A5 (editar activa() -> False) es una
+    # linea. Este SystemExit es lo que hace que esta spec y la 08 (codigo
+    # compilado por defecto) no se puedan desincronizar.
+    if args.clave_publica and not args.compilado:
+        raise SystemExit(
+            "ABORTADO: --clave-publica (o --licencia) sin --compilado -- "
+            "la clave compilada quedaria en un .py legible al lado del "
+            "paquete abierto. Agrega --compilado, o sacale la licencia "
+            "con --sin-compilar para un paquete de prueba.")
+
     if args.compilado == COMPILAR_AHORA:
         _log("0/5 cerrando el codigo con Nuitka")
-        args.compilado = compilar_con_nuitka()
+        if args.clave_publica:
+            generar_clave_licencia(args.clave_publica)
+            try:
+                args.compilado = compilar_con_nuitka()
+            finally:
+                borrar_clave_licencia()
+        else:
+            args.compilado = compilar_con_nuitka()
 
     salida = os.path.abspath(args.salida)
     if os.path.isdir(salida):
@@ -803,8 +858,7 @@ def main(argv=None):
         _log("4/5 navegador de respaldo: omitido (sin --completo)")
 
     if args.clave_publica:
-        poner_licencia(salida, args.clave_publica, args.url_licencia,
-                       args.anon_licencia)
+        poner_licencia(salida, args.url_licencia, args.anon_licencia)
 
     _log("5/5 auditoria")
     limpiar_pycache(salida)

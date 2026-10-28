@@ -292,6 +292,7 @@ plantilla mínima; nadie la lee en runtime.
 | `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
 | `estado\eventos_directo.jsonl` | `lanzador_directo.py` | Nimbo (`registro.py`) |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
+| `estado\licencia.json` | Nimbo (`licencia.py`) — incluye `visto_max`, la marca de agua del reloj que solo crece (`specs\07-licencia_inviolable.md`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
 | `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra a papelera lo ya unido | Nimbo |
@@ -595,10 +596,12 @@ Lo que hay que saber si se toca algo de ahí:
 
 - **La copia de desarrollo no cambia en nada.** `ajustes.python_embarcado()`
   / `mitmdump_embarcado()` / `navegadores_embarcados()` devuelven `""` si no
-  existe `runtime\`, y `licencia.activa()` devuelve `False` si no existe
-  `nimbo\licencia_publica.json` (que el repo no trae: lo inyecta el build, y
-  está en `.gitignore`). Sin esos dos archivos, todo se resuelve igual que
-  antes.
+  existe `runtime\`, y `licencia.activa()` devuelve `False` si el proceso no
+  está compilado (ver `specs\07-licencia_inviolable.md`) — ya no depende de
+  que exista `nimbo\licencia_publica.json`, que el usuario final podía
+  borrar para apagar la licencia. Sin `runtime\` ni `nimbo\licencia_clave.py`
+  (que el repo no trae: lo genera y borra `construir.py` alrededor de
+  Nuitka, y está en `.gitignore`), todo se resuelve igual que antes.
 - `construir.py` copia por **lista blanca** (`_ARBOL`), nunca por "el repo
   menos exclusiones", y antes de terminar `auditar()` **aborta** si en el
   paquete apareció un `.conf` (claves privadas de WireGuard), `sesion.json`,
