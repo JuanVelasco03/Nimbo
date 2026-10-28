@@ -12,7 +12,14 @@
 #define NombreApp "Nimbo"
 #define Version "1.0.0"
 #define Editor "Nimbo"
-#define Origen "..\dist\Nimbo"
+; De donde salen los archivos. construir.py --instalador lo pasa con
+; /DOrigen=<ruta> para poder empaquetar una carpeta que no sea la de
+; siempre (probar un build sin pisar el bueno); compilando el .iss a mano
+; queda el de siempre. Absoluto desde SourcePath -- si fuera relativo,
+; FileExists() mas abajo no lo resolveria igual que [Files].
+#ifndef Origen
+  #define Origen AddBackslash(SourcePath) + "..\dist\Nimbo"
+#endif
 
 ; Si construir.py se corrio con --compilado, el paquete trae nimbo\Nimbo.exe
 ; y el acceso directo tiene que apuntar ahi. Si no, al pythonw embebido
@@ -26,7 +33,7 @@
 ; un "{#...}" emite ""{app}\nimbo\app.py"" -- "Mismatched or misplaced
 ; quotes on parameter Parameters", que es justo como fallo la primera
 ; compilacion.
-#define Compilado FileExists(AddBackslash(SourcePath) + Origen + "\nimbo\Nimbo.exe")
+#define Compilado FileExists(Origen + "\nimbo\Nimbo.exe")
 
 [Setup]
 AppId={{B2F4E1C7-5A9D-4F3E-8C21-6D0A7B4E9F12}

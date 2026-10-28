@@ -14,7 +14,21 @@ pasa a otra persona.
 | `nucleo\scripts\ffmpeg.exe` y `wireproxy.exe` | ya están en la copia de desarrollo |
 | [Inno Setup 6](https://jrsoftware.org/isdl.php) | compila el `.iss` final |
 
-## Los dos comandos
+## El comando
+
+```bat
+python empaquetado\construir.py --todo
+```
+
+Eso es todo: arma el paquete completo con licencia y compila el instalador.
+Deja **`dist\NimboSetup.exe`** listo para mandar. Equivale a
+`--descargar --completo --licencia --instalador`.
+
+Tarda. En la instalación real: unos minutos de descarga del navegador, y
+3m27s de compresión para un paquete de 1,1 GB que terminó en un `.exe` de
+317 MB.
+
+## Los pasos por separado
 
 ```bat
 rem 1) armar dist\Nimbo\ (liviano, 206 MB medidos: sin respaldo de navegador)

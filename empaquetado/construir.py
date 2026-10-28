@@ -415,6 +415,110 @@ def poner_licencia(salida, clave_publica, url, anon):
 
 # -- control final ---------------------------------------------------------
 
+# -- el instalador (Inno Setup) -------------------------------------------
+
+def localizar_iscc() -> str:
+    """ISCC.exe, el compilador de linea de comandos de Inno Setup.
+
+    El instalador de Inno es **per-user por defecto** y lo deja en
+    %LOCALAPPDATA%\\Programs\\Inno Setup 6\\, no en Program Files, y no lo
+    pone en el PATH. Mirar solo Program Files decia "no esta instalado"
+    con Inno 6.7.3 instalado y funcionando, asi que se prueban los tres
+    lugares y, si no, el registro de desinstalacion -- que es de donde
+    salio la ruta real.
+    """
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidatos = []
+    if local:
+        candidatos.append(os.path.join(local, "Programs", "Inno Setup 6",
+                                       "ISCC.exe"))
+    candidatos += [r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+                   r"C:\Program Files\Inno Setup 6\ISCC.exe"]
+    hallado = shutil.which("ISCC")
+    if hallado:
+        candidatos.append(hallado)
+    for ruta in candidatos:
+        if ruta and os.path.isfile(ruta):
+            return ruta
+
+    # Ultimo recurso: el registro. Inno escribe su InstallLocation ahi.
+    try:
+        import winreg
+    except ImportError:
+        return ""
+    ramas = ((winreg.HKEY_CURRENT_USER,
+              r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"),
+             (winreg.HKEY_LOCAL_MACHINE,
+              r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+             (winreg.HKEY_LOCAL_MACHINE,
+              r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"))
+    for raiz, sub in ramas:
+        try:
+            with winreg.OpenKey(raiz, sub) as k:
+                for i in range(winreg.QueryInfoKey(k)[0]):
+                    try:
+                        with winreg.OpenKey(k, winreg.EnumKey(k, i)) as hijo:
+                            nombre = winreg.QueryValueEx(hijo, "DisplayName")[0]
+                            if "inno setup" not in str(nombre).lower():
+                                continue
+                            donde = winreg.QueryValueEx(hijo,
+                                                        "InstallLocation")[0]
+                            exe = os.path.join(str(donde), "ISCC.exe")
+                            if os.path.isfile(exe):
+                                return exe
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return ""
+
+
+def compilar_instalador(salida):
+    """Corre ISCC sobre nimbo.iss y devuelve la ruta del .exe.
+
+    Tarda. Medido en la instalacion real: 3m27s para un paquete completo
+    de 1,1 GB, que quedo en un .exe de 317 MB (Chromium comprime muy bien
+    con el lzma2/max del .iss).
+    """
+    iscc = localizar_iscc()
+    if not iscc:
+        raise SystemExit(
+            "no se encontro ISCC.exe. Instala Inno Setup 6 desde\n"
+            "  https://jrsoftware.org/isdl.php\n"
+            "y volve a correr esto (o compila a mano:\n"
+            "  \"%LOCALAPPDATA%\\Programs\\Inno Setup 6\\ISCC.exe\" "
+            "empaquetado\\nimbo.iss)")
+    iss = os.path.join(AQUI, "nimbo.iss")
+    # /DOrigen: que empaquete LA carpeta que acabamos de armar, no la que
+    # el .iss tiene por defecto. Importa cuando se usa --salida para
+    # probar un build sin pisar el bueno.
+    cmd = [iscc, "/DOrigen=" + salida, iss]
+    nombre = "NimboSetup"
+    if os.path.normcase(salida) != os.path.normcase(
+            os.path.join(RAIZ, "dist", "Nimbo")):
+        # Y que no se llame igual que el instalador de verdad.
+        nombre = "NimboSetup-" + os.path.basename(salida)
+        cmd.insert(1, "/F" + nombre)
+    _log("  %s" % iscc)
+    _log("  compilando %s (paciencia: son varios minutos)" % os.path.basename(iss))
+    arranque = time.time()
+    r = subprocess.run(cmd, cwd=RAIZ, capture_output=True,
+                       text=True, errors="replace")
+    salida_iscc = (r.stdout or "") + (r.stderr or "")
+    if r.returncode != 0:
+        # Las lineas utiles son las de "Error"/"Warning"; el resto es un
+        # "Compressing: <archivo>" por cada archivo del paquete.
+        for linea in salida_iscc.splitlines():
+            if ("error" in linea.lower() or "warning" in linea.lower()
+                    or "aborted" in linea.lower()):
+                print("  " + linea.strip())
+        raise SystemExit("ISCC fallo (codigo %d)" % r.returncode)
+    exe = os.path.join(RAIZ, "dist", nombre + ".exe")
+    tam = os.path.getsize(exe) / 1024**2 if os.path.isfile(exe) else 0
+    _log("  listo en %.0f s -- %.0f MB" % (time.time() - arranque, tam))
+    return exe
+
+
 def limpiar_pycache(salida):
     """Saca los __pycache__\\ del paquete.
 
@@ -498,12 +602,26 @@ def main(argv=None):
                         "con esto los .py de nimbo\\ NO van al paquete (salvo "
                         "puente.py y lanzador_supervisor.py, que se cargan "
                         "por ruta)")
+    p.add_argument("--instalador", action="store_true",
+                   help="al terminar, compilar empaquetado\\nimbo.iss con "
+                        "Inno Setup y dejar dist\\NimboSetup.exe")
+    p.add_argument("--todo", action="store_true",
+                   help="el comando de un solo paso: equivale a --descargar "
+                        "--completo --licencia --instalador")
     p.add_argument("--licencia", action="store_true",
                    help="activar la licencia tomando los datos de "
                         "empaquetado\\licencia\\proyecto.local.json (lo que "
                         "quedo del despliegue); equivale a pasar "
                         "--clave-publica/--url-licencia/--anon-licencia a mano")
     args = p.parse_args(argv)
+
+    if args.todo:
+        # El comando de un solo paso. Son los cuatro que se usan para
+        # armar lo que se le manda a otra persona; cada uno sigue
+        # existiendo suelto para armar variantes (p.ej. --completo
+        # --solo-shell, o sin licencia para probar).
+        args.descargar = args.completo = True
+        args.licencia = args.instalador = True
 
     if args.licencia:
         ruta = os.path.join(AQUI, "licencia", "proyecto.local.json")
@@ -561,8 +679,17 @@ def main(argv=None):
         }, f, indent=2)
         f.write("\n")
 
-    _log("listo: %s  (%.0f MB)" % (salida, _medir(salida) / 1024**2))
-    _log("ahora: compila empaquetado\\nimbo.iss con Inno Setup")
+    _log("paquete listo: %s  (%.0f MB)" % (salida, _medir(salida) / 1024**2))
+
+    if not args.instalador:
+        _log("ahora: compila empaquetado\\nimbo.iss con Inno Setup, o volve "
+             "a correr esto con --instalador")
+        return 0
+
+    _log("6/6 instalador")
+    exe = compilar_instalador(salida)
+    _log("")
+    _log("TODO LISTO: %s" % exe)
     return 0
 
 
