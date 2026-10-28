@@ -17,11 +17,14 @@ pasa a otra persona.
 ## Los dos comandos
 
 ```bat
-rem 1) armar dist\Nimbo\ (liviano, ~195 MB: sin respaldo de navegador)
+rem 1) armar dist\Nimbo\ (liviano, 206 MB medidos: sin respaldo de navegador)
 python empaquetado\construir.py --descargar
 
-rem 1b) o completo (~645 MB: incluye Playwright + Chromium)
+rem 1b) o completo (1,1 GB medidos: incluye Playwright + los dos Chromium)
 python empaquetado\construir.py --descargar --completo
+
+rem 1c) completo pero sin el Chromium headed (660 MB; rompe "ver navegador")
+python empaquetado\construir.py --descargar --completo --solo-shell
 
 rem 2) compilar el instalador -> dist\NimboSetup.exe
 "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" empaquetado\nimbo.iss
@@ -37,6 +40,13 @@ El liviano **no trae el supervisor de navegador**. Las modelos marcadas
 `@directo=1` en `grabar.txt` graban igual (el camino directo no usa
 navegador); el resto no graba. Si el destinatario va a usar el respaldo,
 armá el completo.
+
+Lo que cuesta el completo, medido: pasa de 206 MB a **1,1 GB**. 719 MB son
+los navegadores (Chromium completo 437 + headless shell 278 — Playwright
+baja los dos: el shell para headless, el completo para "ver navegador") y
+otros 130 MB son el driver de Node que viene adentro de la rueda de
+`playwright`. `--solo-shell` lo deja en ~660 MB sacando el Chromium
+completo, pero entonces el conmutador "ver navegador" de Ajustes falla.
 
 ## Qué garantiza el build
 

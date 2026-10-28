@@ -57,6 +57,8 @@ no reescritura:
 
 Pesos medidos en esta instalación (27/10/2026), no estimados:
 
+Primero lo estimado, y abajo lo que de verdad pesó al armarlo.
+
 | Pieza | De dónde sale | Peso |
 |---|---|---|
 | CPython 3.12 *embeddable* + `websockets`, `pystray`, `Pillow` | zip oficial de python.org + `pip install --target` en el build | ~25 MB |
@@ -66,7 +68,33 @@ Pesos medidos en esta instalación (27/10/2026), no estimados:
 | Código de Nimbo (`nimbo\`, `nucleo\scripts\*.py`, `web\`, `app.css`) | el repo | <2 MB |
 | **Opcional**: `playwright` + un Chromium | `pip` + `playwright install chromium` en el build | ~450 MB |
 
-→ **~195 MB** sin el respaldo del navegador, **~645 MB** con él.
+→ estimado: **~195 MB** sin el respaldo del navegador, **~645 MB** con él.
+
+### 2.0 Lo que pesó de verdad
+
+El liviano dio **206 MB**, cerca. El completo dio **1,1 GB**, casi el doble
+de lo estimado:
+
+| Carpeta | Medido |
+|---|---|
+| `runtime\navegadores` | **719 MB** (Chromium completo 437 + headless shell 278) |
+| `runtime\python` | **150 MB** |
+| `nucleo` (ffmpeg + wireproxy) | 109 MB |
+| `runtime\mitmproxy` | 59 MB |
+| `nimbo` | 0,6 MB |
+
+Dos errores en la estimación, los dos en el mismo lugar:
+
+1. **La rueda de `playwright` trae el driver de Node adentro** (~130 MB).
+   Por eso `runtime\python` pasa de 25 MB a 150 MB en cuanto se arma con
+   `--completo`.
+2. **`playwright install chromium` baja dos builds, no uno.** Playwright usa
+   el *headless shell* cuando el supervisor corre headless (el caso normal) y
+   el Chromium completo cuando el usuario prende "ver navegador" en Ajustes.
+
+`construir.py --solo-shell` saltea el completo y deja el paquete en ~660 MB,
+a cambio de que "ver navegador" deje de funcionar. No es el defecto porque
+ese conmutador está en la interfaz y fallaría en silencio.
 
 `nucleo\` completo mide hoy 819 MB, pero la mayor parte es `perfil\` (el perfil
 de Chromium del supervisor) y no se distribuye: se regenera solo.

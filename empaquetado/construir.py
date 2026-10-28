@@ -305,22 +305,33 @@ def copiar_mitmproxy(salida, origen):
 
 # -- navegadores de Playwright --------------------------------------------
 
-def copiar_navegadores(salida, dir_python):
+def copiar_navegadores(salida, dir_python, solo_shell=False):
     """Baja el Chromium de Playwright DENTRO del paquete.
 
     Se corre el playwright del runtime embebido con
     PLAYWRIGHT_BROWSERS_PATH apuntando a runtime\\navegadores, que es
     exactamente la variable que ajustes.cargar() va a poner en el entorno
     del lado del usuario (ver ajustes.navegadores_embarcados).
+
+    Por defecto baja **dos** builds, y es lo que mas pesa de todo el
+    paquete (medido: 437 MB el Chromium completo + 278 MB el headless
+    shell). Playwright usa el shell cuando el supervisor corre headless
+    --el caso normal-- y el completo cuando el usuario prende
+    "ver navegador" en Ajustes. `solo_shell` saltea el completo y ahorra
+    esos 437 MB, a cambio de que prender "ver navegador" deje de
+    funcionar: usarlo solo si se sabe que nadie lo va a tocar.
     """
     destino = os.path.join(salida, "runtime", "navegadores")
     os.makedirs(destino, exist_ok=True)
     env = dict(os.environ)
     env["PLAYWRIGHT_BROWSERS_PATH"] = destino
     exe = os.path.join(dir_python, "python.exe")
-    _log("  playwright install chromium -> runtime\\navegadores")
-    r = subprocess.run([exe, "-m", "playwright", "install", "chromium"],
-                       env=env, capture_output=True, text=True,
+    cmd = [exe, "-m", "playwright", "install", "chromium"]
+    if solo_shell:
+        cmd.append("--only-shell")
+    _log("  playwright install chromium%s -> runtime\\navegadores"
+         % (" --only-shell" if solo_shell else ""))
+    r = subprocess.run(cmd, env=env, capture_output=True, text=True,
                        errors="replace")
     if r.returncode != 0:
         print(r.stdout)
@@ -446,7 +457,13 @@ def main(argv=None):
                    help="bajar el embeddable de python.org si no se pasa --python-zip")
     p.add_argument("--completo", action="store_true",
                    help="incluir Playwright y Chromium (el respaldo del "
-                        "supervisor): +450 MB")
+                        "supervisor). Medido: el paquete pasa de 206 MB a "
+                        "1,1 GB -- la rueda de playwright trae el driver de "
+                        "Node (~130 MB) y se bajan dos builds de navegador")
+    p.add_argument("--solo-shell", action="store_true",
+                   help="con --completo, bajar solo el headless shell y no "
+                        "el Chromium completo: ahorra 437 MB pero rompe la "
+                        "opcion \"ver navegador\" de Ajustes")
     p.add_argument("--clave-publica", default="",
                    help="clave publica Ed25519 (base64url) para activar la "
                         "licencia en este paquete; sin esto el paquete no "
@@ -503,7 +520,7 @@ def main(argv=None):
 
     if args.completo:
         _log("4/5 navegador de respaldo")
-        copiar_navegadores(salida, dir_python)
+        copiar_navegadores(salida, dir_python, args.solo_shell)
     else:
         _log("4/5 navegador de respaldo: omitido (sin --completo)")
 
