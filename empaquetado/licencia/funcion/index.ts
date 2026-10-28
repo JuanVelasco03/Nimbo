@@ -1,3 +1,9 @@
+// Los tipos del runtime de Deno (Deno.serve, Deno.env). Sin esta linea el
+// editor marca "no se encuentra el nombre 'Deno'" -- en Supabase corre
+// igual, pero los tipos sirven para no mandar al despliegue algo que no
+// compila.
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+
 // Edge Function "validar": recibe {clave, maquina} y devuelve un token
 // firmado con Ed25519 si la licencia sirve.
 //

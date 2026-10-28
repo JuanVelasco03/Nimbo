@@ -14,6 +14,18 @@
 #define Editor "Nimbo"
 #define Origen "..\dist\Nimbo"
 
+; Si construir.py se corrio con --compilado, el paquete trae nimbo\Nimbo.exe
+; y el acceso directo tiene que apuntar ahi. Si no, al pythonw embebido
+; contra nimbo\app.py. Se detecta solo para que no haya dos .iss que
+; mantener en paralelo.
+#if FileExists(AddBackslash(SourcePath) + Origen + "\nimbo\Nimbo.exe")
+  #define Lanzador "{app}\nimbo\Nimbo.exe"
+  #define Parametros ""
+#else
+  #define Lanzador "{app}\runtime\python\pythonw.exe"
+  #define Parametros """{app}\nimbo\app.py"""
+#endif
+
 [Setup]
 AppId={{B2F4E1C7-5A9D-4F3E-8C21-6D0A7B4E9F12}
 AppName={#NombreApp}
@@ -51,15 +63,16 @@ Name: "inicio"; Description: "Arrancar Nimbo al iniciar Windows"; GroupDescripti
 Source: "{#Origen}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-; Apunta derecho al pythonw embebido: no hace falta que el usuario tenga
-; Python. arrancar.bat sigue existiendo para el arranque con Windows (es
-; a lo que apunta el shim de inicio_automatico.py).
-Name: "{group}\{#NombreApp}"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"
+; No hace falta que el usuario tenga Python: el lanzador es el pythonw
+; embebido (o nimbo\Nimbo.exe si el paquete vino compilado -- ver el #if de
+; arriba). arrancar.bat sigue existiendo para el arranque con Windows: es
+; a lo que apunta el shim de inicio_automatico.py.
+Name: "{group}\{#NombreApp}"; Filename: "{#Lanzador}"; Parameters: "{#Parametros}"; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"
 Name: "{group}\Desinstalar {#NombreApp}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#NombreApp}"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"; Tasks: escritorio
+Name: "{autodesktop}\{#NombreApp}"; Filename: "{#Lanzador}"; Parameters: "{#Parametros}"; WorkingDir: "{app}"; IconFilename: "{app}\nimbo\web\icono.ico"; Tasks: escritorio
 
 [Run]
-Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; Description: "Abrir Nimbo ahora"; Flags: nowait postinstall skipifsilent
+Filename: "{#Lanzador}"; Parameters: "{#Parametros}"; WorkingDir: "{app}"; Description: "Abrir Nimbo ahora"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Lo que Nimbo genera solo y no es del usuario. Las grabaciones (datos\),

@@ -11,6 +11,13 @@ rem Ojo: inicio_automatico.py apunta su shim de la carpeta de Inicio a
 rem ESTE archivo, asi que el arranque con Windows depende de que la
 rem busqueda de aca abajo sea correcta.
 
+rem Paquete compilado (ver empaquetado\compilar.py): no hay app.py en
+rem disco, el binario es el punto de entrada.
+if exist "%~dp0nimbo\Nimbo.exe" (
+    start "" "%~dp0nimbo\Nimbo.exe"
+    exit /b
+)
+
 set "NIMBO_PYW=%~dp0runtime\python\pythonw.exe"
 if exist "%NIMBO_PYW%" goto arrancar
 

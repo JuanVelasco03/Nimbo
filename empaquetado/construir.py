@@ -80,6 +80,27 @@ _ARBOL = [
     ("nucleo/scripts", "nucleo/scripts", _nucleo),
 ]
 
+# Con --compilado, los .py de nimbo\ no van: estan adentro del binario.
+# Estos tres son la excepcion y tienen que seguir en disco igual --
+# cualquier otra cosa que los necesite los carga por ruta, no por import
+# (ver specs\distribucion_instalador.md S5.1):
+#
+#   puente.py              lo carga mitmdump con -s
+#   lanzador_supervisor.py lo arranca motor.py con el Python embebido
+#                          (Playwright necesita su driver de Node; meter
+#                          eso en el binario es pelearse con rutas para
+#                          nada, y supervisor.py queda abierto igual)
+#   __init__.py            inofensivo, y evita sorpresas si algo trata a
+#                          nimbo\ como paquete
+_PY_EN_DISCO_COMPILADO = ("puente.py", "lanzador_supervisor.py",
+                          "__init__.py")
+
+# Lo mismo para el nucleo: grabador_directo.py queda adentro del binario
+# (lo arranca --modo directo), asi que no hace falta en disco. mouflon.py
+# SI, porque detectar_m3u8.py hace `import mouflon` al correr bajo el
+# interprete de mitmdump, que no ve nada de lo compilado.
+_NUCLEO_FUERA_COMPILADO = ("grabador_directo.py",)
+
 # Archivos sueltos de la raiz.
 _SUELTOS = ["arrancar.bat", "LEEME.md", "requirements.txt"]
 
@@ -113,11 +134,16 @@ def _copiar_arbol(origen, destino, filtro):
     return n
 
 
-def copiar_codigo(salida):
+def copiar_codigo(salida, compilado=False):
     total = 0
     for rel_origen, rel_destino, filtro in _ARBOL:
         origen = os.path.join(RAIZ, rel_origen.replace("/", os.sep))
         destino = os.path.join(salida, rel_destino.replace("/", os.sep))
+        if compilado and rel_origen == "nimbo":
+            filtro = lambda n: n in _PY_EN_DISCO_COMPILADO
+        elif compilado and rel_origen == "nucleo/scripts":
+            base = filtro
+            filtro = lambda n: base(n) and n not in _NUCLEO_FUERA_COMPILADO
         n = _copiar_arbol(origen, destino, filtro)
         _log("  %-22s %d archivos" % (rel_origen, n))
         total += n
@@ -305,6 +331,48 @@ def copiar_navegadores(salida, dir_python):
 
 # -- licencia (S6) ---------------------------------------------------------
 
+def copiar_compilado(salida, origen):
+    """Mete el binario de Nuitka en el paquete, DENTRO de nimbo\\.
+
+    `origen` es el app.dist\\ que deja empaquetado\\compilar.py.
+
+    **Que vaya adentro de nimbo\\ es load-bearing, no estetica.** Nuitka
+    standalone le deja a cada modulo compilado un `__file__` que apunta a
+    donde estaria el .py dentro de la carpeta del binario, y medio Nimbo
+    calcula rutas desde ahi:
+
+        ajustes._AQUI    -> DIR_WEB, PUENTE, LANZADOR_SUPERVISOR, RAIZ
+        motor._AQUI      -> LANZADOR_DIRECTO
+        licencia._AQUI   -> licencia_publica.json
+        activacion       -> PAGINA, via DIR_WEB
+
+    Con el exe en bin\\, todo eso apuntaria a <paquete>\\bin\\... y no
+    encontraria ni la interfaz. Poniendolo en nimbo\\, `_AQUI` vale
+    <paquete>\\nimbo igual que sin compilar, `RAIZ` sigue siendo el
+    paquete, y no hay que tocar una linea de codigo.
+
+    El Python embebido sigue haciendo falta: lo usa el supervisor
+    (lanzador_supervisor.py) y la union (detectar_m3u8.py --unir).
+    """
+    exe = os.path.join(origen, "Nimbo.exe")
+    if not os.path.isfile(exe):
+        raise SystemExit("no hay Nimbo.exe en %s -- corre primero "
+                         "empaquetado\\compilar.py" % origen)
+    destino = os.path.join(salida, "nimbo")
+    os.makedirs(destino, exist_ok=True)
+    n = 0
+    for base, _, archivos in os.walk(origen):
+        rel = os.path.relpath(base, origen)
+        aca = destino if rel == "." else os.path.join(destino, rel)
+        os.makedirs(aca, exist_ok=True)
+        for nombre in archivos:
+            shutil.copy2(os.path.join(base, nombre),
+                         os.path.join(aca, nombre))
+            n += 1
+    _log("  binario compilado en nimbo\\Nimbo.exe (%d archivos)" % n)
+    return destino
+
+
 def poner_licencia(salida, clave_publica, url, anon):
     """Inyecta la clave publica y a donde validar, en el paquete.
 
@@ -388,6 +456,11 @@ def main(argv=None):
                         "(https://<proyecto>.supabase.co/functions/v1/validar)")
     p.add_argument("--anon-licencia", default="",
                    help="anon key del proyecto de Supabase (es publica)")
+    p.add_argument("--compilado", default="",
+                   help="carpeta app.dist\\ que dejo empaquetado\\compilar.py; "
+                        "con esto los .py de nimbo\\ NO van al paquete (salvo "
+                        "puente.py y lanzador_supervisor.py, que se cargan "
+                        "por ruta)")
     p.add_argument("--licencia", action="store_true",
                    help="activar la licencia tomando los datos de "
                         "empaquetado\\licencia\\proyecto.local.json (lo que "
@@ -417,7 +490,9 @@ def main(argv=None):
     os.makedirs(salida, exist_ok=True)
 
     _log("1/5 codigo de Nimbo")
-    copiar_codigo(salida)
+    copiar_codigo(salida, compilado=bool(args.compilado))
+    if args.compilado:
+        copiar_compilado(salida, os.path.abspath(args.compilado))
 
     _log("2/5 Python embebido")
     dir_python = armar_python(salida, args.python_zip, args.version_python,

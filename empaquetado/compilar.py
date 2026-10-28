@@ -115,14 +115,19 @@ def compilar(salida, consola):
     r = subprocess.run(cmd, cwd=RAIZ, env=env)
     if r.returncode != 0:
         raise SystemExit("nuitka fallo (codigo %d)" % r.returncode)
-    _log("listo:", os.path.join(salida, "app.dist"))
+    dist = os.path.join(salida, "app.dist")
+    _log("listo:", dist)
     _log("")
-    _log("Pasos que faltan a mano (todavia no automatizados):")
-    _log("  1. copiar app.dist\\ dentro del paquete de construir.py")
-    _log("  2. borrar de ahi los nimbo\\*.py que quedaron compilados")
-    _log("  3. apuntar el acceso directo del .iss a Nimbo.exe en vez de")
-    _log("     runtime\\python\\pythonw.exe")
-    _log("  Ver empaquetado\\LEEME.md, seccion 'Compilado'.")
+    _log("Ahora, para armar el paquete con esto adentro:")
+    _log("  python empaquetado\\construir.py --descargar --completo "
+         "--licencia ^")
+    _log("      --compilado \"%s\"" % dist)
+    _log("")
+    _log("construir.py se encarga del resto: deja el binario dentro de")
+    _log("nimbo\\ (donde tiene que ir: ver copiar_compilado), no")
+    _log("copia los nimbo\\*.py (salvo puente.py y lanzador_supervisor.py,")
+    _log("que se cargan por ruta) y nimbo.iss detecta nimbo\\Nimbo.exe solo")
+    _log("para apuntar ahi el acceso directo.")
 
 
 def main(argv=None):
