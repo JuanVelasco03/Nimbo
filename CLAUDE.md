@@ -289,6 +289,7 @@ plantilla mínima; nadie la lee en runtime.
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
 | `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra a papelera lo ya unido | Nimbo |
+| `datos\miniaturas\*.jpg`, `estado\miniaturas.json` | Nimbo (`miniaturas.py`, cache regenerable — borra con `os.remove`, no papelera) | Nimbo |
 
 `grabar.txt` es la **única fuente de verdad** de a quién se graba, y Nimbo
 es su único escritor — de ahí que no haga falta locking. El usuario lo
@@ -556,6 +557,15 @@ copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
   vía ctypes), nunca `os.remove`: son horas de grabación. Las duraciones
   salen del nombre del archivo cuando se puede, y si no de un `ffmpeg -i`
   en segundo plano (máx. 2 a la vez) cacheado en `estado\duraciones.json`.
+- **`miniaturas.py`** genera la portada (un fotograma real, no el avatar
+  del sitio) de cada grupo de `grabaciones.py` para la pestaña
+  Grabaciones. A diferencia de todo lo que toca `grabaciones.py`, esto es
+  **cache regenerable**: los `.jpg` viven en `datos\miniaturas\` y se
+  borran con `os.remove` (nunca a la papelera), con su índice de validez
+  en `estado\miniaturas.json`. La genera `servidor.py:_bucle_miniaturas`
+  de a `TOPE_MINIATURAS_POR_TICK` por vez, nunca en el camino de un
+  pedido HTTP — un listado con cientos de `.mp4` sin portada no puede
+  disparar cientos de `ffmpeg` de una.
 - **`temporizador_previa.worker.js`** es un Web Worker a propósito:
   Chromium frena los timers del hilo principal cuando la ventana pierde el
   foco, y la previa tiene que seguir refrescando en segundo plano.

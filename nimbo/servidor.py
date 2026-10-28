@@ -66,6 +66,7 @@ import grabaciones as grabaciones_mod
 import inicio_automatico as inicio_mod
 import licencia as licencia_mod
 import lista as lista_mod
+import miniaturas as miniaturas_mod
 import motor as motor_mod
 import preflight as preflight_mod
 import registro as registro_mod
@@ -103,6 +104,13 @@ INTERVALO_LICENCIA = 21600.0    # 6 h. La licencia se revisa al arrancar
                                  # (app.py) y despues cada tanto: el token
                                  # tiene dias de vida, no hay por que
                                  # golpear la red mas seguido
+INTERVALO_MINIATURAS = 30.0     # cada cuanto se intenta generar portadas
+                                 # faltantes de datos\grabaciones\ (ver
+                                 # nimbo\miniaturas.py)
+TOPE_MINIATURAS_POR_TICK = 4    # ffmpeg por tick: que no le compita el
+                                 # disco a una grabacion en curso
+INTERVALO_BARRIDO_MINIATURAS = 600.0   # cada cuanto se borran portadas
+                                 # huerfanas (mismo ritmo que streams\)
 CUPO_SITIO = 4                  # pedidos salientes simultaneos al sitio
 CUPO_IMAGEN = 6                 # miniaturas simultaneas: el navegador puede
                                  # pedir N por segundo (una por tarjeta) y
@@ -496,6 +504,36 @@ async def _bucle_cosecha(app):
                 }
 
 
+async def _bucle_miniaturas(app):
+    """Genera de a TOPE_MINIATURAS_POR_TICK las portadas que le falten a
+    datos\\grabaciones\\ (ver nimbo\\miniaturas.py), de mas nueva a mas
+    vieja -- grabaciones.listar() ya devuelve los grupos en ese orden. Cada
+    INTERVALO_BARRIDO_MINIATURAS borra las portadas cuyo .mp4 ya no existe,
+    mismo ritmo que el barrido de datos\\streams\\ en _bucle_cosecha."""
+    reloj_barrido = 0.0
+    while True:
+        await asyncio.sleep(INTERVALO_MINIATURAS)
+        with contextlib.suppress(Exception):
+            listado = await app.a_hilo(
+                grabaciones_mod.listar, app.ajustes.grabaciones,
+                app.ajustes.dir_estado, app.ajustes.ffmpeg)
+            await app.a_hilo(
+                miniaturas_mod.generar_faltantes, listado["grupos"],
+                app.ajustes.grabaciones, app.ajustes.dir_miniaturas,
+                app.ajustes.dir_estado, app.ajustes.ffmpeg,
+                TOPE_MINIATURAS_POR_TICK)
+
+        reloj_barrido += INTERVALO_MINIATURAS
+        if reloj_barrido < INTERVALO_BARRIDO_MINIATURAS:
+            continue
+        reloj_barrido = 0.0
+        with contextlib.suppress(Exception):
+            nombres_vigentes = await app.a_hilo(
+                lambda: set(os.listdir(app.ajustes.grabaciones)))
+            await app.a_hilo(miniaturas_mod.barrer, app.ajustes.dir_miniaturas, nombres_vigentes)
+            await app.a_hilo(miniaturas_mod.purgar_indice, app.ajustes.dir_estado, nombres_vigentes)
+
+
 async def _bucle_licencia(app):
     """Revisa la licencia cada INTERVALO_LICENCIA (si el paquete la trae).
 
@@ -816,7 +854,8 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         await _json(writer, 200, resultado)
     elif ruta == "/api/grabaciones":
         a = app.ajustes
-        resultado = await app.a_hilo(grabaciones_mod.listar, a.grabaciones, a.dir_estado, a.ffmpeg)
+        resultado = await app.a_hilo(
+            grabaciones_mod.listar, a.grabaciones, a.dir_estado, a.ffmpeg, a.dir_miniaturas)
         await _json(writer, 200, resultado)
     elif ruta == "/api/grabaciones/video":
         ruta_video = await app.a_hilo(
@@ -825,6 +864,23 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             await _json(writer, 404, {"error": "no encontrado"})
             return
         await _servir_video(app, writer, ruta_video, cabeceras.get("Range"))
+    elif ruta == "/api/grabaciones/miniatura":
+        # Cacheable (igual que /api/sitio/imagen): el nombre de la portada
+        # viene de grabaciones.listar() y el cliente lo pide con &v=<mtime>
+        # en la query, asi que si el .mp4 cambia la URL cambia con el.
+        ruta_jpg = await app.a_hilo(
+            miniaturas_mod.ruta_absoluta, app.ajustes.dir_miniaturas, _valor(qs, "archivo"))
+        if ruta_jpg is None:
+            await _json(writer, 404, {"error": "no encontrado"})
+            return
+        datos = await app.a_hilo(_leer_bytes, ruta_jpg)
+        if datos is None:
+            await _json(writer, 404, {"error": "no encontrado"})
+            return
+        await _responder(writer, 200, {
+            "Content-Type": "image/jpeg",
+            "Cache-Control": "public, max-age=86400, immutable",
+        }, datos)
     elif ruta == "/api/preferencias":
         a = app.ajustes
         await _json(writer, 200, {
@@ -1203,6 +1259,7 @@ class Servidor:
         self.puerto = self._servidor_asyncio.sockets[0].getsockname()[1]
         self._loop.create_task(_bucle_estado(self.app))
         self._loop.create_task(_bucle_cosecha(self.app))
+        self._loop.create_task(_bucle_miniaturas(self.app))
         self._loop.create_task(_bucle_sitio(self.app))
         self._loop.create_task(_bucle_licencia(self.app))
 

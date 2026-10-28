@@ -26,6 +26,8 @@ import threading
 import time
 from ctypes import wintypes
 
+import miniaturas as miniaturas_mod
+
 RE_NOMBRE = re.compile(
     r"^(?P<modelo>.+)_(?P<id>\d+)_(?P<calidad>[^_]+)_(?P<codec>[^_]+)_"
     r"(?P<fecha>\d{8}-\d{6})"
@@ -116,7 +118,7 @@ def _duracion_de(dir_estado, ffmpeg_exe, nombre, ruta, mtime, tam, cache):
     return None
 
 
-def listar(dir_grabaciones, dir_estado, ffmpeg_exe=""):
+def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
     """-> {"grupos": [...], "resumen": {...}}
 
     Agrupa por sesion (modelo+id+fecha de arranque): un recorte que el
@@ -195,6 +197,11 @@ def listar(dir_grabaciones, dir_estado, ffmpeg_exe=""):
         g["tamano_total_bytes"] = sum(p["tamano_bytes"] for p in g["partes"])
         g["inicio_mtime"] = min(p["mtime"] for p in g["partes"])
         g["fin_mtime"] = max(p["mtime"] for p in g["partes"])
+        primera = g["partes"][0]
+        g["miniatura"] = (
+            miniaturas_mod.disponible(dir_miniaturas, dir_estado, primera["archivo"],
+                                       primera["mtime"], primera["tamano_bytes"])
+            if dir_miniaturas else None)
         grupos.append(g)
 
     grupos.sort(key=lambda g: g["inicio_mtime"], reverse=True)

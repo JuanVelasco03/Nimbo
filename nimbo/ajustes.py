@@ -288,6 +288,12 @@ class Ajustes:
         return os.path.join(self.dir_datos, "grabaciones")
 
     @property
+    def dir_miniaturas(self) -> str:
+        # cache regenerable (ver nimbo\miniaturas.py) -- a diferencia de
+        # streams/grabaciones, nunca pasa por la papelera.
+        return os.path.join(self.dir_datos, "miniaturas")
+
+    @property
     def ffmpeg(self) -> str:
         return os.path.join(self.scripts, "ffmpeg.exe")
 
@@ -361,7 +367,7 @@ def cargar(completar: bool = True) -> Ajustes:
             a.guardar()
         except OSError:
             pass                      # sin disco se sigue con lo de memoria
-    for d in (DIR_ESTADO, DIR_REGISTRO, DIR_DATOS, os.path.join(DIR_NUCLEO, "scripts")):
+    for d in (DIR_ESTADO, DIR_REGISTRO, DIR_DATOS, a.dir_miniaturas, os.path.join(DIR_NUCLEO, "scripts")):
         try:
             os.makedirs(d, exist_ok=True)
         except OSError:

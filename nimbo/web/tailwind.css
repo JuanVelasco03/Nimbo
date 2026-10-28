@@ -415,32 +415,71 @@
   .fila-registro.nivel-error .prefijo { color: var(--color-tally-rec); }
   .fila-registro.nivel-error .mensaje { color: var(--color-tally-rec); }
 
-  /* -- pestana Grabaciones (ver vista_grabaciones.js) ---------------------- */
+  /* -- pestana Grabaciones (ver vista_grabaciones.js) ----------------------
+     Grilla de tarjetas, mismo cuerpo que .tarjeta-modelo (Modelos/Grabando)
+     -- la portada ES el boton de reproducir, no un hover escondido. */
 
-  .fila-grabacion {
-    @apply flex items-center gap-3 rounded-sm border border-borde bg-panel p-2.5;
+  .tarjeta-grabacion {
+    @apply relative flex flex-col overflow-hidden rounded-sm border border-borde
+           bg-panel transition-colors duration-150;
   }
-  .cuerpo-grabacion { @apply min-w-0 flex-1; }
+  .tarjeta-grabacion:hover, .tarjeta-grabacion:focus-within {
+    @apply border-tally-conectando;
+  }
+  .tarjeta-grabacion .miniatura-grande {
+    @apply aspect-video h-auto w-full rounded-none text-[2rem];
+  }
+  .tarjeta-grabacion .cuerpo-grabacion { @apply min-w-0 p-3; }
+  .tarjeta-grabacion .acciones-tarjeta { @apply flex-wrap; }
+
+  /* la portada entera es un <button>: foco y Enter reproducen, sin
+     depender de un hover inalcanzable por teclado */
+  .superficie-play {
+    @apply relative block w-full cursor-pointer border-none bg-transparent p-0 text-left;
+  }
+  .superficie-play::after {
+    content: "▶";
+    @apply absolute inset-0 flex items-center justify-center text-[1.6rem]
+           text-texto opacity-0 transition-opacity duration-150;
+    background: rgb(0 0 0 / 0.35);
+  }
+  .superficie-play:hover::after, .superficie-play:focus-visible::after {
+    @apply opacity-100;
+  }
+
+  .etiqueta-partes-flot {
+    @apply absolute right-1.5 top-1.5 z-10 shrink-0 rounded-[3px] border px-1
+           text-[0.65rem] font-mono tracking-wide;
+    border-color: var(--color-tally-privado);
+    color: var(--color-tally-privado);
+    background: rgb(0 0 0 / 0.55);
+  }
+
+  /* timecode sobre la portada, como un deck de video -- la unica nota
+     tipografica fuerte de la tarjeta */
+  .marca-tiempo {
+    @apply pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-baseline
+           justify-between gap-2 px-1.5 py-1 font-mono text-[0.72rem] tabular-nums text-texto;
+    background: linear-gradient(to top, rgb(0 0 0 / 0.8), rgb(0 0 0 / 0) 100%);
+  }
+  .marca-tiempo .duracion { @apply font-semibold; }
+  .marca-tiempo .tamano { @apply text-atenuado; }
+
   .detalle-grabacion { @apply mt-0.5 truncate font-mono text-[0.78rem] text-atenuado; }
-  .fila-grabacion .acciones-tarjeta { @apply mt-0 shrink-0 flex-wrap justify-end; }
-  .fila-grabacion .miniatura-grande { @apply h-14 w-20 shrink-0 text-[1rem]; }
 
   .etiqueta-calidad {
     @apply shrink-0 rounded-[3px] border border-borde-fuerte px-1 text-[0.65rem]
            font-mono tracking-wide text-atenuado;
   }
-  .etiqueta-partes {
-    @apply shrink-0 rounded-[3px] border px-1 text-[0.65rem] font-mono tracking-wide;
-    border-color: var(--color-tally-privado);
-    color: var(--color-tally-privado);
-  }
 
-  .partes-grupo {
-    @apply ml-6 mt-1 flex flex-col gap-1 border-l border-borde pl-3;
+  /* -- lista de partes del modal (una sesion partida en -seg1, -seg2...) -- */
+  .lista-partes {
+    @apply flex max-h-48 flex-col gap-1 overflow-y-auto;
   }
   .fila-parte {
     @apply flex items-center gap-3 rounded-sm bg-panel-alto/60 px-2.5 py-1.5;
   }
+  .fila-parte.activa { @apply bg-panel-alto; }
   .parte-etiqueta { @apply w-16 shrink-0 font-mono text-[0.76rem] text-atenuado; }
   .parte-detalle { @apply min-w-0 flex-1 truncate font-mono text-[0.78rem] text-atenuado; }
   .fila-parte .acciones-tarjeta { @apply mt-0 shrink-0; }
