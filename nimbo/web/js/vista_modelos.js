@@ -236,6 +236,19 @@ let ultimoEstadoModelos = null;
 let pedirReordenModelos = true;
 export function marcarReordenModelos() { pedirReordenModelos = true; }
 
+// Seguimiento puntual de una tarjeta que el usuario acaba de tocar
+// (tildo grabar, "Grabar ahora"): nombre (lowercase) -> vencimiento
+// (Date.now() + TOPE_REUBICAR_MS). El conmutador solo escribe grabar.txt;
+// el rango "Grabando" recien llega cuando el detector confirma la sesion,
+// unos segundos despues -- sin este seguimiento no hay forma de subir
+// SOLO esa tarjeta sin reabrir pedirReordenModelos (que reacomoda TODA
+// la grilla, el problema que el commit 0472331 evito a proposito).
+const reubicarHasta = new Map();
+const TOPE_REUBICAR_MS = 60_000;
+export function marcarReubicarModelo(nombre) {
+  reubicarHasta.set(nombre.toLowerCase(), Date.now() + TOPE_REUBICAR_MS);
+}
+
 // Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
 // se mezclan en la lista -- primero las que graban de verdad, despues las
 // que estan en lista (pero no grabando), despues las que estan en show
@@ -512,6 +525,7 @@ export function renderFavoritas(estado) {
       tarjetasModelos.set(fila.nombre, el);
     }
     actualizarTarjetaModelo(el, fila);
+    const rangoAnterior = el._rango;
     el._rango = fila._rango;
 
     if (pedirReordenModelos) {
@@ -532,15 +546,35 @@ export function renderFavoritas(estado) {
         if (hijo !== el && (hijo._rango || 0) > el._rango) { destino = hijo; break; }
       }
       cont.insertBefore(el, destino);
+    } else {
+      // Tarjeta puntual que el usuario toco hace poco (ver
+      // marcarReubicarModelo): si de verdad cambio de grupo desde la
+      // ultima pintada, subirla sola -- sin esto, tildar grabar en una
+      // modelo del grupo de abajo no la movia ni ahora ni cuando el
+      // detector confirmaba la sesion segundos despues.
+      const clave = fila.nombre.toLowerCase();
+      const vencimiento = reubicarHasta.get(clave);
+      if (vencimiento !== undefined) {
+        if (Date.now() > vencimiento) {
+          reubicarHasta.delete(clave);   // vencio el plazo: se queda donde esta
+        } else if (rangoAnterior !== fila._rango) {
+          let destino = null;
+          for (const hijo of cont.children) {
+            if (hijo !== el && (hijo._rango || 0) > fila._rango) { destino = hijo; break; }
+          }
+          cont.insertBefore(el, destino);
+          reubicarHasta.delete(clave);   // ya cumplio su proposito
+        }
+      }
     }
-    // si no es nueva y no se pidio reorden: no se toca -- ni una
-    // operacion de DOM, ni para las que no cambiaron de rango ni para
-    // las que si (esas esperan al proximo borde explicito).
+    // si no es nueva, no se pidio reorden y no hay seguimiento puntual
+    // pendiente: no se toca -- ni una operacion de DOM.
   }
   for (const [nombre, el] of tarjetasModelos) {
     if (vistos.has(nombre)) continue;
     el.remove();
     tarjetasModelos.delete(nombre);
+    reubicarHasta.delete(nombre.toLowerCase());
   }
   pedirReordenModelos = false;
 }

@@ -1,6 +1,6 @@
 # SPEC 11 — Tres ajustes en Modelos y en la previa en vivo
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 01 (reconciliación in-place de las grillas), SPEC 04 (reproductor en vivo)
 > **Fecha:** 2026-10-28
 > **Objetivo:** Que el click en una sugerencia del buscador agregue a favoritas, que "no se pudo cargar la vista previa" nunca se pinte mientras el video en vivo está montado, y que una tarjeta que empieza a grabar suba sola a su grupo aunque haya filtros activos.
@@ -46,9 +46,10 @@ spec chico de frontend en vez de en SPEC 10, que toca el arranque.
   (`POST /api/favoritas/agregar`) y deja el nombre en el campo.
 - `pintarImagen()` nunca pinta el mensaje de error mientras `modoVivo()` es
   verdadero, en ninguna de sus ramas.
-- Al tildar "grabar" (conmutador en la tarjeta, en el modal de previa, o
-  "Grabar ahora") Nimbo sigue esa tarjeta puntual hasta 60 s y la reubica en
-  su grupo apenas su rango cambie, sin tocar ninguna otra tarjeta.
+- Al tildar o destildar "grabar" (conmutador en la tarjeta, en el modal de
+  previa, o "Grabar ahora") Nimbo sigue esa tarjeta puntual hasta 60 s y la
+  reubica en su grupo apenas su rango cambie, en cualquiera de las dos
+  direcciones, sin tocar ninguna otra tarjeta ni esperar a "Actualizar".
 
 **Out of scope (para otro spec):**
 
@@ -115,29 +116,37 @@ cuando la tarjeta correspondiente deja de existir en `visibles`.
    (`main.js:198`) y en el handler de "Grabar ahora" (`main.js:256-264`). El
    conmutador del modal de previa (`vista_previa.js:125`) queda cubierto
    gratis: dispara el mismo `data-accion="toggle-grabar"` que ya maneja
-   `manejarAccionFavorita`. Probar a mano: con "Grabando" + "Show publico"
-   activos, tildar grabar en una modelo del grupo de abajo y confirmar que
-   sube sola a "Grabando" en cuanto el detector confirma, sin mover ninguna
-   otra tarjeta.
+   `manejarAccionFavorita`. El seguimiento se marca en **las dos
+   direcciones**: tildar agrega a la lista (sube hacia "Grabando"),
+   destildar la saca (baja hacia "Show publico" o donde corresponda) y las
+   dos tardan lo mismo en confirmarse del lado del detector, asi que las
+   dos necesitan la misma ventana de 60 s. Probar a mano: con "Grabando" +
+   "Show publico" activos, tildar grabar en una modelo del grupo de abajo y
+   confirmar que sube sola a "Grabando" en cuanto el detector confirma, sin
+   mover ninguna otra tarjeta; despues destildarla y confirmar que baja sola
+   a "Show publico" sin esperar a "Actualizar".
 
 ## Criterios de aceptación
 
-- [ ] Click en una sugerencia del buscador deja la modelo en
+- [x] Click en una sugerencia del buscador deja la modelo en
       `favoritas.json` y el campo de texto conserva su nombre.
-- [ ] Un click repetido en la misma sugerencia no duplica la entrada (dedupe
+- [x] Un click repetido en la misma sugerencia no duplica la entrada (dedupe
       ya existente en `favoritas.py:35`).
-- [ ] Con el video en vivo montado (`modoVivo()` verdadero) y
+- [x] Con el video en vivo montado (`modoVivo()` verdadero) y
       `/api/sitio/estado` sin `id`, el mensaje "no se pudo cargar la vista
       previa" no aparece en ningún momento.
-- [ ] En modo vivo no se disparan pedidos a `/api/sitio/imagen` (el worker de
+- [x] En modo vivo no se disparan pedidos a `/api/sitio/imagen` (el worker de
       snapshots queda detenido mientras dura el video).
-- [ ] Con filtros "Grabando" + "Show publico" activos, tildar el conmutador
+- [x] Con filtros "Grabando" + "Show publico" activos, tildar el conmutador
       de grabar en una modelo del grupo de abajo la sube sola a "Grabando" en
       ≤60 s, sin mover ninguna otra tarjeta de la grilla.
-- [ ] Tildar cinco conmutadores seguidos (uno detrás de otro, antes de que el
+- [x] Destildar el conmutador de una modelo que estaba grabando la baja sola
+      a "Show publico" (o la saca de la grilla si no matchea ningun filtro
+      activo) en ≤60 s, sin esperar a "Actualizar" y sin mover otra tarjeta.
+- [x] Tildar cinco conmutadores seguidos (uno detrás de otro, antes de que el
       primero termine de confirmar) reubica cada tarjeta por separado sin
       reacomodar las que no se tocaron.
-- [ ] Si pasan los 60 s sin que el detector confirme la grabación, la
+- [x] Si pasan los 60 s sin que el detector confirme la grabación, la
       tarjeta se queda donde está (no sube más tarde sola, sin aviso).
 
 ## Decisiones

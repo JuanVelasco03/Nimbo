@@ -288,6 +288,10 @@ function intentarPintarImagen() {
 function pintarImagen() {
   const img = document.getElementById("modal-previa-imagen");
   const sinImagen = document.getElementById("modal-previa-sin-imagen");
+  // El video ya ocupa el mismo lugar del modal que esta imagen -- pintar
+  // "sin imagen" encima (p.ej. cuando resolverIdYArrancar() no consigue un
+  // id numerico) tapa el <video> mientras el modo vivo esta montado.
+  if (modoVivo()) return;
   if (!idAbierto) {
     img.classList.add("oculta");
     sinImagen.classList.remove("oculta");
@@ -338,7 +342,11 @@ async function resolverIdYArrancar(nombre) {
 
   cargandoImagen = false;
   pintarImagen();   // primera, inmediata
-  if (idAbierto) arrancarReloj();
+  // montarVivo() ya paro este reloj (:154) -- si el modo vivo arranco
+  // mientras se esperaba la respuesta de /api/sitio/estado, reactivarlo
+  // aca pedia /api/sitio/imagen una vez por segundo en vano durante todo
+  // el modo vivo.
+  if (idAbierto && !modoVivo()) arrancarReloj();
 }
 
 // -- abrir / cerrar -----------------------------------------------------

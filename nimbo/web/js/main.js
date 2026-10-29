@@ -7,7 +7,7 @@ import { obtener, enviar, conectarWS } from "./api.js";
 import { agregarLog, mostrarError } from "./registro.js";
 import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
-import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, marcarReordenModelos } from "./vista_modelos.js";
+import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
 import { renderDirectivas, cargarPreferencias } from "./vista_ajustes.js";
 import { revisarPreflight } from "./preflight.js";
 import { renderPrevia, iniciarPrevia, abrirPreviaEnVivo } from "./vista_previa.js";
@@ -197,6 +197,10 @@ async function manejarAccionFavorita(ev) {
     if (ev.target.dataset.accion === "toggle-grabar") {
       if (ev.target.checked) await enviar("/api/lista/agregar", { nombre });
       else await enviar("/api/lista/quitar", { nombre });
+      // en las dos direcciones: tildar sube hacia "Grabando", destildar
+      // baja hacia "Show publico" (o la saca de la grilla), y las dos
+      // tardan lo mismo en confirmarse del lado del detector.
+      marcarReubicarModelo(nombre);
     } else if (ev.target.dataset.accion === "toggle-vpn") {
       const activo = ev.target.dataset.vpnActivo !== "1";
       await enviar("/api/lista/vpn", { nombre, activo });
@@ -255,10 +259,25 @@ function iniciarAcciones() {
 
   document.getElementById("boton-grabar-directo").addEventListener("click", async () => {
     const campo = document.getElementById("nombre-nuevo");
-    if (!campo.value.trim()) return;
+    const nombre = campo.value.trim();
+    if (!nombre) return;
     try {
-      await enviar("/api/lista/agregar", { nombre: campo.value.trim() });
+      await enviar("/api/lista/agregar", { nombre });
+      marcarReubicarModelo(nombre);
       campo.value = "";
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  // Click en una sugerencia del buscador (vista_modelos.js:iniciarBuscador
+  // ya oculta la lista y fija el campo): un cuarto listener sobre
+  // #sugerencias, aparte, porque iniciarBuscador() no importa enviar()/
+  // refrescar() a proposito -- mismo patron que manejarAccionFavorita.
+  document.getElementById("sugerencias").addEventListener("click", async (ev) => {
+    const fila = ev.target.closest(".sugerencia");
+    if (!fila || !fila.dataset.nombre) return;
+    try {
+      await enviar("/api/favoritas/agregar", { nombre: fila.dataset.nombre });
     } catch (err) { mostrarError(err); }
     refrescar();
   });
