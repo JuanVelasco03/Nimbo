@@ -110,13 +110,19 @@
       });
       const datos = await r.json();
       if (datos.ok) {
-        // El servidor de activación se apaga apenas responde esto, así
-        // que no hay nada más que pedirle: solo avisar y esperar a que
-        // Nimbo abra su propia ventana.
-        decir("Listo. Abriendo Nimbo...", "bien");
         botonActivar.textContent = "Activada";
         campo.disabled = true;
         botonSalir.disabled = true;
+        if (datos.url) {
+          // El servidor real ya esta arriba: navegar esta misma ventana
+          // en vez de dejarla abierta mientras Nimbo abre otra (SPEC 10).
+          decir("Listo. Abriendo Nimbo...", "bien");
+          location.replace(datos.url);
+          return;
+        }
+        // Vencio el tope esperando el destino (o Nimbo lo entrega por
+        // otra via): mismo mensaje de siempre, Nimbo abre su ventana.
+        decir("Listo. Abriendo Nimbo...", "bien");
         return;
       }
       decir(datos.motivo || "No se pudo activar.", "error");

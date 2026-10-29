@@ -219,6 +219,12 @@ def main():
     # proposito: lo que decide es si Nimbo puede arrancar, y la pantalla
     # de activacion se sirve sola, sin levantar el resto (ver
     # activacion.py).
+    # activado_ahora marca que esta misma corrida paso por la pantalla de
+    # activacion (SPEC 10): en ese caso esa ventana sigue abierta
+    # esperando un destino, y hay que intentar navegarla ahi en vez de
+    # abrir una ventana nueva -- sea cual sea el camino que siga despues
+    # (instancia propia o una ya corriendo).
+    activado_ahora = False
     try:
         a = ajustes_mod.cargar()
     except licencia_mod.SinLicencia as e:
@@ -227,13 +233,15 @@ def main():
         if not activacion_mod.pantalla(ajustes_mod.DIR_ESTADO, abrir_ventana):
             _log("sin licencia activa -- Nimbo no arranca")
             return 1
+        activado_ahora = True
         a = ajustes_mod.cargar()      # ya se activo: ahora pasa la puerta
 
     existente = _instancia_viva()
     if existente:
         _log("Nimbo ya esta corriendo: abro otra ventana contra el mismo servidor")
-        abrir_ventana("http://127.0.0.1:%d/?t=%s" %
-                      (existente["puerto"], existente["token"]))
+        url = "http://127.0.0.1:%d/?t=%s" % (existente["puerto"], existente["token"])
+        if not (activado_ahora and activacion_mod.entregar_destino(url)):
+            abrir_ventana(url)
         return 0
 
     # Aplicacion() ya existe en este punto (el constructor de Servidor la
@@ -260,7 +268,8 @@ def main():
     if a["arrancar_al_abrir"]:
         threading.Thread(target=app.motor.arrancar, daemon=True).start()
 
-    abrir_ventana(url)
+    if not (activado_ahora and activacion_mod.entregar_destino(url)):
+        abrir_ventana(url)
 
     try:
         if a["bandeja"]:

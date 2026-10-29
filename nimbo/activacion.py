@@ -28,6 +28,14 @@ import licencia as licencia_mod
 
 PAGINA = os.path.join(ajustes_mod.DIR_WEB, "activacion.html")
 
+# Tope de la request /activar esperando a que entregar_destino() le pase
+# la URL final (SPEC 10). Sin tope, un main() que tarda en levantar el
+# servidor real deja la pagina de activacion congelada en "Validando..."
+# para siempre.
+TOPE_DESTINO_S = 30
+
+_cerrar_lock = threading.Lock()
+
 
 def _log(mensaje):
     print("[NIMBO]", mensaje, flush=True)
@@ -38,6 +46,10 @@ class _Pedido(BaseHTTPRequestHandler):
     dir_estado = ""
     token = ""
     terminado = None
+    destino_evento = None
+    respondido = None
+    destino_url = None
+    servidor = None
     resultado = None
 
     protocol_version = "HTTP/1.1"
@@ -95,12 +107,23 @@ class _Pedido(BaseHTTPRequestHandler):
         if partes.path == "/activar":
             r = licencia_mod.activar(self.dir_estado, datos.get("clave", ""))
             if r["ok"]:
-                # Se responde ANTES de soltar al hilo principal: si no, la
-                # pagina se queda esperando una respuesta de un servidor
-                # que ya se esta apagando.
-                self._json(200, r)
+                # La clave ya vale: se libera terminado ACA, no despues de
+                # responder (SPEC 10). pantalla() puede retomar main() ya
+                # mismo mientras esta request sigue en vuelo esperando a
+                # entregar_destino() -- el hilo que la atiende es propio de
+                # ThreadingHTTPServer, no bloquea a nadie mas.
                 _Pedido.resultado = True
                 _Pedido.terminado.set()
+                llego = _Pedido.destino_evento.wait(TOPE_DESTINO_S)
+                resp = dict(r)
+                if llego and _Pedido.destino_url:
+                    resp["url"] = _Pedido.destino_url
+                self._json(200, resp)
+                _Pedido.respondido.set()
+                if not llego:
+                    # Vencio el tope sin que entregar_destino() corriera:
+                    # nadie mas va a cerrar este servidor.
+                    cerrar()
             else:
                 self._json(200, r)
             return
@@ -118,16 +141,24 @@ def pantalla(dir_estado, abrir_ventana) -> bool:
     """Abre la pantalla y bloquea hasta que se activa o se cierra.
 
     True si quedo activada (Nimbo puede seguir arrancando), False si el
-    usuario desistio.
+    usuario desistio. Si da True, el servidor de activacion **sigue
+    vivo** en segundo plano (SPEC 10): queda una request /activar en
+    vuelo esperando a que quien llamo a pantalla() le pase el destino
+    final con entregar_destino(), para que la misma ventana navegue ahi
+    en vez de abrir una segunda. Si da False no queda nada pendiente y
+    el servidor ya se cerro.
     """
     token = secrets.token_urlsafe(24)
-    terminado = threading.Event()
     _Pedido.dir_estado = dir_estado
     _Pedido.token = token
-    _Pedido.terminado = terminado
+    _Pedido.terminado = threading.Event()
+    _Pedido.destino_evento = threading.Event()
+    _Pedido.respondido = threading.Event()
+    _Pedido.destino_url = None
     _Pedido.resultado = False
 
     servidor = ThreadingHTTPServer(("127.0.0.1", 0), _Pedido)
+    _Pedido.servidor = servidor
     puerto = servidor.server_address[1]
     hilo = threading.Thread(target=servidor.serve_forever, daemon=True,
                             name="nimbo-activacion")
@@ -141,10 +172,45 @@ def pantalla(dir_estado, abrir_ventana) -> bool:
         # Sin tope: que el usuario tarde lo que tarde en pegar la clave.
         # Si cierra la ventana sin activar, Nimbo queda esperando aca --
         # es lo mismo que pasa con la ventana principal y la bandeja.
-        terminado.wait()
+        _Pedido.terminado.wait()
     except KeyboardInterrupt:
         _Pedido.resultado = False
-    finally:
-        servidor.shutdown()
-        servidor.server_close()
+
+    if not _Pedido.resultado:
+        # Usuario desistio: no hay destino que esperar, se cierra ahora.
+        cerrar()
     return bool(_Pedido.resultado)
+
+
+def entregar_destino(url, tope_s=TOPE_DESTINO_S) -> bool:
+    """Le pasa a la request /activar que sigue en vuelo la URL final del
+    servidor real, para que la pagina navegue sola (``location.replace``)
+    en vez de que Nimbo abra una ventana nueva.
+
+    True si la respuesta llego a salir con esa URL adentro. False si ya
+    no hay nadie esperando -- la ventana de activacion se cerro, o la
+    request ya respondio sin url porque vencio su propio tope -- y en
+    ese caso quien llama cae al abrir_ventana(url) de siempre.
+    """
+    if not _Pedido.resultado or _Pedido.respondido.is_set():
+        cerrar()
+        return False
+    _Pedido.destino_url = url
+    _Pedido.destino_evento.set()
+    llego = _Pedido.respondido.wait(tope_s)
+    cerrar()
+    return bool(llego and _Pedido.destino_url == url)
+
+
+def cerrar():
+    """Apaga el servidor de activacion. Idempotente y segura desde
+    cualquier hilo: la llaman pantalla() (si el usuario desistio),
+    entregar_destino() (ya entregado o vencido) y la propia request
+    /activar (si vencio el tope sin que entregar_destino() corriera)."""
+    with _cerrar_lock:
+        servidor = _Pedido.servidor
+        if servidor is None:
+            return
+        _Pedido.servidor = None
+    servidor.shutdown()
+    servidor.server_close()
