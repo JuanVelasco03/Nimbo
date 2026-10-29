@@ -32,14 +32,22 @@ igual que favoritas.py), nunca en el repo (ver .gitignore), y nunca se
 imprime su contenido en ningun log.
 """
 import base64
+import ctypes
 import json
 import os
 import re
+import sys
 import threading
 import time
 import urllib.error
 import urllib.request
+from ctypes import wintypes
 from urllib.parse import urlencode, urlsplit
+
+# Encabezado que distingue el formato cifrado del JSON en claro de antes
+# de este cambio (SPEC 09) -- leer() lo usa para elegir entre los tres
+# casos del modelo de datos sin adivinar por el contenido.
+PREFIJO_DPAPI = "NIMBO-DPAPI-1\n"
 
 TOPE_PAGINAS = 10   # 10 * limite(60) = 600 favoritas en linea: de sobra
 LIMITE_DEFECTO = 60
@@ -52,6 +60,81 @@ TOPE_PAGINA_S = 15.0
 TOPE_TOTAL_S = 45.0
 
 
+# -- DPAPI (SPEC 09): sesion.json cifrado, atado al usuario + la maquina --
+# Mismo criterio que grabaciones.py con SHFileOperationW y motor.py con
+# CreateToolhelp32Snapshot: ctypes puro, sin dependencias nuevas.
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+_CRYPTPROTECT_UI_FORBIDDEN = 0x1   # sin consola ni ventana propia: un
+                                    # dialogo del sistema aca cuelga el
+                                    # arranque.
+_aviso_dpapi_emitido = False
+
+
+def _avisar_dpapi_no_disponible(detalle: str) -> None:
+    # Una vez sola: esto se puede llamar desde leer()/_escribir() en
+    # cada ciclo, y no hace falta repetir el aviso.
+    global _aviso_dpapi_emitido
+    if not _aviso_dpapi_emitido:
+        _aviso_dpapi_emitido = True
+        print("sesion.py: DPAPI no disponible (%s) -- sesion.json se "
+              "guarda en claro" % detalle, file=sys.stderr)
+
+
+def _proteger(datos: bytes) -> bytes:
+    """Cifra con CryptProtectData (DPAPI). Si no esta disponible --
+    no es Windows, o la llamada falla (politica de grupo, cuenta de
+    servicio) -- devuelve 'datos' tal cual: fallar al guardar la sesion
+    es peor que guardarla como antes de este cambio."""
+    if sys.platform != "win32":
+        return datos
+    try:
+        buf_entrada = ctypes.create_string_buffer(datos, len(datos))
+        entrada = _DATA_BLOB(len(datos), ctypes.cast(
+            buf_entrada, ctypes.POINTER(ctypes.c_char)))
+        salida = _DATA_BLOB()
+        ok = ctypes.windll.crypt32.CryptProtectData(
+            ctypes.byref(entrada), None, None, None, None,
+            _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(salida))
+        if not ok:
+            raise OSError("CryptProtectData fallo")
+        try:
+            return ctypes.string_at(salida.pbData, salida.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(salida.pbData)
+    except OSError as e:
+        _avisar_dpapi_no_disponible(str(e))
+        return datos
+
+
+def _desproteger(blob: bytes) -> bytes:
+    """Inverso de _proteger. Lanza ValueError si no se pudo descifrar --
+    otra maquina, otro usuario, o DPAPI no disponible. leer() trata eso
+    igual que una sesion vencida: no hace falta un estado nuevo."""
+    if sys.platform != "win32":
+        raise ValueError("DPAPI no disponible en esta plataforma")
+    try:
+        buf_entrada = ctypes.create_string_buffer(blob, len(blob))
+        entrada = _DATA_BLOB(len(blob), ctypes.cast(
+            buf_entrada, ctypes.POINTER(ctypes.c_char)))
+        salida = _DATA_BLOB()
+        ok = ctypes.windll.crypt32.CryptUnprotectData(
+            ctypes.byref(entrada), None, None, None, None,
+            _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(salida))
+        if not ok:
+            raise OSError("CryptUnprotectData fallo")
+        try:
+            return ctypes.string_at(salida.pbData, salida.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(salida.pbData)
+    except OSError as e:
+        raise ValueError("no se pudo descifrar (%s)" % e)
+
+
 class Sesion:
     def __init__(self, ruta: str):
         self.ruta = ruta
@@ -60,18 +143,47 @@ class Sesion:
     # -- persistencia -------------------------------------------------
 
     def leer(self):
+        """Tabla de tres casos (SPEC 09, modelo de datos):
+        JSON en claro (de antes de este cambio) se usa Y se reescribe
+        cifrado -- migracion silenciosa, dentro del mismo lock que
+        guardar_desde_curl() para que no se cruce con un guardado nuevo.
+        NIMBO-DPAPI-1 que descifra se usa tal cual. NIMBO-DPAPI-1 que no
+        descifra (otra maquina u otro usuario) devuelve None, igual que
+        una sesion vencida."""
         try:
             with open(self.ruta, encoding="utf-8") as f:
-                datos = json.load(f)
-            return datos if isinstance(datos, dict) else None
-        except (OSError, ValueError):
+                crudo = f.read()
+        except OSError:
             return None
+        if crudo.startswith(PREFIJO_DPAPI):
+            try:
+                datos = json.loads(_desproteger(
+                    base64.b64decode(crudo[len(PREFIJO_DPAPI):])))
+            except (ValueError, UnicodeDecodeError, base64.binascii.Error):
+                return None
+            return datos if isinstance(datos, dict) else None
+        try:
+            datos = json.loads(crudo)
+        except ValueError:
+            return None
+        if not isinstance(datos, dict):
+            return None
+        with self._lock:
+            self._escribir(datos)
+        return datos
 
     def _escribir(self, datos) -> None:
+        texto = json.dumps(datos, ensure_ascii=False, indent=2).encode("utf-8")
+        blob = _proteger(texto)
+        if blob is texto:
+            # DPAPI no disponible: se escribe en claro, como antes.
+            contenido = texto
+        else:
+            contenido = (PREFIJO_DPAPI + base64.b64encode(blob).decode("ascii")).encode("utf-8")
         os.makedirs(os.path.dirname(self.ruta) or ".", exist_ok=True)
         tmp = self.ruta + ".part"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(datos, f, ensure_ascii=False, indent=2)
+        with open(tmp, "wb") as f:
+            f.write(contenido)
         os.replace(tmp, self.ruta)
 
     def borrar(self) -> bool:

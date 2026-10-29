@@ -92,6 +92,22 @@ Filename: "{app}\nimbo\Nimbo.exe"; WorkingDir: "{app}"; Description: "Abrir Nimb
 Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\nimbo\app.py"""; WorkingDir: "{app}"; Description: "Abrir Nimbo ahora"; Flags: nowait postinstall skipifsilent
 #endif
 
+[UninstallRun]
+; Simetrico de preflight.instalar_certificado (certutil -user -addstore):
+; esa CA la pone Nimbo con un boton explicito del banner de puesta a
+; punto, nunca el instalador en silencio (ver preflight.py:70-78, "un
+; instalador que agrega una CA raiz sin decirlo hace exactamente lo que
+; hace un malware"). Desinstalar tiene que deshacer eso mismo. Solo el
+; store DEL USUARIO: el instalador de mitmproxy (si el usuario lo tiene
+; instalado aparte, con elevacion) pone la CA en el store de la MAQUINA,
+; que esto no toca -- preflight.py:46-57 ya documenta esa distincion.
+; skipifdoesntexist es sobre el EJECUTABLE ("certutil.exe" no resuelve en
+; el PATH, caso virtualmente imposible en Windows), no sobre si la CA
+; esta instalada: borrar una CA que no esta devuelve codigo 0 igual
+; (probado a mano: "-delstore" sobre un certificado ausente no es error).
+Filename: "certutil.exe"; Parameters: "-user -delstore ROOT mitmproxy"; \
+    Flags: runhidden skipifdoesntexist; RunOnceId: "QuitarCA"
+
 [UninstallDelete]
 ; Lo que Nimbo genera solo y no es del usuario. Las grabaciones (datos\),
 ; config.json y grabar.txt NO se borran a proposito: son horas de video y

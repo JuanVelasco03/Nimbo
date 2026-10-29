@@ -168,6 +168,8 @@ class Aplicacion:
             os.path.join(ajustes_mod.RAIZ, "sesion.json"))
         self.sitio = sitio_mod.Sitio(ajustes)
         self.token = secrets.token_urlsafe(24)
+        self.puerto = None           # lo fija Servidor._iniciar() apenas
+                                      # abre el socket -- _origen_valido lo usa
         self.ejecutor = ThreadPoolExecutor(
             max_workers=EJECUTOR_HILOS, thread_name_prefix="nimbo-ej")
         # Se puede construir fuera del loop: desde 3.10 el Semaphore ya no
@@ -677,6 +679,18 @@ def _token_valido(app, qs):
     return secrets.compare_digest(_valor(qs, "t"), app.token)
 
 
+def _origen_valido(app, cabeceras):
+    """Defensa en profundidad, no la puerta: el token sigue siendo lo
+    que autoriza. Un GET same-origin no manda 'Origin' -- exigirla
+    rompería la interfaz entera, asi que sin la cabecera esto da True.
+    Con la cabecera, solo vale la propia ventana de Nimbo."""
+    origen = cabeceras.get("Origin")
+    if not origen:
+        return True
+    return origen in ("http://127.0.0.1:%d" % app.puerto,
+                       "http://localhost:%d" % app.puerto)
+
+
 # -- estaticos, con el traversal cerrado (recomendacion 6) ------------------
 
 def _resolver_estatico(dir_web, ruta_rel):
@@ -723,11 +737,19 @@ def _abrir_en(ruta, inicio):
     return f
 
 
-async def _servir_video(app, writer, ruta, cabecera_rango):
+async def _servir_video(app, writer, ruta, cabecera_rango, cabeceras):
     """GET con soporte de Range: sin esto el <video> puede arrancar pero
     no puede saltar a la mitad de un archivo de varios GB. Nunca carga el
     archivo entero en memoria -- lee y escribe en bloques de 1 MiB, cada
-    uno en el ejecutor para no bloquear el loop con el read() sincrono."""
+    uno en el ejecutor para no bloquear el loop con el read() sincrono.
+
+    El chequeo de Origin ya lo hizo _manejar_get (la ruta empieza con
+    /api/), pero se repite aca mismo: defensa en profundidad, mismo 403 y
+    mismo cuerpo que los demas, por si el dia de mañana algo mas llama
+    a esta funcion sin pasar por ese gate."""
+    if not _origen_valido(app, cabeceras):
+        await _json(writer, 403, {"error": "origen invalido"})
+        return
     try:
         tam = await app.a_hilo(os.path.getsize, ruta)
     except OSError:
@@ -787,6 +809,9 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
     necesita_token = ruta in ("/", "/index.html") or ruta.startswith("/api/")
     if necesita_token and not _token_valido(app, qs):
         await _json(writer, 403, {"error": "token invalido"})
+        return
+    if necesita_token and not _origen_valido(app, cabeceras):
+        await _json(writer, 403, {"error": "origen invalido"})
         return
 
     if ruta == "/api/estado":
@@ -863,7 +888,7 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         if ruta_video is None:
             await _json(writer, 404, {"error": "no encontrado"})
             return
-        await _servir_video(app, writer, ruta_video, cabeceras.get("Range"))
+        await _servir_video(app, writer, ruta_video, cabeceras.get("Range"), cabeceras)
     elif ruta == "/api/grabaciones/miniatura":
         # Cacheable (igual que /api/sitio/imagen): el nombre de la portada
         # viene de grabaciones.listar() y el cliente lo pide con &v=<mtime>
@@ -1092,6 +1117,9 @@ async def _manejar_post(app, ruta, qs, cabeceras, reader, writer):
     if not _token_valido(app, qs):
         await _json(writer, 403, {"error": "token invalido"})
         return
+    if not _origen_valido(app, cabeceras):
+        await _json(writer, 403, {"error": "origen invalido"})
+        return
     try:
         n = int(cabeceras.get("Content-Length") or 0)
     except ValueError:
@@ -1147,6 +1175,10 @@ async def _manejar_ws(app, preambulo, destino, cabeceras, reader, writer):
     if not _token_valido(app, qs):
         await _responder(writer, 403, {"Content-Type": "application/json"},
                           json.dumps({"error": "token invalido"}).encode())
+        return
+    if not _origen_valido(app, cabeceras):
+        await _responder(writer, 403, {"Content-Type": "application/json"},
+                          json.dumps({"error": "origen invalido"}).encode())
         return
     proto = ServerProtocol()
     proto.receive_data(preambulo)
@@ -1257,6 +1289,7 @@ class Servidor:
         self._servidor_asyncio = await asyncio.start_server(
             lambda r, w: _atender(self.app, r, w), "127.0.0.1", self._puerto_pedido)
         self.puerto = self._servidor_asyncio.sockets[0].getsockname()[1]
+        self.app.puerto = self.puerto    # _origen_valido lo necesita
         self._loop.create_task(_bucle_estado(self.app))
         self._loop.create_task(_bucle_cosecha(self.app))
         self._loop.create_task(_bucle_miniaturas(self.app))

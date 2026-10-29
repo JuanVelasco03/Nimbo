@@ -553,7 +553,11 @@ copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
   navegador: el usuario pega un "Copiar como cURL". Automatizar el login
   con Playwright **no funciona** — Cloudflare detecta CDP y corta. No
   reintentar ese camino. `sesion.json` equivale a la contraseña mientras la
-  sesión viva: nunca loguear su contenido.
+  sesión viva: nunca loguear su contenido. Desde SPEC 09 vive cifrado con
+  DPAPI (`CryptProtectData`/`CryptUnprotectData` por `ctypes`, atado al
+  usuario + la máquina, encabezado `NIMBO-DPAPI-1`); `leer()` migra en
+  silencio un archivo en claro de antes del cambio y, si DPAPI no está
+  disponible, degrada a texto plano con un aviso en vez de fallar.
 - **`sitio.py`** sale por el proxy de grabación (para que las `@vpn=` usen
   el túnel) y **nunca** toca `nucleo\perfil\`, que es exclusivo del
   supervisor. `estado()` reusa el `RE_ESTADO` del propio `supervisor.py` en

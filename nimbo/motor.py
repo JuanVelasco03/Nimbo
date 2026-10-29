@@ -132,9 +132,21 @@ def _cmd_directo(ajustes):
     return [ajustes["python"], LANZADOR_DIRECTO]
 
 
+# Ningun componente de Nimbo necesita el proxy expuesto a la red local
+# (el supervisor abre Chromium en la misma maquina, y el camino directo
+# ni siquiera pasa por el proxy): un 0.0.0.0 aca deja un MITM abierto en
+# cualquier maquina que ya confia en la CA de mitmproxy. Sin clave de
+# configuracion para permitirlo -- ver SPEC 09, Decisiones.
+LOOPBACK_PROXY = {"127.0.0.1", "localhost", "::1", ""}
+
+
 def _parsear_proxy(proxy: str):
+    """-> (host, puerto, era_loopback). 'host' es el que se pidio, tal
+    cual -- quien llama decide si lo reemplaza por 127.0.0.1 cuando
+    era_loopback es False (_arrancar_detector avisa y lo hace)."""
     host, _, puerto = (proxy or "").rpartition(":")
-    return (host or "127.0.0.1"), int(puerto) if puerto.isdigit() else 8080
+    host = host or "127.0.0.1"
+    return host, (int(puerto) if puerto.isdigit() else 8080), host in LOOPBACK_PROXY
 
 
 def _esperar_puerto(host, puerto, tope):
@@ -433,7 +445,12 @@ class Motor:
 
     def _arrancar_detector(self):
         a = self.ajustes
-        host, puerto = _parsear_proxy(a["proxy"])
+        host, puerto, era_loopback = _parsear_proxy(a["proxy"])
+        if not era_loopback:
+            self._aviso(
+                "el proxy configurado (%s) no es local -- se usa 127.0.0.1"
+                % a["proxy"], nivel="error")
+            host = "127.0.0.1"
         cmd = [a["mitmdump"], "-s", a.detector_py, "-s", PUENTE,
                "--listen-host", host, "--listen-port", str(puerto),
                "--set", "flow_detail=0"]
@@ -869,7 +886,9 @@ class Motor:
                     self.supervisor = None
                 if self._parada_pedida.is_set():
                     return
-                host, puerto = _parsear_proxy(self.ajustes["proxy"])
+                host, puerto, era_loopback = _parsear_proxy(self.ajustes["proxy"])
+                if not era_loopback:
+                    host = "127.0.0.1"
                 if not _esperar_puerto_libre(host, puerto, ESPERA_PUERTO_LIBRE):
                     self._aviso(
                         "el puerto %d sigue ocupado -- no puedo reiniciar "

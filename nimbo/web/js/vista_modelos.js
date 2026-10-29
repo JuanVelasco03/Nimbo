@@ -607,17 +607,47 @@ function ocultarSugerencias() {
   document.getElementById("sugerencias").classList.add("oculta");
 }
 
+// Sin innerHTML: m.username viene del endpoint no oficial del sitio
+// (sitio.py), no de RE_NOMBRE -- un username con HTML adentro no tiene
+// que poder ejecutar nada en una ventana que lleva el token en la URL.
 function renderSugerencias(resultados) {
   const cont = document.getElementById("sugerencias");
+  cont.replaceChildren();
   if (!resultados.length) {
-    cont.innerHTML = '<div class="vacio text-[0.85rem]">sin resultados</div>';
+    const vacio = document.createElement("div");
+    vacio.className = "vacio text-[0.85rem]";
+    vacio.textContent = "sin resultados";
+    cont.append(vacio);
   } else {
-    cont.innerHTML = resultados.map(m => `
-      <div class="sugerencia" data-nombre="${m.username}">
-        <div class="miniatura">${m.avatar ? `<img src="${urlImagenProxy(m.avatar)}" alt="" loading="lazy" onerror="this.remove()">` : inicialDe(m.username)}</div>
-        <span class="nombre-sug">${m.username}</span>
-        <span class="punto-online ${m.online ? "si" : ""}" title="${m.online ? "en linea" : "sin dato / offline"}"></span>
-      </div>`).join("");
+    for (const m of resultados) {
+      const fila = document.createElement("div");
+      fila.className = "sugerencia";
+      fila.dataset.nombre = m.username;
+
+      const miniatura = document.createElement("div");
+      miniatura.className = "miniatura";
+      if (m.avatar) {
+        const img = document.createElement("img");
+        img.setAttribute("src", urlImagenProxy(m.avatar));
+        img.setAttribute("alt", "");
+        img.setAttribute("loading", "lazy");
+        img.addEventListener("error", () => img.remove(), { once: true });
+        miniatura.append(img);
+      } else {
+        miniatura.textContent = inicialDe(m.username);
+      }
+
+      const nombre = document.createElement("span");
+      nombre.className = "nombre-sug";
+      nombre.textContent = m.username;
+
+      const punto = document.createElement("span");
+      punto.className = "punto-online" + (m.online ? " si" : "");
+      punto.title = m.online ? "en linea" : "sin dato / offline";
+
+      fila.append(miniatura, nombre, punto);
+      cont.append(fila);
+    }
   }
   cont.classList.remove("oculta");
 }
