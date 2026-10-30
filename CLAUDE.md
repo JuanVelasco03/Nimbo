@@ -236,6 +236,37 @@ El resumen de lo que hizo el hijo sale de su **stderr** y su stdout
 (`logging` escribe en stderr, leer solo stdout dejaba el resumen
 siempre vacío).
 
+**Ese subproceso `--unir` lee `estado\directo.json` +
+`estado\detector.json` para decidir si frenar** (`DIR_ESTADO` en
+`detectar_m3u8.py`: `NIMBO_ESTADO`, y si falta `<BASE>\..\estado`, que
+da `<raíz>\estado` tanto por la CLI como lanzado por Nimbo). `_Freno`
+(`RITMO_UNION`, más abajo) estaba escrito y conectado desde que se midió
+el daño, pero `hay_grabaciones` era un global que rellenaba **solo**
+`Detector.__init__` — o sea, solo el addon de mitmproxy. En el
+subproceso quedaba en `None`, `paso()` nunca dormía y unir leía a fondo
+del mismo disco en el que ocho modelos escribían segmentos: la noche del
+2026-10-29, dos uniones (5,85 y 7,13 GB) agotaron el tope y cinco
+sesiones perdieron entre 430 y 856 s de video. Desde SPEC 13 `main()`
+engancha `_grabaciones_por_estado` al entrar en `--unir`/`--recuperar`, y
+el addon pasa a `self._grabando_alguna() or _grabaciones_por_estado()`
+porque con toda la lista en `@directo=1` el detector no graba nada y su
+chequeo en memoria ve cero. El criterio es el mismo de
+`_grabando_alguna()` — `grabando` y `ultimo_segmento` a menos de 30s —
+sobre un JSON de menos de 15s (`FRESCURA_ESTADO`, duplicado a mano de
+`estado_captura.FRESCURA_S` porque el núcleo no importa nada de
+`nimbo\`). El freno es **pegajoso**: con el JSON vencido o ausente
+mantiene el último estado conocido, y solo lo suelta un JSON **fresco**
+que diga que nadie graba — si el grabador se congela su latido
+envejece, y soltar el freno justo ahí aceleraría la unión que causó el
+congelamiento. Sin los JSON no frena nada, igual que antes. Cada
+transición deja una línea de log con la fase (`copia` o `remux`: son dos
+`_Freno` por unión, y sin la etiqueta serían indistinguibles). En la
+**parada** el freno se suelta solo: el directo cierra las sesiones antes
+de drenar `cola_union`, así que `directo.json` queda con `streams: []` y
+las uniones pendientes corren a fondo, como siempre. El tope del hijo es
+`ESPERA_UNION = 3600` en `grabador_directo.py` (era un `timeout=1200`
+literal: 7 GB frenados no entran en 20 min).
+
 **La unión intenta leer desde el disco de TEMP, no desde `streams\`
 directo**, si eso de verdad cambia de disco
 (`detectar_m3u8.py:_preparar_escenario`). Unir es leer miles de archivos

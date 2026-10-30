@@ -1169,10 +1169,78 @@ def _plan(inits, segmentos, saltar):
 
 # Tope de ritmo de la union mientras haya emisiones grabandose, en bytes/s.
 RITMO_UNION = 25 * 1048576
-# A quien se le pregunta si hay emisiones en curso. Lo rellena el addon; por
-# la CLI se queda en None y la union va a toda velocidad, que es lo que se
-# quiere cuando no hay nada grabando.
+# A quien se le pregunta si hay emisiones en curso. Lo rellena el addon
+# (Detector.__init__) y tambien main() al entrar en --unir/--recuperar, que es
+# el camino que usa el grabador directo: hasta SPEC 13 ahi quedaba en None, el
+# freno nunca enganchaba y la union leia a fondo del mismo disco en el que ocho
+# modelos estaban escribiendo segmentos. Sin ninguno de los dos (CLI a mano,
+# sin Nimbo corriendo) sigue en None y la union va a toda velocidad, que es lo
+# que se quiere cuando no hay nada que proteger.
 hay_grabaciones = None
+
+# Donde Nimbo publica los JSON de estado (nimbo\puente.py y
+# grabador_directo.py). Sin NIMBO_ESTADO en el entorno -- el caso de un
+# "--unir --forzar" a mano, justo cuando mas dano hace ir a fondo --, se cae a
+# <BASE>\..\estado: BASE es <raiz>\nucleo por la CLI (scripts\ esta en
+# SUBCARPETAS_SCRIPT) y <raiz>\datos cuando lo lanza Nimbo (M3U8_BASE), y los
+# dos tienen el mismo padre, asi que da <raiz>\estado en los dos casos sin
+# clavar ninguna letra de unidad.
+DIR_ESTADO = os.environ.get("NIMBO_ESTADO") or os.path.join(BASE, "..", "estado")
+# Duplicacion DELIBERADA de nimbo\estado_captura.py:FRESCURA_S, por el mismo
+# motivo que nimbo\mp4.py y nimbo\vivo.py portan constantes de aca en vez de
+# importar: el nucleo no importa nada de nimbo\. Si se cambia una, hay que
+# cambiar la otra a mano.
+FRESCURA_ESTADO = 15.0
+# El mismo numero que _grabando_alguna() ya usa para los streams propios, para
+# que el freno se comporte igual por los dos caminos.
+EDAD_SEGMENTO = 30.0
+
+
+def _leer_estado(nombre: str):
+    """El JSON <nombre> de DIR_ESTADO, o None si no esta o no se puede leer.
+
+    Mismo patron que el _leer_json de Nimbo: se traga OSError/ValueError (el
+    archivo se reescribe cada 2s) y devuelve None en vez de reventar la union.
+    """
+    try:
+        with open(os.path.join(DIR_ESTADO, nombre), "r", encoding="utf-8") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return datos if isinstance(datos, dict) else None
+
+
+def _grabaciones_por_estado():
+    """Hay alguna emision grabandose, segun los JSON que publica Nimbo.
+
+    -> True si alguien graba, False si nadie, y None si ninguno de los dos
+    archivos dice nada util: ausentes, ilegibles, o con el latido ('generado',
+    que los dos reescriben cada 2s pase lo que pase) mas viejo que
+    FRESCURA_ESTADO. Ese None es lo que hace pegajoso al freno (ver
+    _Freno.paso): si el grabador se congela, su latido envejece, y soltar el
+    freno justo ahi aceleraria la union que causo el congelamiento.
+
+    El criterio copia a _grabando_alguna() palabra por palabra: 'grabando' y
+    'ultimo_segmento' a menos de EDAD_SEGMENTO.
+    """
+    ahora = time.time()
+    visto = False
+    for nombre in ("directo.json", "detector.json"):
+        datos = _leer_estado(nombre)
+        if not datos:
+            continue
+        generado = datos.get("generado")
+        if not isinstance(generado, (int, float)) or \
+                ahora - generado > FRESCURA_ESTADO:
+            continue                  # latido vencido: este archivo no cuenta
+        visto = True
+        for st in datos.get("streams") or ():
+            if not isinstance(st, dict) or not st.get("grabando"):
+                continue
+            ultimo = st.get("ultimo_segmento") or 0
+            if ahora - ultimo < EDAD_SEGMENTO:
+                return True
+    return False if visto else None
 
 
 class _Freno:
@@ -1186,21 +1254,39 @@ class _Freno:
     y 30 segundos cada una. Frenada, la union tarda el doble y no quita nada.
     """
 
-    def __init__(self, ritmo: float = RITMO_UNION):
+    def __init__(self, etiqueta: str = "", ritmo: float = RITMO_UNION):
+        self.etiqueta = etiqueta or "?"   # la fase: "copia" o "remux"
         self.ritmo = ritmo
         self.reloj = time.monotonic()
         self.enviado = 0
         self.mirado = 0.0
         self.frenar = False
+        self.frenado_alguna_vez = False
 
     def paso(self, n: int) -> None:
         ahora = time.monotonic()
         if ahora - self.mirado > 2.0:   # preguntarlo por cada trozo seria caro
             self.mirado = ahora
             try:
-                self.frenar = bool(hay_grabaciones and hay_grabaciones())
+                respuesta = hay_grabaciones() if hay_grabaciones else False
             except Exception:
-                self.frenar = False
+                respuesta = None
+            antes = self.frenar
+            # None = nadie pudo decir si hay grabaciones (JSON ausente o con
+            # el latido vencido): se MANTIENE el estado anterior. Para soltar
+            # el freno hace falta una respuesta fresca que diga que nadie
+            # graba; al arrancar el estado es False, asi que sin Nimbo
+            # corriendo nunca se frena, igual que antes de SPEC 13.
+            if respuesta is not None:
+                self.frenar = bool(respuesta)
+            if self.frenar != antes:
+                # El freno anterior fracaso en silencio durante meses: sin una
+                # linea por transicion no hay forma de saber si engancho.
+                log.info("[UNIR] freno %s: %s", self.etiqueta,
+                         "puesto (hay emisiones grabandose)" if self.frenar
+                         else "suelto (nadie graba)")
+            if self.frenar:
+                self.frenado_alguna_vez = True
             if not self.frenar:
                 self.reloj, self.enviado = ahora, 0
         if not self.frenar:
@@ -1221,7 +1307,7 @@ def _alimentar(rutas, escribir, cadena=None):
     """
     if cadena is None:
         cadena = Reencadenador(_escalas_de(rutas))
-    freno = _Freno()
+    freno = _Freno("remux")
     for ruta, es_segmento in rutas:
         with open(ruta, "rb") as f:
             datos = f.read()
@@ -1326,7 +1412,7 @@ def _preparar_escenario(inits, segmentos, carpeta_sesion, etiqueta, total):
         # grabaciones en curso: tiene que respetar el mismo freno que
         # _alimentar, o se vuelve a competirles el disco justo en la parte
         # que esto queria evitar.
-        freno = _Freno()
+        freno = _Freno("copia")
         nuevos_inits = []
         for ruta in inits:
             destino = os.path.join(carpeta_tmp, os.path.basename(ruta))
@@ -1960,7 +2046,13 @@ class Detector:
                 )
 
         global hay_grabaciones
-        hay_grabaciones = self._grabando_alguna
+        # El chequeo en memoria va primero porque es gratis y es la verdad
+        # para los streams propios; el lector de estado solo se consulta si
+        # ese dio False. Hace falta porque con toda la lista en @directo=1 el
+        # detector no graba nada y self.streams esta vacio: sin esto, el freno
+        # de sus propias uniones no veria las grabaciones del camino directo.
+        hay_grabaciones = (
+            lambda: self._grabando_alguna() or _grabaciones_por_estado())
 
         self.escritor.start()
         self.hilo_final = threading.Thread(
@@ -2915,6 +3007,17 @@ def main(argv) -> int:
     forzar = "--forzar" in argv or "--rehacer" in argv or "-f" in argv
 
     if "--unir" in argv or "--recuperar" in argv:
+        # Este es el camino que usa el grabador directo (lanza
+        # "python detectar_m3u8.py --unir <ref>" como subproceso, ver
+        # grabador_directo.py:_unir_en_fondo) y tambien el --unir a mano.
+        # Hasta SPEC 13 hay_grabaciones solo lo rellenaba el addon, asi que
+        # por aca el freno de la union quedaba apagado y se leia a fondo del
+        # mismo disco en el que las otras modelos estaban grabando: 5 sesiones
+        # con 430-856 s de video perdido en una sola noche. Sin los JSON de
+        # estado en disco _grabaciones_por_estado() devuelve None y no se
+        # frena nada, que es el comportamiento de siempre.
+        global hay_grabaciones
+        hay_grabaciones = _grabaciones_por_estado
         filtros = [a.lower() for a in argv if not a.startswith("-")]
         hecho = 0
         for s in sesiones_en_disco():

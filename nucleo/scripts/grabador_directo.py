@@ -101,6 +101,13 @@ PYTHON_EXE = sys.executable
 DETECTAR_PY = os.path.join(AQUI, "detectar_m3u8.py")
 _SIN_VENTANA = ({"creationflags": subprocess.CREATE_NO_WINDOW}
                 if hasattr(subprocess, "CREATE_NO_WINDOW") else {})
+# Tope del subproceso --unir, en segundos. La cuenta: una sesion de 7 GB
+# leida al ritmo del freno (RITMO_UNION, 25 MB/s) tarda ~4,8 min por pasada,
+# y en el peor caso son 1 + MAX_REPARACIONES = 7 pasadas de remux mas la
+# copia al escenario: ~39 min. Era un timeout=1200 literal (20 min) y dos
+# sesiones de 5,85 y 7,13 GB lo agotaron la noche del 2026-10-29 (SPEC 13);
+# con el freno puesto unir tarda mas todavia, asi que el tope sube con el.
+ESPERA_UNION = 3600
 
 # Donde Nimbo (puente.py/lanzador_supervisor.py) deja/lee los JSON de
 # estado. Mismo fallback que puente.py (nimbo\puente.py): este archivo
@@ -330,7 +337,8 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
         # --unir lee stdin a proposito, pero no hay motivo para heredar
         # un handle ajeno en un subproceso que no lo necesita.
         proc = subprocess.run(cmd, cwd=AQUI, env=dict(os.environ),
-                               capture_output=True, text=True, timeout=1200,
+                               capture_output=True, text=True,
+                               timeout=ESPERA_UNION,
                                stdin=subprocess.DEVNULL, **_SIN_VENTANA)
         if proc.returncode != 0:
             log.error("[UNIR] %s: --unir fallo (codigo %s): %s", sesion.ref,
@@ -361,7 +369,9 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
                 log.info("[UNIR] %s: listo | %s", sesion.ref,
                          _resumen_union(proc))
     except subprocess.TimeoutExpired:
-        log.error("[UNIR] %s: --unir no termino en 20 min", sesion.ref)
+        log.error("[UNIR] %s: --unir no termino en ESPERA_UNION (%d s); la "
+                  "sesion queda sin %s y recuperar_pendientes() la puede "
+                  "retomar", sesion.ref, ESPERA_UNION, MARCADOR)
     except OSError as e:
         log.error("[UNIR] %s: no se pudo lanzar --unir: %s", sesion.ref, e)
 
