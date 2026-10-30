@@ -162,8 +162,10 @@ def _unico_conf() -> str:
 
 BASE = os.environ.get("M3U8_BASE") or _raiz_proyecto()
 FFMPEG = os.environ.get("M3U8_FFMPEG") or _al_lado("ffmpeg.exe")
-STREAMS_DIR = os.path.join(BASE, "streams")
-GRABACIONES_DIR = os.path.join(BASE, "grabaciones")
+# Nimbo pasa estas dos segun lo configurado en "Carpetas y discos" (config.json);
+# M3U8_BASE sigue siendo el defecto cuando no vienen (SPEC 12).
+STREAMS_DIR = os.environ.get("M3U8_STREAMS") or os.path.join(BASE, "streams")
+GRABACIONES_DIR = os.environ.get("M3U8_GRABACIONES") or os.path.join(BASE, "grabaciones")
 SELECCION = os.environ.get("M3U8_GRABAR") or _al_lado("grabar.txt")
 # activos.txt vive junto a grabar.txt: el supervisor lo busca ahi
 ACTIVOS = os.environ.get("M3U8_ACTIVOS") or os.path.join(
@@ -1285,10 +1287,28 @@ def _preparar_escenario(inits, segmentos, carpeta_sesion, etiqueta, total):
 
     Si TEMP esta en el mismo disco que carpeta_sesion (o no hay margen)
     copiar no ayuda en nada y solo duplica E/S: se sigue leyendo in situ,
-    carpeta_tmp da None y no hay nada que limpiar despues."""
-    tmp_base = tempfile.gettempdir()
+    carpeta_tmp da None y no hay nada que limpiar despues.
+
+    M3U8_ESCENARIO (config.json -> motor.py, SPEC 12) decide de donde sale
+    tmp_base: "apagado"/"0" no copia nunca, una ruta absoluta la reemplaza,
+    vacio o "auto" es lo de hoy (tempfile.gettempdir())."""
+    modo = os.environ.get("M3U8_ESCENARIO", "").strip()
+    if modo.lower() in ("apagado", "0"):
+        return inits, segmentos, None
+    if modo and modo.lower() != "auto":
+        tmp_base = modo
+        try:
+            os.makedirs(tmp_base, exist_ok=True)
+        except OSError as e:
+            log.warning("[UNIR] %s: no se pudo preparar el escenario %s "
+                        "(%s); leo del disco de origen", etiqueta, tmp_base, e)
+            return inits, segmentos, None
+    else:
+        tmp_base = tempfile.gettempdir()
     if os.path.splitdrive(tmp_base)[0].lower() == \
             os.path.splitdrive(carpeta_sesion)[0].lower():
+        log.info("[UNIR] %s: el escenario %s esta en el mismo disco que la "
+                 "sesion; leo in situ", etiqueta, tmp_base)
         return inits, segmentos, None
     try:
         libre = shutil.disk_usage(tmp_base).free

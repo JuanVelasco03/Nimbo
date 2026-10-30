@@ -183,6 +183,17 @@ def comprobar(ajustes) -> list:
     except OSError:
         fila(False, "Espacio en disco", "no se pudo comprobar " + ajustes.dir_datos, "")
 
+    # Una fila por cada carpeta configurada que no se pudo usar (SPEC 12):
+    # ajustes.resolver_rutas() ya cayo al defecto, esto solo lo informa. Sin
+    # "arreglo": no hay un POST que reconecte un disco. Si no hay ninguna
+    # caida, no se agrega nada -- la seccion nueva no tiene que ensuciar el
+    # banner de una instalacion que no toco "Carpetas y discos".
+    for caida in ajustes.rutas_caidas:
+        fila(False, "Carpeta de datos (%s)" % caida["clave"],
+             "%s no se pudo usar (%s) -- se usa %s en su lugar"
+             % (caida["pedida"], caida["motivo"], caida["usada"]),
+             "Reconecta el disco y reinicia el motor para volver a usarla")
+
     try:
         vpn_pedida = any(True for _ in open(ajustes.grabar_txt, encoding="utf-8")
                          if _.strip().lower().startswith("@vpn=")

@@ -48,7 +48,6 @@ import mimetypes
 import os
 import re
 import secrets
-import shutil
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -70,6 +69,7 @@ import miniaturas as miniaturas_mod
 import motor as motor_mod
 import preflight as preflight_mod
 import registro as registro_mod
+import rutas as rutas_mod
 import sesion as sesion_mod
 import sitio as sitio_mod
 import vivo as vivo_mod
@@ -136,6 +136,24 @@ def _leer_bytes(ruta):
             return f.read()
     except OSError:
         return None
+
+
+_CLAVES_RUTAS = ("dir_segmentos", "dir_grabaciones", "union_modo", "dir_union")
+
+
+def _rutas_snapshot(a):
+    """Lo que necesita la seccion "Carpetas y discos" (SPEC 12): las
+    cuatro claves configuradas, lo que resolvieron de verdad, el espacio
+    libre de cada carpeta resuelta y las que cayeron al defecto."""
+    resuelto = {"segmentos": a.streams, "grabaciones": a.grabaciones,
+                "union": a.dir_union}
+    espacio = {clave: rutas_mod.espacio(valor)
+               for clave, valor in resuelto.items() if valor}
+    return {
+        "dir_segmentos": a["dir_segmentos"], "dir_grabaciones": a["dir_grabaciones"],
+        "union_modo": a["union_modo"], "dir_union": a["dir_union"],
+        "resuelto": resuelto, "espacio": espacio, "caidas": a.rutas_caidas,
+    }
 
 
 async def _leer_detector_fusionado(app):
@@ -235,11 +253,20 @@ class Aplicacion:
     # -- snapshots -------------------------------------------------------
 
     def _disco(self):
-        try:
-            uso = shutil.disk_usage(self.ajustes.dir_datos)
-            return {"libres": uso.free, "total": uso.total}
-        except OSError:
-            return None
+        """Espacio libre de cada disco en juego -- segmentos y
+        grabaciones, deduplicados por unidad (SPEC 12). Con las dos
+        carpetas en el mismo disco da una sola fila, igual que antes de
+        que existiera "Carpetas y discos"."""
+        filas = []
+        vistos = set()
+        for etiqueta, carpeta in (("segmentos", self.ajustes.streams),
+                                  ("grabaciones", self.ajustes.grabaciones)):
+            info = rutas_mod.espacio(carpeta)
+            if not info or info["unidad"] in vistos:
+                continue
+            vistos.add(info["unidad"])
+            filas.append({"etiqueta": etiqueta, **info})
+        return filas
 
     def estado_completo(self):
         """Snapshot sincrono completo -- se llama desde un hilo del
@@ -913,6 +940,8 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             "ver_navegador": a["ver_navegador"],
             "inicio_automatico": await app.a_hilo(inicio_mod.esta_activo),
         })
+    elif ruta == "/api/rutas":
+        await _json(writer, 200, await app.a_hilo(_rutas_snapshot, app.ajustes))
     elif ruta == "/api/vivo/sesiones":
         detector = await _leer_detector_fusionado(app)
         sesiones = await app.a_hilo(vivo_mod.sesiones_vivas, app.ajustes.streams, detector)
@@ -1075,6 +1104,43 @@ async def _despachar_post(app, ruta, cuerpo):
         app.ajustes[clave] = bool(cuerpo["valor"])
         await app.a_hilo(app.ajustes.guardar)
         return 200, {clave: app.ajustes[clave]}
+    elif ruta == "/api/rutas":
+        clave = cuerpo["clave"]
+        if clave not in _CLAVES_RUTAS:
+            return 400, {"error": "clave desconocida"}
+        a = app.ajustes
+        if clave in ("dir_segmentos", "dir_grabaciones"):
+            m = app.motor.estado()
+            if (m["detector_vivo"] or m["supervisor_vivo"]
+                    or m["directo_vivo"] or m["parando"]):
+                return 409, {"error": "el motor esta corriendo -- parala "
+                                      "antes de cambiar esta carpeta"}
+        valor = cuerpo["valor"]
+        if clave == "union_modo":
+            if valor not in ("auto", "carpeta", "apagado"):
+                return 400, {"error": "modo invalido"}
+        else:
+            valor = (valor or "").strip()
+            if valor and valor.lower() != "auto":
+                r = await app.a_hilo(rutas_mod.validar, valor)
+                if not r["ok"]:
+                    return 400, {"error": r["motivo"]}
+        a[clave] = valor
+        await app.a_hilo(a.guardar)
+        await app.a_hilo(a.resolver_rutas)
+        return 200, _rutas_snapshot(a)
+    elif ruta == "/api/rutas/examinar":
+        clave = cuerpo["clave"]
+        titulos = {
+            "dir_segmentos": "Elegir carpeta de segmentos",
+            "dir_grabaciones": "Elegir carpeta de grabaciones",
+            "dir_union": "Elegir carpeta del escenario de union",
+        }
+        if clave not in titulos:
+            return 400, {"error": "clave desconocida"}
+        inicial = app.ajustes[clave] or ""
+        elegida = await app.a_hilo(rutas_mod.elegir_carpeta, titulos[clave], inicial)
+        return 200, {"ruta": elegida}
     elif ruta == "/api/preflight/certificado":
         # El unico "arreglo" que ofrece el banner de puesta a punto (ver
         # preflight.instalar_certificado): certutil es un subprocess, va

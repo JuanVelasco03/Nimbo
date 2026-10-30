@@ -1,6 +1,6 @@
 # SPEC 12 — Elegir en qué disco van los segmentos, la unión y la grabación
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 03 (camino directo), SPEC 02 (empaquetado)
 > **Fecha:** 2026-10-28
 > **Objetivo:** Poder elegir desde Ajustes tres carpetas independientes — segmentos temporales, escenario de unión y grabaciones finales — y que el motor de captura las respete sin perder el comportamiento de hoy cuando no se configura nada.

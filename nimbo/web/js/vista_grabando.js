@@ -240,10 +240,19 @@ export function renderTarjetas(estado) {
 }
 
 export function renderBarraGlobal(estado) {
-  const disco = estado.disco;
-  document.getElementById("info-disco").textContent = disco
-    ? "espacio libre: " + formatoGB(disco.libres) + " de " + formatoGB(disco.total)
-    : "espacio: -";
+  // estado.disco es una lista (segmentos y grabaciones, deduplicadas por
+  // unidad -- ver servidor.py:_disco, SPEC 12). Con una sola entrada el
+  // texto queda igual que antes de que existiera "Carpetas y discos"; con
+  // dos, cada una lleva su letra de unidad por delante.
+  const disco = estado.disco || [];
+  let texto = "espacio: -";
+  if (disco.length === 1) {
+    texto = "espacio libre: " + formatoGB(disco[0].libres) + " de " + formatoGB(disco[0].total);
+  } else if (disco.length > 1) {
+    texto = "espacio libre: " + disco.map(d =>
+      d.unidad + " " + formatoGB(d.libres) + " de " + formatoGB(d.total)).join(" · ");
+  }
+  document.getElementById("info-disco").textContent = texto;
   const det = estado.detector;
   const resumenTunel = document.getElementById("resumen-tunel");
   if (det && det.tunel_activo) {

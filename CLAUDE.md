@@ -116,6 +116,16 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
    editando `grabar.txt`, porque ese archivo lo escribe solo Nimbo
    (`lista.py`, ver "Quién escribe qué").
 
+Las rutas de segmentos, grabaciones y el escenario de unión salen de la
+sección "Carpetas y discos" de `config.json` (`dir_segmentos`,
+`dir_grabaciones`, `union_modo`, `dir_union` — ver `specs\12-rutas_de_disco.md`):
+`nimbo\ajustes.py:resolver_rutas()` las valida (y cae al defecto, con aviso,
+si el disco pedido no responde) y `motor.py` las pasa a detector y camino
+directo como `M3U8_STREAMS`/`M3U8_GRABACIONES`/`M3U8_ESCENARIO`. Vacío o
+`"auto"` sigue siendo exactamente lo de antes de este spec: `M3U8_BASE`
+(`<raíz>\datos`) queda como el defecto de las dos primeras, y el escenario
+de unión sigue resolviéndose solo (`%TEMP%`) si no se pidió nada distinto.
+
 `nimbo\motor.py` los arranca y para. **El orden importa**: arranca detector
 → supervisor → directo; para directo → supervisor → detector. La parada va
 por **stdin** (`"parar\n"`), nunca por `kill`: los tres hijos se abren con
@@ -297,6 +307,7 @@ plantilla mínima; nadie la lee en runtime.
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
 | `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra a papelera lo ya unido | Nimbo |
 | `datos\miniaturas\*.jpg`, `estado\miniaturas.json` | Nimbo (`miniaturas.py`, cache regenerable — borra con `os.remove`, no papelera) | Nimbo |
+| `M3U8_STREAMS` / `M3U8_GRABACIONES` / `M3U8_ESCENARIO` (variables de entorno, no archivos) | `motor.py`, según "Carpetas y discos" en `config.json` (SPEC 12) | `detectar_m3u8.py`, `grabador_directo.py` |
 
 `grabar.txt` es la **única fuente de verdad** de a quién se graba, y Nimbo
 es su único escritor — de ahí que no haga falta locking. El usuario lo

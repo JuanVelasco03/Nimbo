@@ -24,8 +24,10 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import licencia as licencia_mod
+import rutas as rutas_mod
 
 # -- raiz del proyecto -----------------------------------------------------
 
@@ -80,6 +82,12 @@ DEFECTOS = {
     "bandeja": True,
     "ver_navegador": False,
     "dias_segmentos": 1,
+    # Carpetas y discos (SPEC 12): vacio/"auto" = exactamente lo de hoy
+    # (<raiz>\datos\...). Ver Ajustes.resolver_rutas().
+    "dir_segmentos": "",
+    "dir_grabaciones": "",
+    "union_modo": "auto",    # "auto" | "carpeta" | "apagado"
+    "dir_union": "",         # solo se usa con union_modo == "carpeta"
 }
 
 # Los archivos que tienen que estar en nucleo\scripts\ para poder arrancar
@@ -270,6 +278,12 @@ class Ajustes:
         self.datos = dict(DEFECTOS)
         if datos:
             self.datos.update({k: v for k, v in datos.items() if k in DEFECTOS})
+        # Rutas resueltas (ver resolver_rutas); vacio es "no se resolvio
+        # todavia", y streams/grabaciones caen solas a <raiz>\datos\... --
+        # el comportamiento de siempre para quien construye Ajustes() sin
+        # pasar por cargar().
+        self._rutas = {}
+        self.rutas_caidas = []
 
     # -- acceso ------------------------------------------------------------
 
@@ -321,11 +335,19 @@ class Ajustes:
 
     @property
     def streams(self) -> str:
-        return os.path.join(self.dir_datos, "streams")
+        return self._rutas.get("segmentos") or os.path.join(self.dir_datos, "streams")
 
     @property
     def grabaciones(self) -> str:
-        return os.path.join(self.dir_datos, "grabaciones")
+        return self._rutas.get("grabaciones") or os.path.join(self.dir_datos, "grabaciones")
+
+    @property
+    def dir_union(self) -> str:
+        """Carpeta efectiva del escenario de union, ya resuelta por
+        resolver_rutas(); "" significa que esta apagado (union_modo ==
+        "apagado"). motor.py le pasa esto a M3U8_ESCENARIO tal cual,
+        traduciendo "" a la palabra "apagado" que entiende el nucleo."""
+        return self._rutas.get("union", "")
 
     @property
     def dir_miniaturas(self) -> str:
@@ -384,6 +406,60 @@ class Ajustes:
             cambio = True
         return cambio
 
+    def resolver_rutas(self) -> None:
+        """Recalcula las rutas efectivas de segmentos, grabaciones y
+        escenario de union probando cada carpeta configurada con
+        rutas.validar(). Se llama una sola vez al cargar() y de nuevo al
+        arrancar el motor (un disco puede haberse conectado desde que abrio
+        Nimbo) -- nunca desde una property: streams/grabaciones se piden en
+        cada tick de _bucle_estado y una escritura de prueba por tick seria
+        absurdo.
+
+        Vacio o "auto" en dir_segmentos/dir_grabaciones es "lo de hoy":
+        <raiz>\\datos\\streams y <raiz>\\datos\\grabaciones. Si la ruta
+        configurada no pasa rutas.validar() (unidad desconectada, sin
+        permiso), cae al defecto y queda anotada en self.rutas_caidas --
+        config.json NO se reescribe: el usuario pidio ese disco, y cuando
+        vuelva tiene que volver sola."""
+        caidas = []
+
+        def _resolver(clave, defecto):
+            pedida = (self.datos.get(clave) or "").strip()
+            if not pedida or pedida.lower() == "auto":
+                return defecto
+            r = rutas_mod.validar(pedida)
+            if r["ok"]:
+                return pedida
+            caidas.append({"clave": clave, "pedida": pedida, "usada": defecto,
+                            "motivo": r["motivo"]})
+            return defecto
+
+        segmentos = _resolver("dir_segmentos", os.path.join(self.dir_datos, "streams"))
+        grabaciones = _resolver("dir_grabaciones", os.path.join(self.dir_datos, "grabaciones"))
+
+        modo = (self.datos.get("union_modo") or "auto").strip().lower()
+        defecto_union = tempfile.gettempdir()
+        if modo == "apagado":
+            union = ""
+        elif modo == "carpeta":
+            pedida = (self.datos.get("dir_union") or "").strip()
+            if not pedida:
+                union = defecto_union
+            else:
+                r = rutas_mod.validar(pedida)
+                if r["ok"]:
+                    union = pedida
+                else:
+                    caidas.append({"clave": "dir_union", "pedida": pedida,
+                                    "usada": defecto_union, "motivo": r["motivo"]})
+                    union = defecto_union
+        else:   # "auto" o cualquier valor no reconocido
+            union = defecto_union
+
+        self._rutas = {"segmentos": segmentos, "grabaciones": grabaciones,
+                        "union": union}
+        self.rutas_caidas = caidas
+
 
 def cargar(completar: bool = True) -> Ajustes:
     """Lee config.json; si no existe o esta incompleto, lo deja listo."""
@@ -407,6 +483,7 @@ def cargar(completar: bool = True) -> Ajustes:
             a.guardar()
         except OSError:
             pass                      # sin disco se sigue con lo de memoria
+    a.resolver_rutas()
     for d in (DIR_ESTADO, DIR_REGISTRO, DIR_DATOS, a.dir_miniaturas, os.path.join(DIR_NUCLEO, "scripts")):
         try:
             os.makedirs(d, exist_ok=True)

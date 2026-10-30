@@ -85,7 +85,9 @@ if AQUI not in sys.path:
 import mouflon  # noqa: E402
 
 BASE = os.environ.get("M3U8_BASE") or _raiz_proyecto()
-STREAMS_DIR = os.path.join(BASE, "streams")
+# Nimbo pasa esta segun lo configurado en "Carpetas y discos" (config.json);
+# M3U8_BASE sigue siendo el defecto cuando no viene (SPEC 12).
+STREAMS_DIR = os.environ.get("M3U8_STREAMS") or os.path.join(BASE, "streams")
 SELECCION = os.environ.get("M3U8_GRABAR") or _al_lado("grabar.txt")
 ACTIVOS = os.environ.get("M3U8_ACTIVOS") or os.path.join(
     os.path.dirname(SELECCION), "activos.txt")
@@ -1396,6 +1398,10 @@ def _correr_una_vez(nombre: str, minutos: float, salida_base, vpn: bool) -> int:
         # sin unir nada, "listo" mentía). Absoluta, los dos coinciden.
         salida_base = os.path.abspath(salida_base)
         os.environ["M3U8_BASE"] = salida_base   # para que el --unir hijo coincida
+        # M3U8_STREAMS (si la produccion la fijo en este mismo entorno) es mas
+        # especifica que M3U8_BASE y ganaria en el --unir hijo, pisando
+        # --salida con la carpeta de produccion (SPEC 12): fuera.
+        os.environ.pop("M3U8_STREAMS", None)
         BASE = salida_base
         STREAMS_DIR = os.path.join(BASE, "streams")
     os.makedirs(STREAMS_DIR, exist_ok=True)

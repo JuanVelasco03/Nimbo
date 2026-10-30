@@ -424,6 +424,16 @@ class Motor:
         self._rendido.clear()
         with self._lock:
             self._parando = False
+            # Un disco puede haberse conectado o desconectado desde que
+            # abrio Nimbo: resolver de nuevo antes de lanzar el primer
+            # hijo, no solo al cargar config.json.
+            self.ajustes.resolver_rutas()
+            for caida in self.ajustes.rutas_caidas:
+                self._aviso(
+                    "%s: la carpeta pedida (%s) no se pudo usar (%s) -- "
+                    "se usa %s" % (caida["clave"], caida["pedida"],
+                                   caida["motivo"], caida["usada"]),
+                    nivel="error")
             algo = False
             if not self.detector_vivo():
                 self._arrancar_detector()
@@ -464,6 +474,13 @@ class Motor:
         # su propio M3U8_BASE aislado antes de llamar a Motor y no hay que
         # pisarlo con la carpeta real.
         env.setdefault("M3U8_BASE", a.dir_datos)
+        # Estas tres las decide la configuracion de Nimbo ("Carpetas y
+        # discos", SPEC 12) -- asignacion directa, no setdefault: a
+        # diferencia de M3U8_BASE, no hay ninguna prueba que las fije por
+        # afuera.
+        env["M3U8_STREAMS"] = a.streams
+        env["M3U8_GRABACIONES"] = a.grabaciones
+        env["M3U8_ESCENARIO"] = a.dir_union or "apagado"
         # Antes de arrancar, el puerto del tunel tiene que estar libre: si
         # queda un wireproxy de la corrida anterior, este detector lo
         # adopta en vez de abrir el suyo y nos quedamos con un tunel que
@@ -516,6 +533,13 @@ class Motor:
         # redirige streams\ a datos\ sin tocar M3U8_GRABAR (grabar.txt
         # sigue junto al script, resuelto solo por grabador_directo.py).
         env.setdefault("M3U8_BASE", a.dir_datos)
+        # Mismas tres que el detector (ver _arrancar_detector): el --unir
+        # que grabador_directo.py lanza como subproceso hereda este mismo
+        # entorno (env=dict(os.environ) en _unir_en_fondo), asi que
+        # fijarlas aca alcanza para las dos puntas.
+        env["M3U8_STREAMS"] = a.streams
+        env["M3U8_GRABACIONES"] = a.grabaciones
+        env["M3U8_ESCENARIO"] = a.dir_union or "apagado"
         if ajustes_mod.compilado():
             # ...pero compilado no hay "junto al script": grabador_directo
             # esta adentro del binario y su __file__ nocional cae en

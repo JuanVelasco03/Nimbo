@@ -3,6 +3,7 @@
 
 import { obtener, enviar } from "./api.js";
 import { mostrarError } from "./registro.js";
+import { formatoGB } from "./formato.js";
 
 const DIRECTIVAS = [
   { clave: "calidad", etiqueta: "Calidad", tipo: "texto", defecto: "max",
@@ -129,4 +130,142 @@ export async function cargarPreferencias() {
       });
     }
   } catch (err) { mostrarError(err); }
+}
+
+// -- Carpetas y discos (config.json: dir_segmentos, dir_grabaciones, ------
+// union_modo, dir_union -- ver SPEC 12) ------------------------------------
+
+function _escAtributo(s) {
+  return String(s || "").replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+}
+
+const CAMPOS_CARPETA = [
+  { clave: "dir_segmentos", etiquetaEspacio: "segmentos",
+    etiqueta: "Segmentos (streams)",
+    ayuda: "Donde se escriben los segmentos crudos mientras se graba. "
+         + "Vacio = la carpeta de siempre (<raiz>\\datos\\streams)." },
+  { clave: "dir_grabaciones", etiquetaEspacio: "grabaciones",
+    etiqueta: "Grabaciones (.mp4 final)",
+    ayuda: "Donde queda el .mp4 ya unido. "
+         + "Vacio = la carpeta de siempre (<raiz>\\datos\\grabaciones)." },
+];
+
+async function _guardarRuta(clave, valor, mensajeEl) {
+  try {
+    await enviar("/api/rutas", { clave, valor });
+    mensajeEl.textContent = "";
+    mensajeEl.classList.add("oculta");
+    return true;
+  } catch (err) {
+    mensajeEl.textContent = (err && err.message) || "no se pudo guardar";
+    mensajeEl.classList.remove("oculta");
+    return false;
+  }
+}
+
+async function _examinar(clave, campo, mensajeEl) {
+  try {
+    const r = await enviar("/api/rutas/examinar", { clave });
+    if (r.ruta) {
+      campo.value = r.ruta;
+      await _guardarRuta(clave, r.ruta, mensajeEl);
+    }
+  } catch (err) { mostrarError(err); }
+}
+
+export async function cargarRutas() {
+  try {
+    const datos = await obtener("/api/rutas");
+    const cont = document.getElementById("rutas");
+    cont.innerHTML = "";
+
+    for (const c of CAMPOS_CARPETA) {
+      const div = document.createElement("div");
+      div.className = "directiva";
+      div.innerHTML = `<label>${c.etiqueta}</label><div class="ayuda">${c.ayuda}</div>
+        <div class="fila-check">
+          <input type="text" id="ruta-${c.clave}" style="flex:1"
+            value="${_escAtributo(datos[c.clave])}" placeholder="auto">
+          <button type="button" class="boton-chico" id="examinar-${c.clave}">Examinar</button>
+        </div>
+        <div class="ayuda" id="espacio-${c.clave}"></div>
+        <div class="alerta oculta" id="mensaje-${c.clave}"></div>
+        <div class="alerta oculta" id="motivo-${c.clave}"></div>`;
+      cont.appendChild(div);
+
+      const campo = div.querySelector("#ruta-" + c.clave);
+      const mensaje = div.querySelector("#mensaje-" + c.clave);
+      campo.addEventListener("blur", () => _guardarRuta(c.clave, campo.value, mensaje));
+      div.querySelector("#examinar-" + c.clave)
+        .addEventListener("click", () => _examinar(c.clave, campo, mensaje));
+    }
+
+    // Union: select de modo + carpeta, visible solo con modo "carpeta".
+    const divUnion = document.createElement("div");
+    divUnion.className = "directiva";
+    divUnion.innerHTML = `<label>Union (escenario temporal)</label>
+      <div class="ayuda">Donde se copian los segmentos antes de unirlos, si eso
+        ayuda. "Automatico" es el %TEMP% del sistema, igual que siempre.</div>
+      <select id="ruta-union_modo">
+        <option value="auto">Automatico (como hoy)</option>
+        <option value="carpeta">Carpeta elegida</option>
+        <option value="apagado">Apagado (leer siempre del disco de origen)</option>
+      </select>
+      <div class="fila-check mt-2 oculta" id="fila-dir_union">
+        <input type="text" id="ruta-dir_union" style="flex:1"
+          value="${_escAtributo(datos.dir_union)}" placeholder="carpeta del escenario">
+        <button type="button" class="boton-chico" id="examinar-dir_union">Examinar</button>
+      </div>
+      <div class="ayuda" id="espacio-dir_union"></div>
+      <div class="alerta oculta" id="mensaje-dir_union"></div>`;
+    cont.appendChild(divUnion);
+
+    const selectModo = divUnion.querySelector("#ruta-union_modo");
+    const filaUnion = divUnion.querySelector("#fila-dir_union");
+    const campoUnion = divUnion.querySelector("#ruta-dir_union");
+    const mensajeUnion = divUnion.querySelector("#mensaje-dir_union");
+    selectModo.value = datos.union_modo || "auto";
+    filaUnion.classList.toggle("oculta", selectModo.value !== "carpeta");
+
+    selectModo.addEventListener("change", async () => {
+      filaUnion.classList.toggle("oculta", selectModo.value !== "carpeta");
+      await _guardarRuta("union_modo", selectModo.value, mensajeUnion);
+    });
+    campoUnion.addEventListener("blur", () => _guardarRuta("dir_union", campoUnion.value, mensajeUnion));
+    divUnion.querySelector("#examinar-dir_union")
+      .addEventListener("click", () => _examinar("dir_union", campoUnion, mensajeUnion));
+  } catch (err) { mostrarError(err); }
+}
+
+// Sigue al estado del motor (deshabilita segmentos/grabaciones mientras
+// corre, SPEC 12) y al canal "disco" (espacio libre). No construye nada:
+// si cargarRutas todavia no armo la seccion, no hay nada que actualizar.
+export function renderRutas(estado) {
+  const cont = document.getElementById("rutas");
+  if (!cont || cont.childElementCount === 0) return;
+
+  const m = estado.motor || {};
+  const bloqueado = !!(m.detector_vivo || m.supervisor_vivo || m.directo_vivo || m.parando);
+  for (const c of CAMPOS_CARPETA) {
+    const campo = document.getElementById("ruta-" + c.clave);
+    const boton = document.getElementById("examinar-" + c.clave);
+    const motivo = document.getElementById("motivo-" + c.clave);
+    if (!campo) continue;
+    if (campo !== document.activeElement) campo.disabled = bloqueado;
+    if (boton) boton.disabled = bloqueado;
+    if (motivo) {
+      motivo.textContent = bloqueado
+        ? "el motor esta corriendo -- parala para cambiar esta carpeta" : "";
+      motivo.classList.toggle("oculta", !bloqueado);
+    }
+  }
+
+  const disco = estado.disco || [];
+  for (const c of CAMPOS_CARPETA) {
+    const el = document.getElementById("espacio-" + c.clave);
+    if (!el) continue;
+    const fila = disco.find(d => d.etiqueta === c.etiquetaEspacio);
+    el.textContent = fila
+      ? "espacio libre: " + formatoGB(fila.libres) + " de " + formatoGB(fila.total) : "";
+  }
 }
