@@ -336,7 +336,7 @@ plantilla mínima; nadie la lee en runtime.
 | `estado\licencia.json` | Nimbo (`licencia.py`) — incluye `visto_max`, la marca de agua del reloj que solo crece (`specs\07-licencia_inviolable.md`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
-| `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra a papelera lo ya unido | Nimbo |
+| `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra lo ya unido con `shutil.rmtree`, **no** a la papelera (SPEC 14) | Nimbo |
 | `datos\miniaturas\*.jpg`, `estado\miniaturas.json` | Nimbo (`miniaturas.py`, cache regenerable — borra con `os.remove`, no papelera) | Nimbo |
 | `M3U8_STREAMS` / `M3U8_GRABACIONES` / `M3U8_ESCENARIO` (variables de entorno, no archivos) | `motor.py`, según "Carpetas y discos" en `config.json` (SPEC 12) | `detectar_m3u8.py`, `grabador_directo.py` |
 
@@ -575,11 +575,13 @@ distintos: el detector solo sabe "¿esta sesión ya está unida?"
 (`unido.json`), y solo Nimbo sabe "¿alguien la está mirando en vivo ahora
 mismo?" (`vivo.sesiones_vivas()`, que a su vez lee el dict fusionado de
 `estado\detector.json` + `estado\directo.json`, no el disco). Una sesión
-se borra a la papelera solo si pasa las tres
+se borra solo si pasa las tres
 compuertas: tiene `unido.json` (si no, es una grabación pendiente que
 `recuperar_pendientes()` todavía puede rehacer, y es la única copia que
 existe); no aparece en `vivo.sesiones_vivas()`; y pasaron tanto
-`dias_segmentos` (config, defecto 1 día) desde que se unió como
+`dias_segmentos` (config, defecto `1`; en esta instalación `0.25` = 6 h,
+y acepta decimales porque `_borrables()` hace `dias * 86400` y nadie
+coerciona el tipo) desde que se unió como
 `GRACIA_MTIME_S` (5 min) desde el último archivo escrito en la carpeta —
 ese margen por encima del `OLVIDAR_STREAM` del detector es la defensa
 extra contra un escritor todavía activo. Corre sola cada 10 minutos desde
@@ -588,6 +590,21 @@ extra contra un escritor todavía activo. Corre sola cada 10 minutos desde
 Grabaciones). No importa `detectar_m3u8.py` por el mismo motivo que
 `vivo.py` no lo hace (ver "Los dos puentes" más abajo): porta sus propias
 copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
+
+Ese borrado **no va a la papelera** (`_borrar_definitivo`, SPEC 14), a
+diferencia de todo lo que toca `grabaciones.py`. Un `.mp4` son horas de
+grabación y la papelera es la red contra un click de más; un segmento ya
+unido es regenerable mientras ese `.mp4` exista, y ya pasó las tres
+compuertas. Con los segmentos en el SSD de sistema (`dir_segmentos` en
+`C:`, SPEC 12) la papelera era además el problema entero: el espacio no
+volvía hasta que Windows purgara por tope, así que `barrer()` informaba
+bytes liberados que seguían ocupados. **`unido.json` se borra al final**,
+y solo si todo el resto salió bien: si se fuera primero y algo quedara
+trabado, esa carpeta no volvería a aparecer en `sesiones_unidas()` y
+quedaría huérfana ocupando disco para siempre — mientras el marcador siga
+ahí, la sesión queda en `errores` y el barrido siguiente la reintenta. El
+botón "Limpiar segmentos" pide confirmación justo porque es el único lugar
+donde una persona dispara esto a mano.
 
 ### Detalles con historia
 

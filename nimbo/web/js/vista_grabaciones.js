@@ -41,6 +41,19 @@ function claveOrdenar(g) {
   return -g.inicio_mtime;   // "recientes" (por defecto)
 }
 
+// "nombre" no puede salir de claveOrdenar: esa devuelve un numero y el
+// orden alfabetico necesita localeCompare (acentos, mayusculas/minusculas).
+// A igual modelo, de mas reciente a mas vieja -- agrupa las grabaciones de
+// una misma modelo sin perder el orden util adentro del grupo.
+function comparar(a, b) {
+  if (orden === "nombre") {
+    const n = a.modelo.localeCompare(b.modelo, "es", { sensitivity: "base" });
+    if (n !== 0) return n;
+    return b.inicio_mtime - a.inicio_mtime;
+  }
+  return claveOrdenar(a) - claveOrdenar(b);
+}
+
 function grupoVisible(g) {
   if (!filtro) return true;
   return g.modelo.toLowerCase().includes(filtro);
@@ -177,7 +190,7 @@ const tarjetas = new Map();   // clave -> elemento
 export function renderGrabaciones() {
   const cont = document.getElementById("grabaciones-lista");
   if (!ultimoListado) return;
-  const grupos = ultimoListado.grupos.filter(grupoVisible).slice().sort((a, b) => claveOrdenar(a) - claveOrdenar(b));
+  const grupos = ultimoListado.grupos.filter(grupoVisible).slice().sort(comparar);
 
   const r = ultimoListado.resumen;
   document.getElementById("grabaciones-resumen").textContent =
@@ -252,7 +265,20 @@ async function cargarStreams() {
   renderStreams();
 }
 
+// A diferencia del barrido automatico de _bucle_cosecha, que corre solo cada
+// 10 min, este es el unico lugar donde una persona dispara el borrado -- y
+// desde SPEC 14 es definitivo, no va a la Papelera. De ahi la confirmacion,
+// al reves de la de eliminarConConfirmacion() mas abajo.
 async function limpiarStreams() {
+  const s = ultimoStreams;
+  if (!s) return;
+  const cuantas = s.borrables + " sesion" + (s.borrables === 1 ? "" : "es")
+    + " ya unida" + (s.borrables === 1 ? "" : "s");
+  if (!confirm("Borrar los segmentos de " + cuantas
+      + " (" + formatoGB(s.bytes_borrables) + ")?"
+      + "\n\nBorrado definitivo: no va a la Papelera."
+      + " Los .mp4 ya armados no se tocan."))
+    return;
   const boton = document.getElementById("streams-limpiar");
   boton.disabled = true;
   try {

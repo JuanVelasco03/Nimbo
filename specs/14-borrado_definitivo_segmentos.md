@@ -1,6 +1,6 @@
 # SPEC 14 — Borrado definitivo de segmentos ya unidos
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 12 (rutas de disco), SPEC 13 (freno de la unión)
 > **Fecha:** 2026-11-01
 > **Objetivo:** Que la cosecha de `datos\streams\` borre los segmentos ya unidos con `shutil.rmtree` en vez de mandarlos a la Papelera, para que mover los segmentos al SSD de sistema libere espacio de verdad.
@@ -72,6 +72,10 @@ papelera.
 - `dias_segmentos: 0.25` (6 h) en el `config.json` de esta instalación.
 - Docstring de `cosecha_streams.py` y las dos menciones de la papelera en
   `CLAUDE.md`, puestas al día.
+- Opción `por nombre` en el desplegable de orden de la pestaña Grabaciones
+  (`#grabaciones-orden`). Agregada a pedido durante la implementación; no tiene
+  relación con el borrado de segmentos, pero toca el mismo archivo y entra acá
+  en vez de abrir un spec de una línea.
 
 **Fuera de scope (para otro spec):**
 
@@ -152,6 +156,12 @@ autorización para borrar:
    "borra a papelera lo ya unido") y el párrafo de `cosecha_streams.py` en
    "Reproductor en vivo", donde además hay que cambiar el valor del defecto
    mencionado de `dias_segmentos`.
+6. **Orden por nombre en Grabaciones** — `<option value="nombre">por nombre</option>`
+   en `#grabaciones-orden` (`nimbo\web\index.html`) y función `comparar(a, b)`
+   nueva en `vista_grabaciones.js`, que `renderGrabaciones()` usa en vez del
+   `(a, b) => claveOrdenar(a) - claveOrdenar(b)` inline. `claveOrdenar` no sirve
+   para esto: devuelve un número y el orden alfabético necesita `localeCompare`.
+   A igual modelo, de más reciente a más vieja.
 
 ## Criterios de aceptación
 
@@ -174,6 +184,12 @@ autorización para borrar:
       el botón deshabilitado.
 - [ ] Eliminar un `.mp4` desde la pestaña Grabaciones sigue yendo a la
       Papelera y sigue mostrando su confirmación de hoy.
+- [ ] El desplegable de orden de Grabaciones tiene una quinta opción,
+      `por nombre`, y al elegirla las tarjetas quedan alfabéticas por modelo,
+      sin distinguir mayúsculas ni acentos, y las de una misma modelo de más
+      reciente a más vieja.
+- [ ] Las otras cuatro opciones de orden siguen dando el mismo resultado que
+      antes del cambio.
 
 ## Decisiones
 
@@ -212,6 +228,18 @@ autorización para borrar:
 - **No:** mover los segmentos que ya existen al cambiar `dir_segmentos`.
   `datos\streams\` está en 0 bytes, así que es trabajo sin objeto. Igual que en
   SPEC 12, lo viejo se queda donde está.
+- **Sí:** el orden por nombre como una opción más del desplegable que ya
+  existe. Es una línea de HTML y una función de seis, y no agrega ningún
+  control nuevo a una barra que ya tiene cinco.
+- **No:** un desplegable aparte con la lista de modelos, ni secciones con
+  encabezado por modelo en la grilla. Las dos se consideraron y las dos son
+  bastante más trabajo: la segunda rompe la reconciliación por clave de
+  `renderGrabaciones()` (hoy un solo contenedor plano con un `Map`
+  clave→elemento, y las secciones obligarían a manejar contenedores por
+  modelo sin recrear los `<img>`). Si alguna vez hay tantas modelos que el
+  orden alfabético no alcanza, va en su propio spec.
+- **No:** sacar el buscador de texto (`#grabaciones-buscar`). Filtra, no
+  ordena: son dos cosas distintas y conviven sin pisarse.
 
 ## Riesgos
 

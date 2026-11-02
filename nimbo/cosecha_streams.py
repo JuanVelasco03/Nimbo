@@ -1,7 +1,15 @@
-"""Borra a la Papelera las sesiones ya unidas de datos\\streams\\, para que
+"""Borra sin vuelta atras las sesiones ya unidas de datos\\streams\\, para que
 las copias crudas en fMP4 no se acumulen para siempre al lado del .mp4 ya
 armado en datos\\grabaciones\\ (ver CLAUDE.md, seccion "Reproductor en
 vivo").
+
+A diferencia de grabaciones.py, esto NO va a la Papelera (SPEC 14). Un .mp4
+son horas de grabacion y la papelera es la red para un click de mas; un
+segmento ya unido es regenerable mientras exista ese .mp4, y ya paso las tres
+compuertas de _borrables(). Y con los segmentos en el SSD de sistema la
+papelera era el problema entero: el espacio no volvia hasta que Windows
+purgara por tope, asi que barrer() informaba bytes liberados que seguian
+ocupados. Mismo criterio que miniaturas.py con su cache.
 
 No importa detectar_m3u8.py por el mismo motivo que vivo.py no lo importa:
 su "else: addons = [Detector()]" construiria un Detector entero VIVO con
@@ -12,9 +20,9 @@ agregando el tamano en bytes y el mtime del marcador y del ultimo archivo.
 """
 
 import os
+import shutil
 import time
 
-import grabaciones as grabaciones_mod
 import vivo as vivo_mod
 
 MARCADOR = "unido.json"              # detectar_m3u8.py:194
@@ -117,18 +125,43 @@ def resumen(dir_streams, estado_detector, dias):
     }
 
 
+def _borrar_definitivo(ruta):
+    """Borra entera una carpeta de sesion, sin pasar por la Papelera.
+
+    MARCADOR se borra AL FINAL, y solo si todo el resto salio bien. Si se
+    fuera primero y algo quedara trabado, esa carpeta ya no volveria a
+    aparecer en sesiones_unidas() y quedaria huerfana ocupando disco para
+    siempre; mientras el marcador siga ahi, el barrido siguiente la reintenta.
+
+    Levanta OSError si algo no se pudo borrar -- shutil.rmtree y os.remove ya
+    lo hacen solos, no hace falta envolverlos. barrer() lo atrapa y anota la
+    sesion en "errores"."""
+    with os.scandir(ruta) as it:
+        entradas = list(it)
+    for entrada in entradas:
+        if entrada.name == MARCADOR:
+            continue
+        if entrada.is_dir():
+            shutil.rmtree(entrada.path)
+        else:
+            os.remove(entrada.path)
+    os.remove(os.path.join(ruta, MARCADOR))
+    os.rmdir(ruta)
+
+
 def barrer(dir_streams, estado_detector, dias):
     """-> {"borradas": [sesion...], "bytes": N, "errores": {sesion: motivo}}
-    Borra una carpeta por vez: _a_la_papelera levanta OSError ante un fallo
-    parcial sin decir cual de la lista fallo, asi que un lote arrastraria
-    todo al estado de error por una sola carpeta trabada."""
+    Borra una carpeta por vez para que una trabada (un archivo todavia
+    abierto, el indexador de Windows) no impida borrar las demas: la que
+    falla queda en "errores" con el motivo, conserva su unido.json y se
+    reintenta en el barrido siguiente."""
     sesiones = sesiones_unidas(dir_streams)
     vivas = {s["sesion"] for s in vivo_mod.sesiones_vivas(dir_streams, estado_detector)}
     borradas, errores = [], {}
     total_bytes = 0
     for s in _borrables(sesiones, vivas, dias):
         try:
-            grabaciones_mod._a_la_papelera([s["ruta"]])
+            _borrar_definitivo(s["ruta"])
             borradas.append(s["sesion"])
             total_bytes += s["bytes"]
         except OSError as e:
