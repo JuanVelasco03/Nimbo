@@ -7,7 +7,7 @@ import { obtener, enviar, conectarWS } from "./api.js";
 import { agregarLog, mostrarError } from "./registro.js";
 import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
-import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
+import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, iniciarLogin, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
 import { renderDirectivas, cargarPreferencias, renderRutas, cargarRutas } from "./vista_ajustes.js";
 import { revisarPreflight } from "./preflight.js";
 import { renderPrevia, iniciarPrevia, abrirPreviaEnVivo } from "./vista_previa.js";
@@ -84,7 +84,7 @@ const DEPENDE = [
   [renderMotor, ["motor"]],
   [renderBarraGlobal, ["disco", "detector"]],
   [renderTarjetas, ["lista", "detector", "supervisor"]],
-  [renderSesion, ["sesion", "siguiendo"]],
+  [renderSesion, ["sesion", "siguiendo", "login"]],
   [renderFavoritas, ["lista", "favoritas", "siguiendo", "detector", "supervisor"]],
   [renderPrevia, ["detector", "lista", "favoritas", "siguiendo", "supervisor"]],
   [(estado) => renderDirectivas(estado.lista.directivas || {}), ["lista"]],
@@ -283,6 +283,20 @@ function iniciarAcciones() {
     refrescar();
   });
 
+  document.getElementById("boton-login").addEventListener("click", async () => {
+    try {
+      await enviar("/api/sesion/login/iniciar", {});
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  document.getElementById("boton-cancelar-login").addEventListener("click", async () => {
+    try {
+      await enviar("/api/sesion/login/cancelar", {});
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
   document.getElementById("boton-guardar-sesion").addEventListener("click", async () => {
     const campo = document.getElementById("campo-curl");
     if (!campo.value.trim()) return;
@@ -342,6 +356,7 @@ iniciarNavegacion();
 iniciarAcciones();
 iniciarBuscador();
 iniciarPanelSesion();
+iniciarLogin();
 iniciarFiltros();
 iniciarPrevia();
 iniciarRegistro();

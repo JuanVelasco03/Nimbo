@@ -65,9 +65,19 @@ ESTADO_DIRECTO = os.path.join(DIR_ESTADO, "directo.json")
 # hijo -- la llamada a "favoritas en linea" de la cuenta real es un
 # pedido HTTP comun, no hace falta un proceso aparte para eso.
 ESTADO_SIGUIENDO = os.path.join(DIR_ESTADO, "siguiendo.json")
+# SPEC 15: permiso (lo escribe Nimbo) y entrega (la escribe puente.py) de
+# una captura de sesion por el proxy -- los dos de vida corta, nunca mas
+# de 5 minutos (ver login_sitio.py).
+ESTADO_CAPTURA_SESION = os.path.join(DIR_ESTADO, "captura_sesion.json")
+ESTADO_SESION_CAPTURADA = os.path.join(DIR_ESTADO, "sesion_capturada.json")
 
 PUENTE = os.path.join(_AQUI, "puente.py")
 LANZADOR_SUPERVISOR = os.path.join(_AQUI, "lanzador_supervisor.py")
+# Perfil propio de la ventana de login (SPEC 15): queda logueado entre
+# reinicios, asi que renovar la sesion vencida es apretar el mismo boton
+# con la ventana ya autenticada. No es nucleo\\perfil (exclusivo del
+# supervisor) ni perfil_ventana\\ (la ventana de la app).
+DIR_PERFIL_LOGIN = os.path.join(RAIZ, "perfil_login")
 
 # -- valores por defecto ---------------------------------------------------
 
@@ -251,6 +261,21 @@ def localizar_python() -> str:
     return sys.executable
 
 
+def localizar_edge() -> str:
+    """msedge.exe, o "" si no esta instalado.
+
+    Movido de app.py:_localizar_edge (SPEC 15) para que login_sitio.py lo
+    use igual que la ventana principal, sin duplicar la busqueda."""
+    hallado = shutil.which("msedge")
+    if hallado:
+        return hallado
+    for ruta in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                 r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"):
+        if os.path.isfile(ruta):
+            return ruta
+    return ""
+
+
 def _sin_consola(python: str) -> str:
     """pythonw.exe al lado de python.exe: igual pero sin ventana negra.
 
@@ -316,6 +341,18 @@ class Ajustes:
     @property
     def estado_siguiendo(self) -> str:
         return ESTADO_SIGUIENDO
+
+    @property
+    def estado_captura_sesion(self) -> str:
+        return ESTADO_CAPTURA_SESION
+
+    @property
+    def estado_sesion_capturada(self) -> str:
+        return ESTADO_SESION_CAPTURADA
+
+    @property
+    def dir_perfil_login(self) -> str:
+        return DIR_PERFIL_LOGIN
 
     @property
     def scripts(self) -> str:

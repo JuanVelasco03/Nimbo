@@ -1,6 +1,6 @@
 # SPEC 15 — Iniciar sesión sin pegar nada
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 09 (sesion.json cifrado con DPAPI), SPEC 01 (deltas de estado por WebSocket)
 > **Fecha:** 2026-11-02
 > **Objetivo:** Que iniciar sesión en la cuenta real sea un botón que abre una ventana de Edge ruteada por el proxy de grabación, donde el usuario se loguea a mano, y que Nimbo capture del propio tráfico las cookies y headers que hoy hay que pegar desde las herramientas de desarrollador.
@@ -64,6 +64,11 @@ por casa.
   botón "Cancelar".
 - Al terminar bien: se cierra la ventana de Edge, se borra
   `sesion_capturada.json` y se dispara `actualizar_siguiendo` solo.
+- Al cerrar la ventana de Edge (termine bien, se cancele o venza el tope),
+  se purga del perfil lo que es historial de navegacion (paginas
+  visitadas, autocompletado de sitios, cache de favicons, restauracion de
+  pestañas) -- nunca las cookies ni el local storage, que es lo que deja
+  la sesion lista para la proxima vez sin loguearse de nuevo.
 - El pegado de cURL/PowerShell de hoy se conserva, detrás de un "otra forma".
 - `ajustes.localizar_edge()`, sacado de `app.py:_localizar_edge` para que lo
   puedan usar los dos.
@@ -175,8 +180,16 @@ Python empaquetado de `mitmdump`.
    `--proxy-server`, `--user-data-dir=perfil_login`, `--no-first-run`,
    `--new-window` y la URL de favoritas; `recoger(ajustes) -> dict|None` lee
    y borra `sesion_capturada.json`, descifrando con DPAPI. `limpiar(ajustes)`
-   borra los dos archivos. Prueba a mano:
-   `python -c "import login_sitio..."` abre la ventana y sale por el proxy.
+   borra los dos archivos. Una quinta, `cerrar_ventana(ajustes, proc)`:
+   `terminate()` + `proc.wait()` con tope (los archivos del perfil quedan
+   bloqueados mientras Edge sigue vivo) y recién ahí borra del perfil los
+   archivos de historial/autocompletado/cache conocidos
+   (`History`, `Visited Links`, `Top Sites`, `Favicons`,
+   `Network Action Predictor`, `Shortcuts`, la carpeta `Sessions`, con sus
+   `-journal`) -- nunca `Cookies`, `Network\Cookies` ni `Local Storage`.
+   Prueba a mano: `python -c "import login_sitio..."` abre la ventana y
+   sale por el proxy; cerrarla a mano y confirmar que `History` no
+   reaparece pero el perfil sigue logueado en el proximo intento.
 7. **`nimbo\servidor.py`** — corutina `_tarea_login(app)`: precondiciones →
    `pedir` → `abrir_ventana` → bucle de `await asyncio.sleep(1)` hasta
    `vence`, con `recoger` + `sesion.verificar` en cada vuelta → en el primer
@@ -235,6 +248,11 @@ Python empaquetado de `mitmdump`.
 - [ ] Sin Edge instalado, el botón está deshabilitado y lo dice.
 - [ ] "Cancelar" cierra la ventana, deja la fase en `cancelada` y no toca
       `sesion.json`.
+- [ ] Después de cerrar la ventana (login exitoso, cancelado o vencido),
+      `perfil_login\Default\History` no existe (ni `Visited Links`, ni
+      `Top Sites`), pero las cookies de sesión sobreviven: abrir la
+      ventana de nuevo (otro click en "Iniciar sesión") muestra el sitio
+      ya logueado, sin pedir credenciales.
 - [ ] Pasados 5 minutos sin login, la fase queda `vencida` y el botón vuelve
       a estar disponible.
 - [ ] Dos POST seguidos a `/api/sesion/login/iniciar` no abren dos ventanas.
@@ -310,6 +328,15 @@ Python empaquetado de `mitmdump`.
   justamente lo que no se quiere. Si llega, va en su propio spec.
 - **No:** usar la sesión en `sitio.py`. Sigue anónimo: así la búsqueda y los
   estados funcionan con el motor parado y sin cuenta, como hoy.
+- **Sí:** purgar el historial de navegación del perfil al cerrar la
+  ventana (verificado con el usuario tras la primera implementación: le
+  preocupaba que quedara registro de qué modelo se visitó). Se mantiene el
+  perfil persistente -- la alternativa (`--inprivate`, sin perfil) pierde
+  la ventaja de "renovar es un click" que ya se decidió más arriba -- pero
+  se le borra lo que es historial/autocompletado/cache después de cada
+  cierre. Nunca se toca `Cookies` ni `Local Storage`: son lo que mantiene
+  la sesión lista para la próxima vez, y borrarlos deshacía la ventaja de
+  tener un perfil propio.
 
 ## Riesgos
 

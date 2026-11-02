@@ -42,11 +42,14 @@ igual: todo esto corre en hilos aparte y con sus propios try/except; el
 peor caso es que Nimbo se quede ciego un rato, nunca que se pierda nada.
 """
 
+import base64
+import ctypes
 import json
 import os
 import sys
 import threading
 import time
+from ctypes import wintypes
 
 # -- donde escribir ---------------------------------------------------------
 # Nimbo le pasa la carpeta de estado por variable de entorno al lanzar
@@ -59,6 +62,53 @@ DIR_ESTADO = os.environ.get("NIMBO_ESTADO") or os.path.join(
     os.path.dirname(_AQUI), "estado")
 ARCHIVO_ESTADO = os.path.join(DIR_ESTADO, "detector.json")
 ARCHIVO_EVENTOS = os.path.join(DIR_ESTADO, "eventos_detector.jsonl")
+# SPEC 15 -- login sin pegar: permiso (lo escribe Nimbo) y entrega (la
+# escribe este addon) de una captura de sesion sacada del propio trafico.
+ARCHIVO_CAPTURA = os.path.join(DIR_ESTADO, "captura_sesion.json")
+ARCHIVO_CAPTURADA = os.path.join(DIR_ESTADO, "sesion_capturada.json")
+
+
+# -- DPAPI (duplicado de nimbo\\sesion.py, SPEC 09): este addon corre en el
+# Python empaquetado de mitmdump, no en el 3.12 de Nimbo (ver docstring del
+# modulo) -- mismo criterio que mp4.py/vivo.py portando constantes del
+# detector. sesion_capturada.json es el mismo secreto que sesion.json
+# (cookies + Authorization de la cuenta real) aunque viva solo segundos, asi
+# que va cifrado igual. Solo se necesita la mitad de "cifrar": quien
+# descifra es sesion.py, del lado de Nimbo.
+PREFIJO_DPAPI = "NIMBO-DPAPI-1\n"
+_CRYPTPROTECT_UI_FORBIDDEN = 0x1    # sin consola ni ventana propia: un
+                                    # dialogo del sistema aca cuelga mitmdump
+
+
+class _DATA_BLOB(ctypes.Structure):
+    _fields_ = [("cbData", wintypes.DWORD),
+                ("pbData", ctypes.POINTER(ctypes.c_char))]
+
+
+def _proteger(datos: bytes) -> bytes:
+    """Cifra con CryptProtectData (DPAPI). Si no esta disponible -- no es
+    Windows, o la llamada falla -- devuelve 'datos' tal cual: sesion.py del
+    lado de Nimbo ya sabe leer un sesion_capturada.json sin el prefijo
+    NIMBO-DPAPI-1 como texto plano (mismo fallback que sesion.py con
+    sesion.json)."""
+    if sys.platform != "win32":
+        return datos
+    try:
+        buf_entrada = ctypes.create_string_buffer(datos, len(datos))
+        entrada = _DATA_BLOB(len(datos), ctypes.cast(
+            buf_entrada, ctypes.POINTER(ctypes.c_char)))
+        salida = _DATA_BLOB()
+        ok = ctypes.windll.crypt32.CryptProtectData(
+            ctypes.byref(entrada), None, None, None, None,
+            _CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(salida))
+        if not ok:
+            raise OSError("CryptProtectData fallo")
+        try:
+            return ctypes.string_at(salida.pbData, salida.cbData)
+        finally:
+            ctypes.windll.kernel32.LocalFree(salida.pbData)
+    except OSError:
+        return datos
 
 # Igual que INTERVALO_VIGILANTE del detector (su linea ~198): no tiene
 # sentido mirar mas seguido que lo que el mismo cambia.
@@ -83,6 +133,14 @@ def _escribir_atomico(ruta, texto):
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(texto)
     os.replace(tmp, ruta)          # nunca se lee un archivo a medio escribir
+
+
+def _leer_json(ruta):
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 class _Eventos:
@@ -140,6 +198,17 @@ class Puente:
         self._hilo_estado = None
         self._hilo_stdin = None
         self._manejador = None
+        # -- SPEC 15: captura de sesion desde el trafico real --------------
+        # Refrescados por _bucle_estado, nunca por request() -- un flow
+        # que matchea host/path/Authorization puede no pasar NUNCA por
+        # doppiocdn (es trafico raro, solo mientras hay una captura
+        # pedida), pero si pasara a cada rato "_capturado_en_esta_vuelta"
+        # tiene que poder resetearse igual cuando el usuario pide una
+        # vuelta nueva -- de ahi que el reset viva en el hilo que YA
+        # corre cada INTERVALO_ESTADO sin importar el trafico, no en el
+        # propio hook (ver _refrescar_permiso()).
+        self._permiso = None          # ultimo captura_sesion.json leido
+        self._capturado_en_esta_vuelta = False
 
     # -- ciclo de vida de mitmproxy ------------------------------------
 
@@ -184,6 +253,7 @@ class Puente:
         from mitmproxy import ctx
         det = None
         while not self._parar.is_set():
+            self._refrescar_permiso()
             if det is None:
                 det = ctx.master.addons.get("detector")
                 if det is None:
@@ -267,6 +337,64 @@ class Puente:
         # archivo es el latido que le dice a Nimbo que el puente sigue
         # vivo. Es un JSON chico cada 2s; no cuesta nada medible.
         _escribir_atomico(ARCHIVO_ESTADO, json.dumps(datos, ensure_ascii=False))
+
+    # -- SPEC 15: captura de sesion desde el trafico real ------------------
+
+    def _refrescar_permiso(self):
+        """Llamado por _bucle_estado cada INTERVALO_ESTADO -- nunca desde
+        request(), que no tiene por que hacer su propio open() ni su
+        propio chequeo de tiempo. Resetea "ya capturado" cuando cambia la
+        vuelta (otra 'pedida', de otro click en "Iniciar sesion"): sin
+        esto, una vez capturada una sesion el flag quedaria pegado para
+        siempre y el proximo login nunca volveria a escribir nada."""
+        nuevo = _leer_json(ARCHIVO_CAPTURA)
+        vieja_pedida = (self._permiso or {}).get("pedida")
+        nueva_pedida = (nuevo or {}).get("pedida")
+        if nueva_pedida != vieja_pedida:
+            self._capturado_en_esta_vuelta = False
+        self._permiso = nuevo
+
+    def _escribir_captura(self, candidato: dict) -> None:
+        texto = json.dumps(candidato, ensure_ascii=False).encode("utf-8")
+        blob = _proteger(texto)
+        if blob is texto:
+            contenido = texto
+        else:
+            contenido = (PREFIJO_DPAPI + base64.b64encode(blob).decode("ascii")).encode("utf-8")
+        os.makedirs(DIR_ESTADO, exist_ok=True)
+        tmp = ARCHIVO_CAPTURADA + ".part"
+        with open(tmp, "wb") as f:
+            f.write(contenido)
+        os.replace(tmp, ARCHIVO_CAPTURADA)
+
+    def request(self, flow):
+        """Hook de mitmproxy: mientras Nimbo pidio una captura (y no vencio
+        todavia), guarda cookies+headers del primer pedido autenticado a
+        /api/front/ de stripchat.com. Nunca loguea cookies, headers ni la
+        URL con query -- ver "Dato sensible" en nimbo\\sesion.py."""
+        if self._capturado_en_esta_vuelta:
+            return
+        host = flow.request.pretty_host or ""
+        if not host.endswith("stripchat.com"):
+            return
+        ruta = flow.request.path.split("?", 1)[0]
+        if not ruta.startswith("/api/front/"):
+            return
+        autorizacion = flow.request.headers.get("Authorization")
+        if not autorizacion:
+            return
+        permiso = self._permiso
+        if not permiso or permiso.get("vence", 0) <= time.time():
+            return
+
+        self._escribir_captura({
+            "capturado": time.time(),
+            "url": flow.request.pretty_url,
+            "cookies": dict(flow.request.cookies),
+            "headers": dict(flow.request.headers),
+        })
+        self._capturado_en_esta_vuelta = True
+        _log("[LOGIN] sesion capturada")
 
     # -- parada ordenada por stdin -----------------------------------------
 

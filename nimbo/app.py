@@ -26,7 +26,6 @@ if "--modo" in sys.argv:
 
 import json                      # noqa: E402
 import os                        # noqa: E402
-import shutil                    # noqa: E402
 import socket                    # noqa: E402
 import subprocess                # noqa: E402
 import threading                 # noqa: E402
@@ -85,23 +84,12 @@ def _borrar_instancia():
 
 # -- la ventana ----------------------------------------------------------
 
-def _localizar_edge():
-    hallado = shutil.which("msedge")
-    if hallado:
-        return hallado
-    for ruta in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                 r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"):
-        if os.path.isfile(ruta):
-            return ruta
-    return ""
-
-
 def abrir_ventana(url: str):
     """Ventana sin barra de direcciones, perfil propio (no es el de
     nucleo\\perfil: ese es exclusivo del supervisor). Si no hay Edge, cae al
     navegador por defecto -- se ve con pestana y barra, pero funciona
     igual."""
-    edge = _localizar_edge()
+    edge = ajustes_mod.localizar_edge()
     os.makedirs(DIR_PERFIL_VENTANA, exist_ok=True)
     if edge:
         subprocess.Popen(

@@ -665,7 +665,7 @@ def auditar(salida, compilado=False):
     no el mecanismo: lo que filtra los .py es copiar_codigo.
     """
     malos = []
-    for base, _, archivos in os.walk(salida):
+    for base, dirs, archivos in os.walk(salida):
         # runtime\ es codigo ajeno (CPython, mitmproxy, Chromium): trae
         # .conf de ejemplo y no es donde se filtrarian nuestras claves.
         if os.path.join(salida, "runtime") in base:
@@ -674,6 +674,12 @@ def auditar(salida, compilado=False):
             bajo = n.lower()
             if bajo in _PROHIBIDOS or bajo.endswith(".conf"):
                 malos.append(os.path.relpath(os.path.join(base, n), salida))
+        # perfil_login\ (SPEC 15) es una carpeta entera, no un nombre de
+        # archivo suelto como el resto de _PROHIBIDOS: una sesion real
+        # viajando a otra maquina es el mismo tipo de fuga que un .conf
+        # de WireGuard colado.
+        if "perfil_login" in [d.lower() for d in dirs]:
+            malos.append(os.path.relpath(os.path.join(base, "perfil_login"), salida))
     if malos:
         raise SystemExit("ABORTADO: el paquete incluye archivos que no se "
                          "distribuyen:\n  " + "\n  ".join(malos))

@@ -231,18 +231,15 @@ class Sesion:
 
     # -- la llamada autenticada de verdad -------------------------------
 
-    def favoritas_en_linea(self, limite: int = LIMITE_DEFECTO) -> dict:
-        """-> {"autenticado": bool, "error": str|None, "modelos": [...]}.
-        Nunca lanza -- misma filosofia que sitio.buscar(): si el sitio
-        cambio algo o la sesion caduco, se degrada a un resultado vacio
-        con el motivo adentro, no a una excepcion."""
-        datos = self.leer()
-        if not datos:
-            return {"autenticado": False, "error": "sin sesion guardada", "modelos": []}
-
+    def _pedir_pagina(self, datos: dict, offset: int, limite: int) -> dict:
+        """Un pedido HTTP comun a /api/front/models/favorites con 'datos'
+        (la forma que arma guardar_desde_curl/guardar_desde_captura).
+        -> {"autenticado", "error", "modelos", "total"}. Nunca lanza --
+        misma filosofia que sitio.buscar()."""
         sitio = _origen(datos.get("url_origen") or "")
         if not sitio:
-            return {"autenticado": False, "error": "sesion guardada sin URL valida", "modelos": []}
+            return {"autenticado": False, "error": "sesion guardada sin URL valida",
+                     "modelos": [], "total": None}
 
         cabeceras = dict(datos.get("headers") or {})
         _quitar_header(cabeceras, "Cookie")      # las cookies van aparte, no duplicar
@@ -258,6 +255,62 @@ class Sesion:
             cabeceras["Cookie"] = "; ".join(
                 "%s=%s" % (k, v) for k, v in cookies.items())
 
+        qs = urlencode({"offset": offset, "limit": limite,
+                        "sortBy": "bestMatch", "mlfv": "false"})
+        url = sitio + "/api/front/models/favorites?" + qs
+        req = urllib.request.Request(url, headers=cabeceras)
+        try:
+            with urllib.request.urlopen(req, timeout=TOPE_PAGINA_S) as r:
+                cuerpo = json.loads(r.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return {"autenticado": False, "error": "sesion caducada",
+                         "modelos": [], "total": None}
+            return {"autenticado": True, "error": "http_%d" % e.code,
+                     "modelos": [], "total": None}
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
+            return {"autenticado": True, "error": "error:%s" % type(e).__name__,
+                     "modelos": [], "total": None}
+
+        total = cuerpo.get("totalCount") if isinstance(cuerpo, dict) else None
+        return {"autenticado": True, "error": None,
+                 "modelos": _normalizar_modelos(cuerpo), "total": total}
+
+    def verificar(self, datos: dict) -> dict:
+        """-> {"autenticado": bool, "error": str|None}. Un solo pedido,
+        de una pagina (limite=1): la unica confirmacion real de que un
+        candidato capturado (o pegado) sirve de verdad. Nunca lanza, y
+        nunca guarda nada -- guardar es responsabilidad de quien llama,
+        solo despues de ver 'autenticado': True aca."""
+        r = self._pedir_pagina(datos, 0, 1)
+        return {"autenticado": r["autenticado"], "error": r["error"]}
+
+    def guardar_desde_captura(self, capturado: dict) -> dict:
+        """Mismo dict que guardar_desde_curl, armado a partir de lo que
+        puente.py capturo del trafico real (SPEC 15) en vez de lo pegado a
+        mano: 'cookies', 'headers' y 'url' ya vienen en la forma que
+        necesita _pedir_pagina."""
+        expira = _exp_de_jwt(_buscar_header(capturado["headers"], "Authorization") or "")
+        guardado = {
+            "cookies": capturado["cookies"],
+            "headers": capturado["headers"],
+            "url_origen": capturado["url"],
+            "guardado": time.time(),
+            "expira": expira,
+        }
+        with self._lock:
+            self._escribir(guardado)
+        return self.estado()
+
+    def favoritas_en_linea(self, limite: int = LIMITE_DEFECTO) -> dict:
+        """-> {"autenticado": bool, "error": str|None, "modelos": [...]}.
+        Nunca lanza -- misma filosofia que sitio.buscar(): si el sitio
+        cambio algo o la sesion caduco, se degrada a un resultado vacio
+        con el motivo adentro, no a una excepcion."""
+        datos = self.leer()
+        if not datos:
+            return {"autenticado": False, "error": "sin sesion guardada", "modelos": []}
+
         todos, vistos = [], set()
         offset = 0
         limite_tiempo = time.monotonic() + TOPE_TOTAL_S
@@ -265,31 +318,22 @@ class Sesion:
             if time.monotonic() >= limite_tiempo:
                 return {"autenticado": True, "error": "corte por tiempo",
                         "modelos": todos}
-            qs = urlencode({"offset": offset, "limit": limite,
-                            "sortBy": "bestMatch", "mlfv": "false"})
-            url = sitio + "/api/front/models/favorites?" + qs
-            req = urllib.request.Request(url, headers=cabeceras)
-            try:
-                with urllib.request.urlopen(req, timeout=TOPE_PAGINA_S) as r:
-                    cuerpo = json.loads(r.read().decode("utf-8", errors="replace"))
-            except urllib.error.HTTPError as e:
-                if e.code in (401, 403):
-                    return {"autenticado": False, "error": "sesion caducada", "modelos": todos}
-                return {"autenticado": True, "error": "http_%d" % e.code, "modelos": todos}
-            except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
-                return {"autenticado": True, "error": "error:%s" % type(e).__name__, "modelos": todos}
+            r = self._pedir_pagina(datos, offset, limite)
+            if not r["autenticado"]:
+                return {"autenticado": False, "error": r["error"], "modelos": todos}
+            if r["error"]:
+                return {"autenticado": True, "error": r["error"], "modelos": todos}
 
-            pagina = _normalizar_modelos(cuerpo)
-            for m in pagina:
+            for m in r["modelos"]:
                 clave = m["username"].lower()
                 if clave in vistos:
                     continue
                 vistos.add(clave)
                 todos.append(m)
 
-            total = cuerpo.get("totalCount") if isinstance(cuerpo, dict) else None
+            total = r["total"]
             offset += limite
-            if not pagina or total is None or offset >= total:
+            if not r["modelos"] or total is None or offset >= total:
                 break
 
         return {"autenticado": True, "error": None, "modelos": todos}

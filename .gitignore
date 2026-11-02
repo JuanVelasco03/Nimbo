@@ -3,6 +3,7 @@ __pycache__/
 
 # datos locales de Nimbo: nada de esto debe versionarse ni compartirse
 perfil_ventana/
+perfil_login/
 estado/
 config.json
 instancia.json

@@ -333,6 +333,8 @@ plantilla mínima; nadie la lee en runtime.
 | `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
 | `estado\eventos_directo.jsonl` | `lanzador_directo.py` | Nimbo (`registro.py`) |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
+| `estado\captura_sesion.json` (SPEC 15, vida corta) | Nimbo (`login_sitio.py`) | `puente.py` |
+| `estado\sesion_capturada.json` (SPEC 15, vida corta, cifrado DPAPI) | `puente.py` | Nimbo (`login_sitio.py`), que lo borra al leerlo |
 | `estado\licencia.json` | Nimbo (`licencia.py`) — incluye `visto_max`, la marca de agua del reloj que solo crece (`specs\07-licencia_inviolable.md`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
 | `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
@@ -608,15 +610,30 @@ donde una persona dispara esto a mano.
 
 ### Detalles con historia
 
-- **`sesion.py`** (cuenta real, pestaña "Siguiendo") no abre ningún
-  navegador: el usuario pega un "Copiar como cURL". Automatizar el login
-  con Playwright **no funciona** — Cloudflare detecta CDP y corta. No
-  reintentar ese camino. `sesion.json` equivale a la contraseña mientras la
-  sesión viva: nunca loguear su contenido. Desde SPEC 09 vive cifrado con
-  DPAPI (`CryptProtectData`/`CryptUnprotectData` por `ctypes`, atado al
-  usuario + la máquina, encabezado `NIMBO-DPAPI-1`); `leer()` migra en
-  silencio un archivo en claro de antes del cambio y, si DPAPI no está
-  disponible, degrada a texto plano con un aviso en vez de fallar.
+- **`sesion.py`** (cuenta real, pestaña "Siguiendo"). Automatizar el login
+  con Playwright **no funciona** — Cloudflare detecta CDP (el protocolo de
+  automatización, no la ventana) y corta con "Actividad automática
+  detectada", probado tres veces. No reintentar ese camino. Desde SPEC 15
+  el botón "Iniciar sesión" abre una ventana de Edge normal
+  (`subprocess.Popen`, sin `--remote-debugging-port` y sin nadie del otro
+  lado) ruteada por el proxy de grabación: el usuario se loguea a mano y
+  `nimbo\puente.py` captura del propio tráfico las cookies + el
+  `Authorization` del primer pedido autenticado a `/api/front/`
+  (`login_sitio.py` orquesta precondiciones → pedido → ventana → recoger,
+  y `servidor.py:_tarea_login` verifica el candidato con un pedido real
+  antes de guardarlo — nunca a ciegas). El pegado manual de "Copiar como
+  cURL/PowerShell" sigue andando igual, detrás de "otra forma": es la
+  única salida si el sniffing falla (Cloudflare, un CDN nuevo, Edge sin
+  CA). `sesion.json` equivale a la contraseña mientras la sesión viva:
+  nunca loguear su contenido (ni el de `estado\sesion_capturada.json`,
+  que es el mismo secreto de paso). Desde SPEC 09 vive cifrado con DPAPI
+  (`CryptProtectData`/`CryptUnprotectData` por `ctypes`, atado al usuario
+  + la máquina, encabezado `NIMBO-DPAPI-1`); `leer()` migra en silencio un
+  archivo en claro de antes del cambio y, si DPAPI no está disponible,
+  degrada a texto plano con un aviso en vez de fallar. `puente.py`
+  duplica `_proteger()` (solo cifrar, no descifrar) por el mismo motivo
+  que duplica constantes de `mp4.py`/`vivo.py`: corre en el Python
+  empaquetado de mitmdump, no en el 3.12 de Nimbo.
 - **`sitio.py`** sale por el proxy de grabación (para que las `@vpn=` usen
   el túnel) y **nunca** toca `nucleo\perfil\`, que es exclusivo del
   supervisor. `estado()` reusa el `RE_ESTADO` del propio `supervisor.py` en

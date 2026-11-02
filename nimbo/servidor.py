@@ -65,6 +65,7 @@ import grabaciones as grabaciones_mod
 import inicio_automatico as inicio_mod
 import licencia as licencia_mod
 import lista as lista_mod
+import login_sitio as login_sitio_mod
 import miniaturas as miniaturas_mod
 import motor as motor_mod
 import preflight as preflight_mod
@@ -88,6 +89,7 @@ TOPE_TAREA = {
     "sesion_actualizar": 90.0,     # sesion.TOPE_TOTAL_S = 45.0, con margen
     "motor_arrancar": 300.0,
     "motor_parar": 1500.0,         # motor.ESPERA_CIERRE_DIRECTO = 1260s, con margen
+    "sesion_login": 330.0,         # login_sitio.SEGUNDOS_CAPTURA = 300.0, con margen
 }
 TOPE_TAREA_DEFECTO = 120.0
 
@@ -208,6 +210,11 @@ class Aplicacion:
                                      # mitad de camino
         self.ultima_limpieza = None  # ultimo barrido de datos\streams\,
                                       # lo pisa _bucle_cosecha
+        # SPEC 15: fase de la captura de sesion en curso (o no). Mutado
+        # solo por _tarea_login; _bucle_estado lo publica como cualquier
+        # otra seccion, comparando contra el delta anterior.
+        self.login = {"fase": "inactiva", "vence": None, "motivo": None}
+        self._login_cancelar = asyncio.Event()
 
     def fijar_loop(self, loop):
         self.loop = loop
@@ -289,6 +296,7 @@ class Aplicacion:
             "siguiendo": _leer_json(self.ajustes.estado_siguiendo),
             "vivo": vivo_mod.sesiones_vivas(self.ajustes.streams, detector),
             "limpieza": self.ultima_limpieza,
+            "login": self.login,
         }
 
 
@@ -483,6 +491,9 @@ async def _bucle_estado(app):
             if app.ultima_limpieza != app.estado.get("limpieza"):
                 delta["limpieza"] = app.ultima_limpieza
 
+            if app.login != app.estado.get("login"):
+                delta["login"] = app.login
+
             if detector_cambio or "lista" in delta:
                 detector_para_vivo = detector if detector_cambio else app.estado.get("detector")
                 vivo = await app.a_hilo(
@@ -588,6 +599,60 @@ async def _bucle_licencia(app):
                                     "forma ordenada",
                            "nivel": "error"})
             _lanzar_tarea(app, "motor_parar", app.motor.parar)
+
+
+def _fijar_login(app, fase, vence, motivo):
+    app.login = {"fase": fase, "vence": vence, "motivo": motivo}
+
+
+async def _tarea_login(app):
+    """SPEC 15: abre la ventana de Edge por el proxy, pide la captura a
+    puente.py y espera hasta que venza a que entregue un candidato que
+    verifique de verdad -- recien ahi lo guarda en sesion.json y cierra
+    todo. Nunca bloquea el pool mas de un pedido por vez (cada paso
+    sincrono pasa por a_hilo, uno a la vez)."""
+    pre = await app.a_hilo(login_sitio_mod.precondiciones, app.ajustes, app.motor)
+    if not pre["ok"]:
+        _fijar_login(app, "imposible", None, pre["motivo"])
+        return
+
+    permiso = await app.a_hilo(login_sitio_mod.pedir, app.ajustes,
+                                login_sitio_mod.SEGUNDOS_CAPTURA)
+    proc = await app.a_hilo(login_sitio_mod.abrir_ventana, app.ajustes)
+    _fijar_login(app, "esperando", permiso["vence"], None)
+
+    cancelar = app._login_cancelar
+    cancelar.clear()
+    try:
+        while time.time() < permiso["vence"]:
+            if cancelar.is_set():
+                _fijar_login(app, "cancelada", None, None)
+                return
+            await asyncio.sleep(1.0)
+
+            candidato = await app.a_hilo(login_sitio_mod.recoger, app.ajustes)
+            if candidato is None:
+                continue
+
+            _fijar_login(app, "verificando", permiso["vence"], None)
+            r = await app.a_hilo(app.sesion.verificar, {
+                "headers": candidato["headers"], "cookies": candidato["cookies"],
+                "url_origen": candidato["url"]})
+            if r["autenticado"]:
+                await app.a_hilo(app.sesion.guardar_desde_captura, candidato)
+                _fijar_login(app, "ok", None, None)
+                _lanzar_tarea(app, "sesion_actualizar", app.sesion.actualizar_siguiendo,
+                              app.ajustes.estado_siguiendo)
+                return
+            # Candidato que no verifico (401, red): se descarta y el
+            # bucle sigue esperando -- no pisa una sesion.json que andaba.
+            _fijar_login(app, "esperando", permiso["vence"], None)
+
+        _fijar_login(app, "vencida", None,
+                     "pasaron 5 minutos sin completar el login -- proba de nuevo")
+    finally:
+        await app.a_hilo(login_sitio_mod.cerrar_ventana, app.ajustes, proc)
+        await app.a_hilo(login_sitio_mod.limpiar, app.ajustes)
 
 
 def _nombres_sin_estado(estado):
@@ -1025,20 +1090,48 @@ def _lanzar_tarea(app, nombre, fn, *args):
     tenga su propio tope efectivo (sesion.py ya lo tiene con
     TOPE_TOTAL_S, chequeado entre paginas); esto solo evita que un cuelgue
     deje la bandera trabada para siempre."""
-    existente = app._tareas.get(nombre)
-    if existente is not None:
-        tarea, inicio = existente
-        if not tarea.done():
-            tope = TOPE_TAREA.get(nombre, TOPE_TAREA_DEFECTO)
-            if time.monotonic() - inicio < tope:
-                return False
-            app.motor._aviso(
-                "la tarea %s lleva mas de %ds -- la doy por perdida y "
-                "lanzo otra" % (nombre, int(tope)), nivel="error")
-            app._tareas.pop(nombre, None)
+    if _tarea_duplicada(app, nombre):
+        return False
     nueva = app.loop.create_task(app.a_hilo(fn, *args))
+    _registrar_tarea(app, nombre, nueva)
+    return True
+
+
+def _tarea_duplicada(app, nombre) -> bool:
+    """-> True si ya hay una tarea 'nombre' corriendo (y no vencio el
+    watchdog de TOPE_TAREA). Extraido de _lanzar_tarea para que
+    _lanzar_tarea_coro (SPEC 15, _tarea_login es una corutina propia, no
+    un fn sincrono para el pool) comparta el mismo dedupe."""
+    existente = app._tareas.get(nombre)
+    if existente is None:
+        return False
+    tarea, inicio = existente
+    if tarea.done():
+        return False
+    tope = TOPE_TAREA.get(nombre, TOPE_TAREA_DEFECTO)
+    if time.monotonic() - inicio < tope:
+        return True
+    app.motor._aviso(
+        "la tarea %s lleva mas de %ds -- la doy por perdida y "
+        "lanzo otra" % (nombre, int(tope)), nivel="error")
+    app._tareas.pop(nombre, None)
+    return False
+
+
+def _registrar_tarea(app, nombre, nueva):
     nueva.add_done_callback(lambda t: _tarea_terminada(app, nombre, t))
     app._tareas[nombre] = (nueva, time.monotonic())
+
+
+def _lanzar_tarea_coro(app, nombre, coro):
+    """Mismo dedupe y mismo watchdog que _lanzar_tarea, pero para una
+    corutina ya async (_tarea_login): no pasa por app.a_hilo porque no es
+    una funcion sincrona para el pool, usa await asyncio.sleep() propio."""
+    if _tarea_duplicada(app, nombre):
+        coro.close()
+        return False
+    nueva = app.loop.create_task(coro)
+    _registrar_tarea(app, nombre, nueva)
     return True
 
 
@@ -1070,6 +1163,12 @@ async def _despachar_post(app, ruta, cuerpo):
 
         await app.a_hilo(_quitar_siguiendo)
         return 200, {"sesion": await app.a_hilo(app.sesion.estado)}
+    elif ruta == "/api/sesion/login/iniciar":
+        lanzada = _lanzar_tarea_coro(app, "sesion_login", _tarea_login(app))
+        return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
+    elif ruta == "/api/sesion/login/cancelar":
+        app._login_cancelar.set()
+        return 200, {"ok": True}
     elif ruta == "/api/sesion/actualizar":
         # 202 y no 409 aunque se descarte: un 409 hace que api.js:enviar()
         # tire excepcion y el footer lo muestre como "error: ...", que es la

@@ -581,7 +581,55 @@ export function renderFavoritas(estado) {
 
 // -- estado de la sesion de la cuenta real ----------------------------------
 
+// SPEC 15: ultimo estado.login conocido, para que el intervalo de abajo
+// pueda repintar la cuenta regresiva sin esperar al proximo delta del
+// WebSocket (el backend solo vuelve a publicar "login" cuando cambia de
+// fase, no una vez por segundo).
+let ultimoLogin = { fase: "inactiva", vence: null, motivo: null };
+
+function pintarLogin() {
+  const boton = document.getElementById("boton-login");
+  const estadoEl = document.getElementById("estado-login");
+  const cancelar = document.getElementById("boton-cancelar-login");
+  const login = ultimoLogin;
+  const enCurso = login.fase === "esperando" || login.fase === "verificando";
+
+  cancelar.classList.toggle("oculta", !enCurso);
+  boton.disabled = enCurso || login.fase === "imposible";
+  boton.title = login.fase === "imposible" ? (login.motivo || "") : "";
+
+  if (login.fase === "inactiva") {
+    estadoEl.classList.add("oculta");
+    return;
+  }
+  estadoEl.classList.remove("oculta");
+  if (login.fase === "verificando") {
+    estadoEl.textContent = "verificando...";
+  } else if (login.fase === "esperando") {
+    const restante = login.vence ? Math.max(0, Math.ceil(login.vence - Date.now() / 1000)) : 0;
+    estadoEl.textContent = "esperando el login en la ventana... (" + restante + "s)";
+  } else if (login.fase === "imposible") {
+    estadoEl.textContent = login.motivo || "no disponible";
+  } else if (login.fase === "vencida") {
+    estadoEl.textContent = login.motivo || "vencio -- proba de nuevo";
+  } else if (login.fase === "cancelada") {
+    estadoEl.textContent = "cancelado";
+  } else if (login.fase === "ok") {
+    estadoEl.textContent = "listo";
+  }
+}
+
+// El intervalo (no el delta del WS) es lo que mueve la cuenta regresiva
+// segundo a segundo -- mismo criterio que vista_registro.js, que tambien
+// usa setInterval normal en vez del worker de temporizador_previa.
+export function iniciarLogin() {
+  setInterval(pintarLogin, 1000);
+}
+
 export function renderSesion(estado) {
+  if (estado.login) ultimoLogin = estado.login;
+  pintarLogin();
+
   const punto = document.getElementById("punto-sesion");
   const resumen = document.getElementById("resumen-sesion");
   const sesion = estado.sesion || { activa: false, guardado: null };
