@@ -68,9 +68,11 @@ import lista as lista_mod
 import login_sitio as login_sitio_mod
 import miniaturas as miniaturas_mod
 import motor as motor_mod
+import notificaciones as notificaciones_mod
 import preflight as preflight_mod
 import registro as registro_mod
 import rutas as rutas_mod
+import salud as salud_mod
 import sesion as sesion_mod
 import sitio as sitio_mod
 import vivo as vivo_mod
@@ -215,6 +217,16 @@ class Aplicacion:
         # otra seccion, comparando contra el delta anterior.
         self.login = {"fase": "inactiva", "vence": None, "motivo": None}
         self._login_cancelar = asyncio.Event()
+        # SPEC 16: construido ya con sink=None para que _bucle_estado (que
+        # arranca antes de que app.py elija bandeja o no, ver
+        # Servidor._iniciar) siempre tenga a quien llamarle; app.py solo le
+        # asigna icono.notify si corresponde. Degradacion silenciosa, mismo
+        # criterio que la bandeja entera.
+        self.notificador = notificaciones_mod.Notificador()
+        # Latch de la parada por disco critico: se suelta con histeresis,
+        # cuando el espacio vuelve por encima del umbral de AVISO (no del
+        # critico) -- ver _bucle_estado.
+        self.parada_por_disco = False
 
     def fijar_loop(self, loop):
         self.loop = loop
@@ -285,7 +297,7 @@ class Aplicacion:
         detector = estado_captura_mod.fusionar(
             _leer_json(self.ajustes.estado_detector),
             _leer_json(self.ajustes.estado_directo))
-        return {
+        base = {
             "motor": self.motor.estado(),
             "lista": self.lista.leer(),
             "favoritas": self.favoritas.leer(),
@@ -298,6 +310,8 @@ class Aplicacion:
             "limpieza": self.ultima_limpieza,
             "login": self.login,
         }
+        base["salud"] = salud_mod.evaluar(base, self.ajustes)
+        return base
 
 
 # ===========================================================================
@@ -508,6 +522,34 @@ async def _bucle_estado(app):
                 if disco != app.estado.get("disco"):
                     delta["disco"] = disco
 
+            # SPEC 16: vista fresca (estado publicado + lo que cambio este
+            # tick) para que salud.evaluar() no dependa de que justo HOY
+            # haya cambiado disco/motor/detector -- cualquiera de los tres
+            # puede venir solo en delta todavia sin aplicar a app.estado.
+            vista = {**app.estado, **delta}
+            salud = await app.a_hilo(salud_mod.evaluar, vista, app.ajustes)
+            if salud != app.estado.get("salud"):
+                delta["salud"] = salud
+
+            criticos = any(a["clave"].startswith("disco_critico:") for a in salud)
+            if criticos:
+                if app.ajustes["parar_por_disco"] and not app.parada_por_disco:
+                    m = app.motor.estado()
+                    if m["detector_vivo"] or m["supervisor_vivo"] or m["directo_vivo"]:
+                        app.parada_por_disco = True
+                        _lanzar_tarea(app, "motor_parar", app.motor.parar)
+            elif not any(a["tipo"] == "disco" for a in salud):
+                # histeresis: el latch se suelta solo cuando NINGUN disco
+                # sigue ni siquiera en el umbral de aviso, no apenas cruza
+                # de vuelta el critico -- si no, un espacio que oscila
+                # justo alrededor del umbral para y arranca sin parar.
+                app.parada_por_disco = False
+
+            # sincronizar() puede terminar llamando a icono.notify() (una
+            # API de Windows): pasa por a_hilo como cualquier otro
+            # sincrono de verdad, nunca directo desde la corutina.
+            await app.a_hilo(app.notificador.sincronizar, salud, app.ajustes)
+
             if delta:
                 app.estado.update(delta)
                 app._publicar("estado", "estado", delta)
@@ -592,6 +634,10 @@ async def _bucle_licencia(app):
                 app._publicar("motor", "aviso",
                               {"texto": "licencia: " + r["aviso"],
                                "nivel": "aviso"})
+                await app.a_hilo(app.notificador.sincronizar, [{
+                    "clave": "licencia", "tipo": "licencia", "nivel": "aviso",
+                    "titulo": "Licencia por vencer", "texto": r["aviso"],
+                }], app.ajustes)
             if r["ok"]:
                 continue
             app._publicar("motor", "aviso",
@@ -1004,7 +1050,15 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             "arrancar_al_abrir": a["arrancar_al_abrir"], "bandeja": a["bandeja"],
             "ver_navegador": a["ver_navegador"],
             "inicio_automatico": await app.a_hilo(inicio_mod.esta_activo),
+            "parar_por_disco": a["parar_por_disco"],
+            "notif_rendido": a["notif_rendido"], "notif_degradado": a["notif_degradado"],
+            "notif_disco": a["notif_disco"], "notif_licencia": a["notif_licencia"],
         })
+    elif ruta == "/api/salud":
+        # Fuera del delta de 1 Hz a proposito (ver salud.canario): KEY_MAP
+        # es estatica por build, se calcula una vez y se cachea.
+        canario = await app.a_hilo(salud_mod.canario, app.ajustes.scripts)
+        await _json(writer, 200, {"canario": canario})
     elif ruta == "/api/rutas":
         await _json(writer, 200, await app.a_hilo(_rutas_snapshot, app.ajustes))
     elif ruta == "/api/vivo/sesiones":
@@ -1198,7 +1252,9 @@ async def _despachar_post(app, ruta, cuerpo):
         return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     elif ruta == "/api/preferencias":
         clave = cuerpo["clave"]
-        if clave not in ("arrancar_al_abrir", "bandeja", "ver_navegador"):
+        if clave not in ("arrancar_al_abrir", "bandeja", "ver_navegador",
+                          "parar_por_disco", "notif_rendido", "notif_degradado",
+                          "notif_disco", "notif_licencia"):
             return 400, {"error": "preferencia desconocida"}
         app.ajustes[clave] = bool(cuerpo["valor"])
         await app.a_hilo(app.ajustes.guardar)

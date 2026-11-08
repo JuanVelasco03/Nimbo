@@ -98,6 +98,15 @@ DEFECTOS = {
     "dir_grabaciones": "",
     "union_modo": "auto",    # "auto" | "carpeta" | "apagado"
     "dir_union": "",         # solo se usa con union_modo == "carpeta"
+    # Avisos de salud (SPEC 16): umbrales por unidad, evaluados sobre lo
+    # que ya publica _disco(). Ver nimbo\salud.py.
+    "min_libre_gb": 20,            # umbral de aviso, por unidad
+    "min_libre_critico_gb": 8,     # umbral critico: ademas para el motor
+    "parar_por_disco": True,       # si el critico para el motor o solo avisa
+    "notif_rendido": True,
+    "notif_degradado": True,
+    "notif_disco": True,
+    "notif_licencia": True,
 }
 
 # Los archivos que tienen que estar en nucleo\scripts\ para poder arrancar

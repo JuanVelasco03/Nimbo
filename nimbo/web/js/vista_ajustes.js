@@ -129,33 +129,96 @@ const PREFERENCIAS = [
     ayuda: "Agrega un acceso directo chico a la carpeta de Inicio de Windows." },
 ];
 
+// Una fila de conmutador identica en preferencias/notificaciones/
+// parar-por-disco: mismo markup, mismo acuse de guardado -- solo cambia
+// a donde se agrega y que hace al cambiar.
+function _filaConmutador(cont, clave, etiqueta, ayuda, activo, alCambiar) {
+  const div = document.createElement("div");
+  div.className = "ajuste-fila";
+  div.innerHTML = `<div class="ajuste-texto"><label>${etiqueta}</label>
+      <p class="ayuda">${ayuda}</p></div>
+    <label class="conmutador">
+      <input type="checkbox" id="pref-${clave}" ${activo ? "checked" : ""}>
+      <span class="pista"></span>
+    </label>`;
+  cont.appendChild(div);
+  div.querySelector("input").addEventListener("change", async (ev) => {
+    try {
+      await alCambiar(ev.target.checked);
+      acusarOk(div);
+    } catch (err) { acusarMal(div); mostrarError(err); }
+  });
+  return div;
+}
+
 export async function cargarPreferencias() {
   try {
     const datos = await obtener("/api/preferencias");
     const cont = document.getElementById("preferencias");
     cont.innerHTML = "";
     for (const p of PREFERENCIAS) {
-      const div = document.createElement("div");
-      div.className = "ajuste-fila";
-      div.innerHTML = `<div class="ajuste-texto"><label>${p.etiqueta}</label>
-          <p class="ayuda">${p.ayuda}</p></div>
-        <label class="conmutador">
-          <input type="checkbox" id="pref-${p.clave}" ${datos[p.clave] ? "checked" : ""}>
-          <span class="pista"></span>
-        </label>`;
-      cont.appendChild(div);
-      div.querySelector("input").addEventListener("change", async (ev) => {
-        try {
-          if (p.clave === "inicio_automatico") {
-            await enviar("/api/sistema/inicio_automatico", { activo: ev.target.checked });
-          } else {
-            await enviar("/api/preferencias", { clave: p.clave, valor: ev.target.checked });
-          }
-          acusarOk(div);
-        } catch (err) { acusarMal(div); mostrarError(err); }
-      });
+      _filaConmutador(cont, p.clave, p.etiqueta, p.ayuda, datos[p.clave], (checked) =>
+        p.clave === "inicio_automatico"
+          ? enviar("/api/sistema/inicio_automatico", { activo: checked })
+          : enviar("/api/preferencias", { clave: p.clave, valor: checked }));
     }
   } catch (err) { mostrarError(err); }
+}
+
+// -- notificaciones de Windows + parar por disco critico (SPEC 16) -------
+// Las cinco claves viven en /api/preferencias junto con las de arriba,
+// pero se pintan en dos lugares distintos: los cuatro notif_* en su propio
+// panel, y parar_por_disco en "Grabacion" (es sobre el motor, no sobre
+// avisos). Un solo GET alcanza para las dos.
+
+const NOTIFICACIONES = [
+  { clave: "notif_rendido", etiqueta: "Motor rendido",
+    ayuda: "Globo de Windows si el detector, el supervisor o el camino directo agotan los reintentos." },
+  { clave: "notif_degradado", etiqueta: "Camino directo degradado",
+    ayuda: "Globo cuando una modelo deja de grabarse por el camino directo tras 3 fallos de descifrado." },
+  { clave: "notif_disco", etiqueta: "Disco por debajo del umbral",
+    ayuda: "Globo cuando el espacio libre de un disco cruza el umbral de aviso o el critico." },
+  { clave: "notif_licencia", etiqueta: "Licencia por vencer",
+    ayuda: "Globo cuando falta poco para que venza la licencia." },
+];
+
+function _pintarCanario(canario) {
+  const cont = document.getElementById("canario-mouflon");
+  if (!cont) return;
+  let clave, texto;
+  if (canario === true) { clave = "ok"; texto = "la tabla de claves MOUFLON sigue vigente"; }
+  else if (canario === false) {
+    clave = "mal";
+    texto = "la tabla de claves MOUFLON roto -- el camino directo no sirve; "
+          + "ver pruebas\\RESULTADOS.md, seccion 1, para derivar una nueva";
+  } else { clave = "espera"; texto = "no se pudo evaluar (falta mouflon.py)"; }
+  cont.innerHTML = `<div class="ajuste-texto"><label>Canario MOUFLON</label>
+      <p class="ayuda estado-badge ${clave}"><span class="bola"></span>${texto}</p></div>`;
+}
+
+export async function cargarNotificaciones() {
+  try {
+    const datos = await obtener("/api/preferencias");
+    const cont = document.getElementById("notificaciones");
+    cont.innerHTML = "";
+    for (const n of NOTIFICACIONES) {
+      _filaConmutador(cont, n.clave, n.etiqueta, n.ayuda, datos[n.clave], (checked) =>
+        enviar("/api/preferencias", { clave: n.clave, valor: checked }));
+    }
+    const contGrab = document.getElementById("parar-por-disco");
+    if (contGrab) {
+      contGrab.innerHTML = "";
+      _filaConmutador(contGrab, "parar_por_disco",
+        "Parar el motor si el disco llega al umbral critico",
+        "Si esta apagado, el disco critico solo avisa y el motor sigue corriendo.",
+        datos.parar_por_disco,
+        (checked) => enviar("/api/preferencias", { clave: "parar_por_disco", valor: checked }));
+    }
+  } catch (err) { mostrarError(err); }
+  try {
+    const r = await obtener("/api/salud");
+    _pintarCanario(r.canario);
+  } catch (err) { /* el resto del panel ya se pinto; esto es solo el semaforo */ }
 }
 
 // -- Carpetas y discos (config.json: dir_segmentos, dir_grabaciones, ------

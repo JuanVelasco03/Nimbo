@@ -153,6 +153,10 @@ def ejecutar_con_bandeja(app, url):
     import pystray
 
     icono = pystray.Icon("nimbo", _icono_nimbo(), "Nimbo")
+    # SPEC 16: el Notificador ya existe (Aplicacion.__init__, sink=None) --
+    # solo falta decirle por donde mandar el globo. Si no hay bandeja
+    # (ejecutar_sin_bandeja) se queda en None y degrada en silencio.
+    app.notificador.sink = icono.notify
 
     def accion_abrir(icon, item):
         abrir_ventana(url)

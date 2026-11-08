@@ -8,8 +8,9 @@ import { agregarLog, mostrarError } from "./registro.js";
 import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
 import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, iniciarLogin, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
-import { renderDirectivas, cargarPreferencias, renderRutas, cargarRutas } from "./vista_ajustes.js";
+import { renderDirectivas, cargarPreferencias, renderRutas, cargarRutas, cargarNotificaciones } from "./vista_ajustes.js";
 import { revisarPreflight } from "./preflight.js";
+import { renderSalud } from "./salud.js";
 import { renderPrevia, iniciarPrevia, abrirPreviaEnVivo } from "./vista_previa.js";
 import { iniciarRegistro, entrarARegistro, salirDeRegistro } from "./vista_registro.js";
 import { iniciarGrabaciones, entrarAGrabaciones, salirDeGrabaciones } from "./vista_grabaciones.js";
@@ -79,6 +80,7 @@ const DEPENDE = [
   [renderPrevia, ["detector", "lista", "favoritas", "siguiendo", "supervisor"]],
   [(estado) => renderDirectivas(estado.lista.directivas || {}), ["lista"]],
   [renderRutas, ["motor", "disco"]],
+  [renderSalud, ["salud"]],
 ];
 
 // secciones = null -> pintar todo (primera pintada, estado_inicial, y
@@ -361,3 +363,4 @@ ws = conectarWS(conMensaje, conEstadoConexion);
 revisarPreflight();
 cargarPreferencias();
 cargarRutas();
+cargarNotificaciones();

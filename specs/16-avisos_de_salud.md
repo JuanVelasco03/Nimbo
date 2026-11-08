@@ -1,6 +1,6 @@
 # SPEC 16 — Avisos de salud: disco, notificaciones y canario
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 01 (deltas de estado por WebSocket), SPEC 03 (camino directo: el campo `degradado`), SPEC 07 (licencia: el aviso de vencimiento), SPEC 12 (rutas de disco: `_disco()` por unidad)
 > **Fecha:** 2026-11-07
 > **Objetivo:** Que Nimbo avise de lo que ya sabe y hoy no muestra — disco por debajo de un umbral, motor rendido, camino directo degradado y licencia por vencer — con una franja persistente en la ventana, notificaciones de Windows configurables una por una, y la parada ordenada del motor antes de llenar el disco.

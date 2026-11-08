@@ -223,6 +223,20 @@
   }
   .aviso-preflight .boton-arreglo:disabled { @apply opacity-50 cursor-default; }
 
+  /* Franja de salud (SPEC 16): hermana de .aviso-preflight de arriba,
+     pero cada alerta trae su propio nivel ("aviso"/"error" -- mismo
+     vocabulario que ya usan los avisos del motor) y el fondo se queda
+     neutro porque puede haber una de cada nivel a la vez. */
+  .aviso-salud {
+    @apply shrink-0 border-b px-5 py-sm text-sm flex flex-col gap-1;
+    background: var(--color-panel-alto);
+    border-color: var(--color-borde);
+  }
+  .aviso-salud .item { @apply [text-wrap:pretty]; }
+  .aviso-salud .item .titulo { @apply font-semibold; }
+  .aviso-salud .item.nivel-aviso { color: var(--color-tally-privado); }
+  .aviso-salud .item.nivel-error { color: var(--color-tally-rec); }
+
   /* -- grilla de monitoreo ---------------------------------------------- */
 
   /* el span del tunel vive en el footer, no en .barra-global -- la clase
@@ -478,6 +492,8 @@
   .estado-badge.publico .bola { background: var(--color-tally-vivo); }
   .estado-badge.espera { color: var(--color-atenuado); }
   .estado-badge.espera .bola { background: var(--color-apagado); }
+  .estado-badge.ok { color: var(--color-tally-vivo); }
+  .estado-badge.ok .bola { background: var(--color-tally-vivo); }
 
   /* status del sitio + grabacion, uno al lado del otro -- nunca uno tapa
      al otro (ver vista_modelos.js: estadoDeFila / grabacionDeFila) */
