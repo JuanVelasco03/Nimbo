@@ -50,30 +50,43 @@ export function renderDirectivas(valores) {
     return;
   }
   cont.innerHTML = "";
+  // los toggles van aparte, en una sola lista compacta -- el resto (texto,
+  // numero, select) se queda con la tarjeta de siempre, que es la que de
+  // verdad necesita el espacio. Ver tailwind.css ".lista-ajustes".
+  const listaToggles = document.createElement("div");
+  listaToggles.className = "lista-ajustes";
+  const grillaCuerpo = document.createElement("div");
+  grillaCuerpo.className = "grid grid-cols-[repeat(auto-fill,minmax(340px,1fr))] gap-3";
+
   for (const d of DIRECTIVAS) {
     const actual = valores[d.clave] ?? d.defecto;
+    const esBool = d.tipo === "bool";
     const div = document.createElement("div");
-    div.className = "directiva";
     let control = "";
-    if (d.tipo === "bool") {
+    if (esBool) {
+      div.className = "ajuste-fila";
       const marcado = d.invertido ? actual !== "1" : actual === "1";
-      control = `<div class="fila-check">
-        <label class="conmutador">
-          <input type="checkbox" id="directiva-${d.clave}" ${marcado ? "checked" : ""}>
-          <span class="pista"></span>
-        </label>
-      </div>`;
-    } else if (d.tipo === "select") {
-      control = `<select id="directiva-${d.clave}">` +
-        d.opciones.map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("") +
-        `</select>`;
-    } else if (d.tipo === "numero") {
-      control = `<input type="number" id="directiva-${d.clave}" value="${actual}" min="0">`;
+      control = `<label class="conmutador">
+        <input type="checkbox" id="directiva-${d.clave}" ${marcado ? "checked" : ""}>
+        <span class="pista"></span>
+      </label>`;
+      div.innerHTML = `<div class="ajuste-texto"><label>${d.etiqueta}</label>
+        <p class="ayuda">${d.ayuda}</p></div>${control}`;
+      listaToggles.appendChild(div);
     } else {
-      control = `<input type="text" id="directiva-${d.clave}" value="${actual}">`;
+      div.className = "directiva";
+      if (d.tipo === "select") {
+        control = `<select id="directiva-${d.clave}">` +
+          d.opciones.map(([v, t]) => `<option value="${v}" ${v === actual ? "selected" : ""}>${t}</option>`).join("") +
+          `</select>`;
+      } else if (d.tipo === "numero") {
+        control = `<input type="number" id="directiva-${d.clave}" value="${actual}" min="0">`;
+      } else {
+        control = `<input type="text" id="directiva-${d.clave}" value="${actual}">`;
+      }
+      div.innerHTML = `<label>${d.etiqueta}</label><div class="ayuda">${d.ayuda}</div>${control}`;
+      grillaCuerpo.appendChild(div);
     }
-    div.innerHTML = `<label>${d.etiqueta}</label><div class="ayuda">${d.ayuda}</div>${control}`;
-    cont.appendChild(div);
 
     const campo = div.querySelector("#directiva-" + d.clave);
     const evento = d.tipo === "bool" || d.tipo === "select" ? "change" : "blur";
@@ -88,6 +101,8 @@ export function renderDirectivas(valores) {
       enviar("/api/lista/directiva", { clave: d.clave, valor }).catch(mostrarError);
     });
   }
+  if (listaToggles.childElementCount > 0) cont.appendChild(listaToggles);
+  if (grillaCuerpo.childElementCount > 0) cont.appendChild(grillaCuerpo);
 }
 
 // -- preferencias de Nimbo --------------------------------------------
@@ -110,14 +125,13 @@ export async function cargarPreferencias() {
     cont.innerHTML = "";
     for (const p of PREFERENCIAS) {
       const div = document.createElement("div");
-      div.className = "directiva";
-      div.innerHTML = `<label>${p.etiqueta}</label><div class="ayuda">${p.ayuda}</div>
-        <div class="fila-check">
-          <label class="conmutador">
-            <input type="checkbox" id="pref-${p.clave}" ${datos[p.clave] ? "checked" : ""}>
-            <span class="pista"></span>
-          </label>
-        </div>`;
+      div.className = "ajuste-fila";
+      div.innerHTML = `<div class="ajuste-texto"><label>${p.etiqueta}</label>
+          <p class="ayuda">${p.ayuda}</p></div>
+        <label class="conmutador">
+          <input type="checkbox" id="pref-${p.clave}" ${datos[p.clave] ? "checked" : ""}>
+          <span class="pista"></span>
+        </label>`;
       cont.appendChild(div);
       div.querySelector("input").addEventListener("change", async (ev) => {
         try {

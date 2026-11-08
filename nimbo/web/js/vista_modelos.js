@@ -288,7 +288,7 @@ function renderBarraFiltros(filas) {
       <button class="chip-filtro" data-filtro="${f.clave}" type="button">
         ${f.etiqueta} <span class="cuenta"></span>
       </button>`).join("")
-      + '<span id="conteo-modelos" class="ml-auto font-mono text-[0.78rem] text-atenuado"></span>';
+      + '<span id="conteo-modelos" class="ml-auto font-mono text-xs text-atenuado"></span>';
     chipsFiltro.clear();
   }
   if (chipsFiltro.size === 0) {

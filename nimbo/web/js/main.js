@@ -19,54 +19,44 @@ let ws = null;
 
 function renderMotor(estado) {
   const m = estado.motor;
-  const punto = document.getElementById("punto-estado");
+  const transporte = document.getElementById("estado-transporte");
   const boton = document.getElementById("boton-motor");
   const resumen = document.getElementById("resumen-estado");
 
+  let clave, texto, botonTexto, botonClase, deshabilitado;
   if (m.parando) {
-    punto.className = "punto espera";
-    resumen.textContent = "deteniendo...";
-    boton.textContent = "Deteniendo...";
-    boton.className = "principal";
-    boton.disabled = true;
+    clave = "espera"; texto = "deteniendo...";
+    botonTexto = "Deteniendo..."; botonClase = "principal"; deshabilitado = true;
   } else if (m.reiniciando) {
-    punto.className = "punto espera";
-    resumen.textContent = "reiniciando el " + m.reiniciando + "...";
-    boton.textContent = "Parar todo";
-    boton.className = "principal parar";
-    boton.disabled = false;
+    clave = "espera"; texto = "reiniciando el " + m.reiniciando + "...";
+    botonTexto = "Parar todo"; botonClase = "principal parar"; deshabilitado = false;
   } else if (m.rendido && m.rendido.length) {
-    punto.className = "punto mal";
-    resumen.textContent = "el " + m.rendido.join(", ") + " no arranca -- revisa el registro";
-    boton.textContent = "Arrancar";
-    boton.className = "principal";
-    boton.disabled = false;
+    clave = "mal"; texto = "el " + m.rendido.join(", ") + " no arranca -- revisa el registro";
+    botonTexto = "Arrancar"; botonClase = "principal"; deshabilitado = false;
   } else if (!m.detector_vivo && !m.supervisor_vivo && m.proximo_reintento
               && m.proximo_reintento > Date.now() / 1000) {
-    punto.className = "punto espera";
-    resumen.textContent = "reintento en " + Math.ceil(m.proximo_reintento - Date.now() / 1000) + "s";
-    boton.textContent = "Arrancar";
-    boton.className = "principal";
-    boton.disabled = false;
+    clave = "espera"; texto = "reintento en " + Math.ceil(m.proximo_reintento - Date.now() / 1000) + "s";
+    botonTexto = "Arrancar"; botonClase = "principal"; deshabilitado = false;
   } else if (m.detector_vivo && m.supervisor_vivo) {
-    punto.className = "punto ok";
-    resumen.textContent = "en marcha";
-    boton.textContent = "Parar todo";
-    boton.className = "principal parar";
-    boton.disabled = false;
+    clave = "ok"; texto = "en marcha";
+    botonTexto = "Parar todo"; botonClase = "principal parar"; deshabilitado = false;
   } else if (m.detector_vivo || m.supervisor_vivo) {
-    punto.className = "punto espera";
-    resumen.textContent = "arrancando...";
-    boton.textContent = "Parar todo";
-    boton.className = "principal parar";
-    boton.disabled = false;
+    clave = "espera"; texto = "arrancando...";
+    botonTexto = "Parar todo"; botonClase = "principal parar"; deshabilitado = false;
   } else {
-    punto.className = "punto mal";
-    resumen.textContent = "detenido";
-    boton.textContent = "Arrancar";
-    boton.className = "principal";
-    boton.disabled = false;
+    clave = "mal"; texto = "detenido";
+    botonTexto = "Arrancar"; botonClase = "principal"; deshabilitado = false;
   }
+
+  // el punto y el texto de al lado visten SIEMPRE el mismo color de senal
+  // (ver tailwind.css ".estado-transporte"): el vistazo rapido no deberia
+  // depender de distinguir un circulo de 10px.
+  document.getElementById("punto-estado").className = "punto " + clave;
+  transporte.className = "estado-transporte " + clave;
+  resumen.textContent = texto;
+  boton.textContent = botonTexto;
+  boton.className = botonClase;
+  boton.disabled = deshabilitado;
 }
 
 // Que secciones de `estado` mira cada render. El delta del WebSocket trae
@@ -110,6 +100,7 @@ async function refrescar() {
     pintarEstado(ultimoEstado);
   } catch (err) {
     document.getElementById("punto-estado").className = "punto mal";
+    document.getElementById("estado-transporte").className = "estado-transporte mal";
     document.getElementById("resumen-estado").textContent = "sin conexion con Nimbo";
   }
 }
@@ -138,7 +129,10 @@ function conMensaje(msg) {
 }
 
 function conEstadoConexion(conectado) {
-  if (!conectado) document.getElementById("punto-estado").className = "punto mal";
+  if (!conectado) {
+    document.getElementById("punto-estado").className = "punto mal";
+    document.getElementById("estado-transporte").className = "estado-transporte mal";
+  }
 }
 
 // -- navegacion entre pestanas -------------------------------------------

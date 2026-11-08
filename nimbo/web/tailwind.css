@@ -33,12 +33,38 @@
 
   --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+
+  /* escala tipografica real -- antes cada clase elegia su propio rem/px
+     suelto (0.78rem, 0.82rem, 13.5px, 0.95rem...) sin relacion entre si.
+     Seis pasos, en PX a proposito y no en rem: el <html> de mas abajo fija
+     su propio font-size en 13.5px (panel de control denso, no una pagina
+     de marketing a 16px), y un token de escala en rem terminaria
+     resolviendo contra ESE root -- 0.8125rem no son 13px sino 10.97px.
+     Un px literal es inmune a cuanto valga el root. */
+  --text-2xs: 11px;   /* etiquetas, metadata, mono de apoyo */
+  --text-xs: 12px;    /* ayuda, detalle secundario */
+  --text-sm: 13px;    /* controles, nav, botones chicos */
+  --text-base: 15px;  /* cuerpo de la app, nombres de tarjeta */
+  --text-md: 17px;    /* nombre en modal, label de ajuste */
+  --text-lg: 21px;    /* el unico lugar con peso real: el wordmark del header */
+
+  /* escala de espaciado -- 4/8/12/20/32, para dejar de improvisar p-3.5,
+     mb-3.5, gap-2.5 sueltos sin relacion entre si. */
+  --spacing-2xs: 0.25rem;  /* 4px */
+  --spacing-xs: 0.5rem;    /* 8px */
+  --spacing-sm: 0.75rem;   /* 12px */
+  --spacing-md: 1.25rem;   /* 20px */
+  --spacing-lg: 2rem;      /* 32px */
 }
 
 @layer base {
   * { @apply box-border; }
 
   html, body {
+    /* 13.5px absoluto, no un token de la escala: esto FIJA el root del que
+       cuelga cada rem de la app (spacing de Tailwind incluido). Un token
+       en rem aca se resolveria contra si mismo -- ver el comentario de
+       la escala tipografica, arriba. */
     @apply h-full m-0 bg-grafito text-texto font-sans text-[13.5px] leading-normal;
   }
 
@@ -78,8 +104,13 @@
     animation: parpadeo 1.4s ease-in-out infinite;
   }
 
+  /* -- wordmark: el unico lugar del header con peso tipografico real -- */
+  .wordmark {
+    @apply text-lg font-bold tracking-tight text-texto;
+  }
+
   nav button {
-    @apply border-none bg-transparent text-atenuado px-3.5 py-2 text-[13px] font-medium
+    @apply border-none bg-transparent text-atenuado px-3.5 py-2 text-sm font-medium
            rounded-sm cursor-pointer tracking-[0.01em] transition-colors duration-150;
   }
   nav button:hover { @apply text-texto bg-panel-alto; }
@@ -89,26 +120,46 @@
     @apply absolute left-3.5 right-3.5 -bottom-[9px] h-[2px] bg-tally-conectando rounded-full;
   }
 
+  /* -- estado global del motor: el punto y el texto SIEMPRE visten el
+     mismo color de senal -- antes el punto cambiaba de color pero el
+     texto de al lado quedaba gris fijo, asi que el unico vistazo rapido
+     posible era mirar un circulo de 10px. Mismo vocabulario tally que ya
+     usa .estado-badge, pero sin la bolita duplicada (el .punto ya la es). */
+  .estado-transporte {
+    @apply flex items-center gap-2 font-mono text-xs font-medium tracking-wide text-atenuado;
+  }
+  .estado-transporte.ok { color: var(--color-tally-vivo); }
+  /* tally-rec puro da 4.3:1 sobre el panel del header, bajo el piso de
+     4.5:1 -- un poco de blanco mezclado alcanza sin dejar de leerse como
+     el mismo rojo de senal. El punto/riel/badge en otros lugares siguen
+     con el color exacto: esto es solo para este texto. */
+  .estado-transporte.mal { color: color-mix(in srgb, var(--color-tally-rec) 85%, white); }
+  .estado-transporte.espera { color: var(--color-tally-privado); }
+
   button.principal {
     @apply bg-tally-conectando text-grafito border-none px-4 py-2 rounded-sm cursor-pointer
-           font-semibold text-[13px] tracking-[0.01em] transition-[filter,background-color] duration-150;
+           font-semibold text-sm tracking-[0.01em] transition-[filter,background-color] duration-150;
   }
   button.principal:hover { @apply brightness-110; }
   button.principal.parar { @apply bg-tally-rec text-[#1a0d0d]; }
   button.principal:disabled { @apply opacity-50 cursor-default brightness-100; }
 
   .aviso-preflight {
-    @apply shrink-0 border-b px-4 py-2 text-[13px];
+    /* px-4 (1rem) son 13.5px con el root de esta app, no los 16px
+       "de catalogo" de Tailwind -- por debajo del piso de 16px de margen
+       contra el borde de viewport. px-5 (1.25rem = 16.9px) lo despeja. */
+    @apply shrink-0 border-b px-5 py-sm text-sm;
     background: color-mix(in srgb, var(--color-tally-privado) 10%, transparent);
     border-color: color-mix(in srgb, var(--color-tally-privado) 35%, transparent);
     color: var(--color-tally-privado);
   }
-  .aviso-preflight ul { @apply mt-1.5 ml-5 list-disc space-y-0.5; }
+  .aviso-preflight > div:first-child { @apply font-semibold; }
+  .aviso-preflight ul { @apply mt-1.5 ml-5 list-disc space-y-1 [text-wrap:pretty]; }
   .aviso-preflight .accion { @apply text-atenuado; }
   /* el "arreglo" de una falla: hoy solo el certificado de mitmproxy
      (ver preflight.js) */
   .aviso-preflight .boton-arreglo {
-    @apply ml-1 rounded-[3px] border px-2 py-0.5 text-[12px] cursor-pointer
+    @apply ml-1 rounded-[3px] border px-2 py-0.5 text-xs cursor-pointer
            transition-colors duration-150;
     border-color: color-mix(in srgb, var(--color-tally-privado) 55%, transparent);
     color: var(--color-tally-privado);
@@ -124,11 +175,27 @@
      tiene que valer donde sea que JS la ponga. */
   .alerta { color: var(--color-tally-aviso); font-weight: 600; }
 
+  /* bug preexistente que este redisenio encontro al tocar el riel: tanto
+     el riel (absolute) como .miniatura-grande (relative, mas abajo en el
+     mismo markup) son "positioned" sin z-index -- entre dos hermanos
+     posicionados con z-index:auto, pinta arriba el que esta despues en el
+     DOM, y .miniatura-grande viene despues y es opaca. El riel quedaba
+     totalmente tapado, probablemente desde siempre. z-index explicito lo
+     saca de esa ambiguedad. */
   .riel {
-    @apply absolute inset-y-0 left-0 w-[3px] bg-borde-fuerte;
+    @apply absolute inset-y-0 left-0 z-10 w-[3px] bg-borde-fuerte transition-[height] duration-200;
   }
+  /* el riel es la luz tally de la tarjeta: su urgencia no es solo de
+     color, tambien de peso -- grabando y mal (los dos estados que
+     realmente piden atencion) quedan mas gruesos; el resto se queda en
+     el trazo fino de siempre. Sin resplandor: un glow de color sobre
+     fondo oscuro es el acento de IA de siempre, y el peso solo ya
+     alcanza para distinguir la urgencia. */
   .tarjeta-modelo[data-estado="grabando"] .riel,
-  .modal[data-estado="grabando"] .riel { background: var(--color-tally-rec); }
+  .modal[data-estado="grabando"] .riel {
+    background: var(--color-tally-rec);
+    height: 4px;
+  }
   .tarjeta-modelo[data-estado="privado"] .riel,
   .modal[data-estado="privado"] .riel { background: var(--color-tally-privado); }
   .tarjeta-modelo[data-estado="online"] .riel,
@@ -140,6 +207,7 @@
       var(--color-tally-aviso) 0 3px,
       transparent 3px 6px
     );
+    height: 4px;
   }
   .tarjeta-modelo[data-estado="offline"] .riel,
   .modal[data-estado="offline"] .riel { background: var(--color-borde-fuerte); }
@@ -151,16 +219,18 @@
      chica al costado (.tarjeta, ya quitada) -- */
 
   .tarjeta-modelo {
-    @apply relative flex flex-col overflow-hidden rounded-sm border border-borde bg-panel;
+    @apply relative flex cursor-pointer flex-col overflow-hidden rounded-sm border border-borde
+           bg-panel transition-colors duration-150;
   }
+  .tarjeta-modelo:hover, .tarjeta-modelo:focus-within { @apply border-borde-fuerte; }
   .tarjeta-modelo .riel {
     top: 0; right: 0; bottom: auto; left: 0;
-    height: 3px; width: auto;
+    height: 2px; width: auto;
   }
   .tarjeta-modelo .miniatura-grande {
     @apply aspect-video h-auto w-full rounded-none text-[2rem];
   }
-  .tarjeta-modelo .cuerpo { @apply min-w-0 p-3; }
+  .tarjeta-modelo .cuerpo { @apply min-w-0 p-sm; }
   .tarjeta-modelo .acciones-tarjeta { @apply flex-wrap; }
 
   /* -- modal de vista previa (click en una tarjeta de Modelos) ------------ */
@@ -237,7 +307,7 @@
     max-height: 100vh;
   }
   .modal-cuerpo { @apply flex min-h-0 flex-col gap-2 p-4; }
-  .modal-cuerpo .nombre { @apply text-[1.05rem]; }
+  .modal-cuerpo .nombre { @apply text-md; }
   .modal-cuerpo .acciones-tarjeta { @apply flex-wrap; }
 
   .miniatura {
@@ -256,16 +326,19 @@
   .miniatura-grande img { @apply block h-full w-full object-cover transition-opacity duration-200; }
   .miniatura-grande img.cargando { @apply opacity-0; }
 
-  .fila-nombre { @apply mb-1 flex items-center gap-1.5; }
-  .nombre { @apply truncate font-semibold text-texto; }
+  .fila-nombre { @apply mb-xs flex items-center gap-2; }
+  /* el nombre sube un escalon entero (15px vs los 13.5px del cuerpo): es
+     el primer dato que el ojo busca en la tarjeta, y antes competia en
+     igualdad de condiciones con todo el resto. */
+  .nombre { @apply truncate text-base font-semibold text-texto; }
   .etiqueta-vpn {
-    @apply shrink-0 rounded-[3px] border border-tally-conectando px-1 text-[0.65rem]
+    @apply shrink-0 rounded-[3px] border border-tally-conectando px-1 text-2xs
            font-mono tracking-wide text-tally-conectando;
   }
   /* verde = "viene de tu cuenta real", para no mezclar el significado
      con el azul de VPN */
   .etiqueta-sigue {
-    @apply shrink-0 rounded-[3px] border px-1 text-[0.65rem] font-mono tracking-wide;
+    @apply shrink-0 rounded-[3px] border px-1 text-2xs font-mono tracking-wide;
     border-color: var(--color-tally-vivo);
     color: var(--color-tally-vivo);
   }
@@ -277,11 +350,11 @@
     @apply mb-3 rounded-sm border border-borde bg-panel p-3;
   }
   .panel-sesion code {
-    @apply rounded-[3px] bg-panel-alto px-1 font-mono text-[0.78rem];
+    @apply rounded-[3px] bg-panel-alto px-1 font-mono text-xs;
   }
 
   .estado-badge {
-    @apply inline-flex items-center gap-1.5 py-0.5 text-[0.76rem] font-semibold font-mono tracking-wide;
+    @apply inline-flex items-center gap-1.5 py-0.5 text-xs font-semibold font-mono tracking-wide;
   }
   .estado-badge .bola { @apply h-[6px] w-[6px] shrink-0 rounded-full; }
   .estado-badge.grabando { color: var(--color-tally-rec); }
@@ -303,15 +376,22 @@
      al otro (ver vista_modelos.js: estadoDeFila / grabacionDeFila) */
   .fila-estados { @apply flex flex-wrap items-center gap-x-3 gap-y-0.5; }
 
-  .detalle { @apply mt-0.5 truncate font-mono text-[0.78rem] text-atenuado; }
+  /* tercer escalon, deliberadamente el mas chico de la tarjeta: nombre
+     (base, 15px) > estado-badge (xs, 12px) > detalle (2xs, 11px) -- antes
+     los tres rondaban el mismo tamano y competian por atencion. */
+  .detalle { @apply mt-0.5 truncate font-mono text-2xs text-atenuado; }
 
-  .acciones-tarjeta { @apply mt-2 flex gap-1.5; }
+  .acciones-tarjeta { @apply mt-xs flex gap-1.5; }
   .boton-chico {
-    @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-[0.76rem]
+    @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-xs
            text-texto cursor-pointer transition-colors duration-150;
   }
   .boton-chico:hover { @apply border-tally-conectando; }
-  .boton-chico.peligro:hover { @apply border-tally-rec text-tally-rec; }
+  /* fondo a grafito (el mas oscuro del panel) en vez de panel-alto: el rojo
+     de peligro sobre panel-alto da 3.9:1, bajo el piso de 4.5:1 -- oscurecer
+     el fondo en el hover ademas lee como "esto se puso serio", consistente
+     con el vocabulario de luces tally. */
+  .boton-chico.peligro:hover { @apply border-tally-rec text-tally-rec; background: var(--color-grafito); }
   .boton-chico.activa { @apply border-tally-conectando text-tally-conectando; }
 
   .vacio { @apply py-10 text-center text-atenuado; }
@@ -334,7 +414,7 @@
 
   .sugerencia { @apply flex cursor-pointer items-center gap-2.5 px-3 py-2; }
   .sugerencia:hover { @apply bg-panel-alto; }
-  .sugerencia .miniatura { @apply h-8 w-8 text-[0.8rem]; }
+  .sugerencia .miniatura { @apply h-8 w-8 text-sm; }
   .nombre-sug { @apply flex-1 truncate; }
   .punto-online { @apply h-2 w-2 shrink-0 rounded-full bg-apagado; }
   .punto-online.si { background: var(--color-tally-vivo); }
@@ -342,13 +422,33 @@
   /* -- ajustes / directivas ------------------------------------------------ */
 
   .titulo-seccion {
-    @apply mt-5 mb-2 text-[0.72rem] font-semibold uppercase tracking-[0.08em] text-apagado first:mt-0;
+    @apply mt-lg mb-xs text-2xs font-semibold uppercase tracking-[0.08em] text-atenuado first:mt-0;
   }
+
+  /* -- fila de ajuste compacta: para un toggle solo, una tarjeta entera es
+     puro aire -- titulo + ayuda a la izquierda, el control a la derecha,
+     separadas por un filete en vez de cada una con su propio marco. Mismo
+     patron que una lista de ajustes nativa (iOS/macOS Settings), pensado
+     para escanear muchas de un vistazo en vez de leer tarjeta por tarjeta. */
+  .lista-ajustes {
+    @apply flex flex-col overflow-hidden rounded-sm border border-borde bg-panel;
+  }
+  .ajuste-fila {
+    @apply flex items-center justify-between gap-4 px-sm py-sm;
+  }
+  .ajuste-fila + .ajuste-fila { @apply border-t border-borde; }
+  .ajuste-texto { @apply min-w-0 flex-1; }
+  .ajuste-texto label { @apply block text-sm font-semibold text-texto; }
+  .ajuste-texto .ayuda { @apply mt-0.5 text-xs text-atenuado; }
+
+  /* -- tarjeta de ajuste con cuerpo: reservada para lo que de verdad
+     necesita espacio (un input, un select, un boton "Examinar") -- ya no
+     es el molde unico de toda la pestana. */
   .directiva {
-    @apply rounded-sm border border-borde bg-panel p-3.5;
+    @apply rounded-sm border border-borde bg-panel p-sm;
   }
-  .directiva label { @apply mb-1 block font-semibold text-texto; }
-  .directiva .ayuda { @apply mb-2 text-[0.78rem] text-atenuado; }
+  .directiva label { @apply mb-1 block text-sm font-semibold text-texto; }
+  .directiva .ayuda { @apply mb-2 text-xs text-atenuado; }
   .directiva input[type="text"], .directiva input[type="number"], .directiva select {
     @apply w-full rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1.5 text-texto;
   }
@@ -361,7 +461,7 @@
 
   .barra-filtros { @apply flex flex-wrap items-center gap-1.5; }
   .chip-filtro {
-    @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-[0.76rem]
+    @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-xs
            text-atenuado cursor-pointer transition-colors duration-150;
   }
   .chip-filtro:hover { @apply border-tally-conectando text-texto; }
@@ -370,7 +470,7 @@
     border-color: var(--color-tally-conectando);
     background: color-mix(in srgb, var(--color-tally-conectando) 16%, var(--color-panel-alto));
   }
-  .chip-filtro .cuenta { @apply ml-1 font-mono text-apagado; }
+  .chip-filtro .cuenta { @apply ml-1 font-mono text-atenuado; }
   .chip-filtro.prendido .cuenta { @apply text-atenuado; }
   .chip-filtro.en-cero { @apply opacity-50; }
 
@@ -388,7 +488,7 @@
   }
   .barra-registro select, .barra-registro input[type="text"], #registro-buscar,
   .control-barra {
-    @apply rounded-[3px] border border-borde bg-panel-alto px-2 py-1 text-[0.8rem] text-texto;
+    @apply rounded-[3px] border border-borde bg-panel-alto px-2 py-1 text-sm text-texto;
   }
   .barra-registro select:focus, #registro-buscar:focus, .control-barra:focus {
     @apply border-tally-conectando outline-none;
@@ -404,7 +504,7 @@
     grid-template-columns: 4.25rem minmax(0, 12rem) minmax(0, 1fr);
   }
   .fila-registro .hora {
-    @apply text-apagado whitespace-nowrap tabular-nums;
+    @apply text-atenuado whitespace-nowrap tabular-nums;
   }
   .fila-registro .prefijo {
     @apply font-semibold text-atenuado overflow-hidden text-ellipsis whitespace-nowrap;
@@ -429,7 +529,7 @@
   .tarjeta-grabacion .miniatura-grande {
     @apply aspect-video h-auto w-full rounded-none text-[2rem];
   }
-  .tarjeta-grabacion .cuerpo-grabacion { @apply min-w-0 p-3; }
+  .tarjeta-grabacion .cuerpo-grabacion { @apply min-w-0 p-sm; }
   .tarjeta-grabacion .acciones-tarjeta { @apply flex-wrap; }
 
   /* la portada entera es un <button>: foco y Enter reproducen, sin
@@ -449,7 +549,7 @@
 
   .etiqueta-partes-flot {
     @apply absolute right-1.5 top-1.5 z-10 shrink-0 rounded-[3px] border px-1
-           text-[0.65rem] font-mono tracking-wide;
+           text-2xs font-mono tracking-wide;
     border-color: var(--color-tally-privado);
     color: var(--color-tally-privado);
     background: rgb(0 0 0 / 0.55);
@@ -459,16 +559,16 @@
      tipografica fuerte de la tarjeta */
   .marca-tiempo {
     @apply pointer-events-none absolute inset-x-0 bottom-0 z-10 flex items-baseline
-           justify-between gap-2 px-1.5 py-1 font-mono text-[0.72rem] tabular-nums text-texto;
+           justify-between gap-2 px-1.5 py-1 font-mono text-2xs tabular-nums text-texto;
     background: linear-gradient(to top, rgb(0 0 0 / 0.8), rgb(0 0 0 / 0) 100%);
   }
   .marca-tiempo .duracion { @apply font-semibold; }
   .marca-tiempo .tamano { @apply text-atenuado; }
 
-  .detalle-grabacion { @apply mt-0.5 truncate font-mono text-[0.78rem] text-atenuado; }
+  .detalle-grabacion { @apply mt-0.5 truncate font-mono text-2xs text-atenuado; }
 
   .etiqueta-calidad {
-    @apply shrink-0 rounded-[3px] border border-borde-fuerte px-1 text-[0.65rem]
+    @apply shrink-0 rounded-[3px] border border-borde-fuerte px-1 text-2xs
            font-mono tracking-wide text-atenuado;
   }
 
@@ -480,8 +580,8 @@
     @apply flex items-center gap-3 rounded-sm bg-panel-alto/60 px-2.5 py-1.5;
   }
   .fila-parte.activa { @apply bg-panel-alto; }
-  .parte-etiqueta { @apply w-16 shrink-0 font-mono text-[0.76rem] text-atenuado; }
-  .parte-detalle { @apply min-w-0 flex-1 truncate font-mono text-[0.78rem] text-atenuado; }
+  .parte-etiqueta { @apply w-16 shrink-0 font-mono text-xs text-atenuado; }
+  .parte-detalle { @apply min-w-0 flex-1 truncate font-mono text-xs text-atenuado; }
   .fila-parte .acciones-tarjeta { @apply mt-0 shrink-0; }
 
   /* -- modal de reproduccion (pestana Grabaciones) ------------------------- */

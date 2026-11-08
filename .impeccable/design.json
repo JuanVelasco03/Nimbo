@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T00:00:00Z",
+  "title": "Design System: Nimbo",
+  "extensions": {
+    "colorMeta": {
+      "broadcast-blue": { "role": "primary", "displayName": "Broadcast Blue", "canonical": "#4f8fe0", "tonalRamp": ["#0f1b2e", "#162a47", "#1f3c66", "#2c5086", "#3b68a8", "#4f8fe0", "#86b4ec", "#c3dcf8"] },
+      "signal-red": { "role": "secondary", "displayName": "Signal Red", "canonical": "#e5484d", "tonalRamp": ["#2e0e0f", "#4a1517", "#6c1d20", "#95262a", "#c23338", "#e5484d", "#ef8488", "#f8c3c5"] },
+      "tally-amber": { "role": "secondary", "displayName": "Tally Amber", "canonical": "#d9a441", "tonalRamp": ["#2b2007", "#453310", "#654b19", "#8a6823", "#b1872f", "#d9a441", "#e9c47f", "#f5e0b8"] },
+      "signal-green": { "role": "secondary", "displayName": "Signal Green", "canonical": "#3ddc84", "tonalRamp": ["#07291a", "#0d4129", "#145c39", "#1b7a4b", "#279c61", "#3ddc84", "#7deaae", "#bdf4d6"] },
+      "warning-orange": { "role": "secondary", "displayName": "Warning Orange", "canonical": "#e2793d", "tonalRamp": ["#2d1407", "#48200c", "#6a2f12", "#90401a", "#ba5425", "#e2793d", "#eda679", "#f6cfb5"] },
+      "grafito": { "role": "neutral", "displayName": "Grafito", "canonical": "#121316", "tonalRamp": ["#000000", "#0a0b0d", "#121316", "#1b1d22", "#23262d", "#3a3e49", "#8a8d99", "#e7e8ec"] },
+      "panel": { "role": "neutral", "displayName": "Panel", "canonical": "#1b1d22", "tonalRamp": ["#121316", "#1b1d22", "#23262d", "#2b2e36", "#3a3e49", "#5c5f6b", "#8a8d99", "#e7e8ec"] },
+      "panel-alto": { "role": "neutral", "displayName": "Panel Alto", "canonical": "#23262d", "tonalRamp": ["#121316", "#1b1d22", "#23262d", "#2b2e36", "#3a3e49", "#5c5f6b", "#8a8d99", "#e7e8ec"] },
+      "borde": { "role": "neutral", "displayName": "Borde", "canonical": "#2b2e36", "tonalRamp": ["#121316", "#1b1d22", "#23262d", "#2b2e36", "#3a3e49", "#5c5f6b", "#8a8d99", "#e7e8ec"] },
+      "borde-fuerte": { "role": "neutral", "displayName": "Borde Fuerte", "canonical": "#3a3e49", "tonalRamp": ["#121316", "#1b1d22", "#23262d", "#2b2e36", "#3a3e49", "#5c5f6b", "#8a8d99", "#e7e8ec"] },
+      "texto": { "role": "neutral", "displayName": "Texto", "canonical": "#e7e8ec", "tonalRamp": ["#121316", "#23262d", "#3a3e49", "#5c5f6b", "#8a8d99", "#c3c5cc", "#e7e8ec", "#ffffff"] },
+      "atenuado": { "role": "neutral", "displayName": "Atenuado", "canonical": "#8a8d99", "tonalRamp": ["#121316", "#23262d", "#3a3e49", "#5c5f6b", "#8a8d99", "#c3c5cc", "#e7e8ec", "#ffffff"] },
+      "apagado": { "role": "neutral", "displayName": "Apagado", "canonical": "#5c5f6b", "tonalRamp": ["#121316", "#23262d", "#3a3e49", "#5c5f6b", "#8a8d99", "#c3c5cc", "#e7e8ec", "#ffffff"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display / Wordmark", "purpose": "The header wordmark only — the single place with real typographic weight." },
+      "title": { "displayName": "Title", "purpose": "Modal/preview name — one step above the card name." },
+      "body": { "displayName": "Body Emphasis", "purpose": "Card name (.nombre) — one step above the app's plain running text so it scans first." },
+      "label": { "displayName": "Label", "purpose": "Nav buttons, primary/secondary buttons, settings-row titles." },
+      "caption": { "displayName": "Caption", "purpose": "Help text, metadata, badges, uppercase section headers — always the smallest text in a card." },
+      "mono": { "displayName": "Mono", "purpose": "Timecodes, byte/part counts, the log, short technical tags. Never decorative elsewhere." }
+    },
+    "shadows": [
+      { "name": "status-dot-ring", "value": "0 0 0 3px color-mix(in srgb, var(--color-tally-vivo) 20%, transparent)", "purpose": "Focus-ring-style halo on the header status dot when healthy. The one soft ring in the system; not an ambient glow." },
+      { "name": "scrim-floating-controls", "value": "linear-gradient(to top, rgb(0 0 0 / 0.82), rgb(0 0 0 / 0) 100%)", "purpose": "Dark gradient behind floating video transport controls and the recording timecode bar, so light text stays legible over arbitrary video content." }
+    ],
+    "motion": [
+      { "name": "parpadeo", "value": "@keyframes parpadeo { 0%,100% { opacity:1 } 50% { opacity:.45 } } 1.4-1.6s ease-in-out infinite", "purpose": "Blink used on the 'waiting' status dot and the recording badge's dot, disabled under prefers-reduced-motion." },
+      { "name": "color-transition", "value": "transition-colors duration-150", "purpose": "Default hover/active border and background transition across buttons, chips, cards, nav." }
+    ],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Primary Button (Arrancar)",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The main transport action in the header — starts the recording engine.",
+      "html": "<button class=\"ds-btn-primary\">Arrancar</button>",
+      "css": ".ds-btn-primary { background: #4f8fe0; color: #121316; border: none; border-radius: 2px; padding: 0.5rem 1rem; font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif; font-size: 13px; font-weight: 600; letter-spacing: 0.01em; cursor: pointer; transition: filter 0.15s, background-color 0.15s; } .ds-btn-primary:hover { filter: brightness(1.1); } .ds-btn-primary:focus-visible { outline: 2px solid #4f8fe0; outline-offset: 2px; } .ds-btn-primary:disabled { opacity: 0.5; cursor: default; filter: none; }"
+    },
+    {
+      "name": "Danger Button (Parar)",
+      "kind": "button",
+      "refersTo": "button-danger",
+      "description": "Swaps the primary button to Signal Red while recording is active.",
+      "html": "<button class=\"ds-btn-danger\">Parar</button>",
+      "css": ".ds-btn-danger { background: #e5484d; color: #1a0d0d; border: none; border-radius: 2px; padding: 0.5rem 1rem; font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif; font-size: 13px; font-weight: 600; letter-spacing: 0.01em; cursor: pointer; transition: filter 0.15s; } .ds-btn-danger:hover { filter: brightness(1.1); }"
+    },
+    {
+      "name": "Ghost Button (boton-chico)",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Small secondary action on cards (e.g. favoritar, examinar, eliminar).",
+      "html": "<button class=\"ds-btn-ghost\">Examinar</button>",
+      "css": ".ds-btn-ghost { background: #23262d; color: #e7e8ec; border: 1px solid #2b2e36; border-radius: 3px; padding: 0.25rem 0.625rem; font-size: 12px; cursor: pointer; transition: border-color 0.15s, color 0.15s, background-color 0.15s; } .ds-btn-ghost:hover { border-color: #4f8fe0; } .ds-btn-ghost.peligro:hover { border-color: #e5484d; color: #e5484d; background: #121316; }"
+    },
+    {
+      "name": "Tally Rail Card (tarjeta-modelo)",
+      "kind": "card",
+      "refersTo": "card-tarjeta-modelo",
+      "description": "The signature card: a top accent rail whose color/thickness names the model's live status, a 16:9 thumbnail, name, status badges, and quick actions.",
+      "html": "<div class=\"ds-card\" tabindex=\"0\"><div class=\"ds-rail ds-rail--rec\"></div><div class=\"ds-thumb\"></div><div class=\"ds-body\"><div class=\"ds-name\">modelo_demo</div><div class=\"ds-badge ds-badge--rec\"><span class=\"ds-dot\"></span>GRABANDO</div><div class=\"ds-detail\">00:42:17 · 1.8 GB</div></div></div>",
+      "css": ".ds-card { position: relative; display: flex; flex-direction: column; overflow: hidden; border-radius: 2px; border: 1px solid #2b2e36; background: #1b1d22; cursor: pointer; transition: border-color 0.15s; } .ds-card:hover, .ds-card:focus-within { border-color: #3a3e49; } .ds-rail { position: absolute; top: 0; right: 0; left: 0; height: 2px; z-index: 10; background: #3a3e49; transition: height 0.2s; } .ds-rail--rec { background: #e5484d; height: 4px; } .ds-thumb { aspect-ratio: 16/9; width: 100%; background: #23262d; border-radius: 0; } .ds-body { padding: 0.75rem; } .ds-name { font-size: 15px; font-weight: 600; color: #e7e8ec; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .ds-badge { display: inline-flex; align-items: center; gap: 0.375rem; font-family: 'IBM Plex Mono', Consolas, monospace; font-size: 12px; font-weight: 600; letter-spacing: 0.02em; margin-top: 0.25rem; } .ds-badge--rec { color: #e5484d; } .ds-dot { width: 6px; height: 6px; border-radius: 9999px; background: #e5484d; } .ds-detail { margin-top: 0.125rem; font-family: 'IBM Plex Mono', Consolas, monospace; font-size: 11px; color: #8a8d99; }"
+    },
+    {
+      "name": "Toggle Switch (conmutador)",
+      "kind": "input",
+      "refersTo": null,
+      "description": "The boolean control used in .lista-ajustes rows; green on-state ties toggles to the 'healthy/live' tally meaning.",
+      "html": "<label class=\"ds-switch\"><input type=\"checkbox\" checked><span class=\"ds-track\"></span></label>",
+      "css": ".ds-switch { position: relative; display: inline-block; height: 1.25rem; width: 2.25rem; flex-shrink: 0; } .ds-switch input { position: absolute; height: 0; width: 0; opacity: 0; } .ds-track { position: absolute; inset: 0; cursor: pointer; border-radius: 9999px; border: 1px solid #2b2e36; background: #23262d; transition: background-color 0.2s, border-color 0.2s; } .ds-track::before { content: ''; position: absolute; left: 0.125rem; top: 0.125rem; height: 0.875rem; width: 0.875rem; border-radius: 9999px; background: #5c5f6b; transition: transform 0.2s, background-color 0.2s; } .ds-switch input:checked + .ds-track { background: color-mix(in srgb, #3ddc84 22%, transparent); border-color: #3ddc84; } .ds-switch input:checked + .ds-track::before { transform: translateX(1rem); background: #3ddc84; }"
+    },
+    {
+      "name": "Settings Row (ajuste-fila)",
+      "kind": "custom",
+      "refersTo": "lista-ajustes-fila",
+      "description": "Compact toggle-only settings row: title + help left, control right, no card chrome of its own — lives inside a .lista-ajustes container that supplies one shared border.",
+      "html": "<div class=\"ds-row\"><div class=\"ds-row-text\"><label>Arrancar la grabación al abrir Nimbo</label><p class=\"ds-help\">Si está apagado, Nimbo abre pero no arranca nada hasta que lo pidas.</p></div><label class=\"ds-switch\"><input type=\"checkbox\" checked><span class=\"ds-track\"></span></label></div>",
+      "css": ".ds-row { display: flex; align-items: center; justify-content: space-between; gap: 1.25rem; padding: 0.75rem; font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif; } .ds-row + .ds-row { border-top: 1px solid #2b2e36; } .ds-row-text { min-width: 0; flex: 1; } .ds-row-text label { display: block; font-size: 13px; font-weight: 600; color: #e7e8ec; } .ds-help { margin-top: 0.125rem; font-size: 12px; color: #8a8d99; } .ds-switch { position: relative; display: inline-block; height: 1.25rem; width: 2.25rem; flex-shrink: 0; } .ds-switch input { position: absolute; height: 0; width: 0; opacity: 0; } .ds-track { position: absolute; inset: 0; border-radius: 9999px; border: 1px solid #2b2e36; background: #23262d; } .ds-track::before { content: ''; position: absolute; left: 0.125rem; top: 0.125rem; height: 0.875rem; width: 0.875rem; border-radius: 9999px; background: #5c5f6b; } .ds-switch input:checked + .ds-track { background: color-mix(in srgb, #3ddc84 22%, transparent); border-color: #3ddc84; } .ds-switch input:checked + .ds-track::before { transform: translateX(1rem); background: #3ddc84; }"
+    },
+    {
+      "name": "Directiva Card",
+      "kind": "input",
+      "refersTo": "directiva-card",
+      "description": "Full bordered settings card for any control beyond a boolean toggle (text, number, select, browse button).",
+      "html": "<div class=\"ds-directiva\"><label>Calidad</label><div class=\"ds-help\">max = la mejor que ofrezca cada modelo. También se puede fijar, por ejemplo: 1080p,720p</div><input type=\"text\" value=\"max\"></div>",
+      "css": ".ds-directiva { border-radius: 2px; border: 1px solid #2b2e36; background: #1b1d22; padding: 0.75rem; font-family: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif; } .ds-directiva label { margin-bottom: 0.25rem; display: block; font-size: 13px; font-weight: 600; color: #e7e8ec; } .ds-help { margin-bottom: 0.5rem; font-size: 12px; color: #8a8d99; } .ds-directiva input { width: 100%; border-radius: 3px; border: 1px solid #2b2e36; background: #23262d; color: #e7e8ec; padding: 0.375rem 0.625rem; font-size: 13px; } .ds-directiva input:focus { border-color: #4f8fe0; outline: none; }"
+    },
+    {
+      "name": "Chip Filter (chip-filtro)",
+      "kind": "chip",
+      "refersTo": "chip-filtro",
+      "description": "Toggleable filter chip used in the Modelos tab's filter bar.",
+      "html": "<button class=\"ds-chip ds-chip--on\">Grabando <span class=\"ds-chip-count\">4</span></button>",
+      "css": ".ds-chip { border-radius: 3px; border: 1px solid #2b2e36; background: #23262d; color: #8a8d99; padding: 0.25rem 0.625rem; font-size: 12px; cursor: pointer; transition: border-color 0.15s, color 0.15s; } .ds-chip:hover { border-color: #4f8fe0; color: #e7e8ec; } .ds-chip--on { color: #e7e8ec; border-color: #4f8fe0; background: color-mix(in srgb, #4f8fe0 16%, #23262d); } .ds-chip-count { margin-left: 0.25rem; font-family: 'IBM Plex Mono', Consolas, monospace; color: #8a8d99; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Tally Wall",
+    "overview": "Nimbo is a single-user panel for an unattended Windows recorder, not a SaaS product with customers to court — the interface exists so one person can glance at it, in passing, and know what's recording, what failed, and what needs them, the way a wall of monitors in a real broadcast control room reads at a glance: by color and position, before anyone reads a word. The system already spoke this language before this pass (grafito panel, five fixed tally colors, a colored accent rail on every card); this pass is deliberately an evolution of that idiom, not a replacement — it gives the same vocabulary more intent (variable rail weight for urgency, a real type scale, a spacing scale, two container languages by control complexity) instead of inventing a new one.\n\nThe aesthetic is dense, dark, and utilitarian on purpose: a 13.5px root font-size (not the browser's 16px default) because this is a control panel meant to show a lot of state in a small window, not a marketing page meant to breathe. Depth comes from layering panel tones and from the rail's thickness and color, never from drop shadows or glow — a dark ambient glow was tried on the rail this session and deliberately removed for reading as the generic 'AI-generated dark UI' tell; weight and color carry urgency instead.",
+    "keyCharacteristics": [
+      "Grafito/panel neutral stack with five fixed-meaning tally colors that never shift role.",
+      "A literal-pixel type scale (11–21px) immune to the app's non-standard 13.5px root; a rem-based spacing scale that is consistent with it.",
+      "IBM Plex Mono strictly reserved for timecodes, counts, and the log — never decorative.",
+      "A single signature device, the .riel accent rail, whose thickness (not glow) communicates urgency.",
+      "Two settings container languages chosen by control complexity, not by category: a compact hairline row for toggles, a bordered card for anything with an input.",
+      "Flat by construction: no elevation shadows, only two intentional exceptions (a focus-style ring on the header status dot, a scrim under floating video controls)."
+    ],
+    "rules": [
+      { "name": "The Tally Meaning Rule", "body": "Each of the five signal colors carries exactly one meaning everywhere it appears — rail, dot, badge, header text, log line. A color is never borrowed for an unrelated accent just because its hue would otherwise fit; if a new surface needs a new kind of signal, it needs a sixth color, not a reused one.", "section": "colors" },
+      { "name": "The Contrast-Safe Mix Rule", "body": "When a tally color is used as text on a background where it fails the 4.5:1 floor (Signal Red at 4.3:1 on the header panel), mix it toward white only as far as the floor requires — never substitute a different hue, and never apply the mix to the same color's rail/dot/badge use, which keeps the exact signal value.", "section": "colors" },
+      { "name": "The Literal-Pixel Rule", "body": "The type-scale tokens are declared in literal px, never rem. The root is fixed at 13.5px, and a rem-based type token would silently resolve against that non-standard root instead of the intended pixel value — this was a real bug caught and fixed this session. The spacing scale stays in rem on purpose, tracking that same 13.5px root the way the rest of the app's Tailwind spacing already does.", "section": "typography" },
+      { "name": "The Mono Reservation Rule", "body": "IBM Plex Mono is used only for timecodes, byte/part counts, the log, and short technical tags. It never appears as a decorative 'technical-looking' treatment on prose, labels, or headings.", "section": "typography" },
+      { "name": "The 16px Edge-Safety Rule", "body": "Any element touching the viewport edge needs at least 16px of clearance, even though this app's rem resolves smaller than catalog Tailwind values. px-4 (13.5px) is unsafe on a true edge in this codebase; use px-5 (≈16.9px) or higher.", "section": "typography" },
+      { "name": "The No-Glow Rule", "body": "A colored drop-shadow/glow on the rail was tried this session and removed: it read as the generic dark-UI 'AI slop' accent rather than anything native to this system. Urgency is rail thickness and color only — never a shadow.", "section": "elevation" }
+    ],
+    "dos": [
+      "Do keep all five tally colors' meaning fixed everywhere they appear (rail, dot, badge, header, log) — see The Tally Meaning Rule.",
+      "Do declare new type-scale steps in literal px, never rem, as long as the 13.5px root stands — see The Literal-Pixel Rule.",
+      "Do reserve IBM Plex Mono for timecodes/counts/log/technical tags only — see The Mono Reservation Rule.",
+      "Do give every absolute/relative sibling pair an explicit z-index when paint order matters; two positioned siblings with z-index: auto paint in DOM order, not by role or element type (the rail-under-thumbnail bug).",
+      "Do treat 1rem (px-4) as unsafe on a true viewport edge in this codebase; use px-5 (1.25rem ≈ 16.9px) or an explicit value at or above 16px instead — see The 16px Edge-Safety Rule.",
+      "Do route a new boolean setting to .lista-ajustes and anything needing an input/select/button to .directiva, regardless of what section it lives in."
+    ],
+    "donts": [
+      "Don't add a drop-shadow or ambient glow to the rail, a card, or any accent element to signal urgency or depth — thickness and color already do that job, and a glow was tried and removed this session specifically because it read as generic AI-dark-UI decoration, not as anything native to this system.",
+      "Don't put a colored left-edge border ('side-tab') on a banner or horizontal bar to signal status — this system's accent language is a top rail on cards, not a left tab on banners; it was tried on .aviso-preflight this session and reverted for tripping exactly that tell. .aviso-preflight keeps only its bottom border.",
+      "Don't repurpose a tally color for a new, unrelated decorative accent just because the hue would otherwise work — a new kind of signal needs a sixth color, not a borrowed one.",
+      "Don't treat nimbo\\web\\icono.ico as a settled brand asset in any new design work — PRODUCT.md records it as explicitly not kept; don't derive a palette or mark from it."
+    ]
+  }
+}
