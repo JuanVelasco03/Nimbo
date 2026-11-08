@@ -28,7 +28,7 @@
 import { enviar, obtener, enviarWS } from "./api.js";
 import { crearReproductor } from "./reproductor_vivo.js";
 import { urlImagenProxy } from "./sitio.js";
-import { fusionarFavoritas, estadoDeFila, grabacionDeFila } from "./vista_modelos.js";
+import { fusionarFavoritas, fusionarChaturbate, estadoDeFila, grabacionDeFila } from "./vista_modelos.js";
 
 const ESPERA_ENTRE_IMAGENES_MS = 1000;
 const ESPERA_LATIDO_MS = 5000;
@@ -76,27 +76,46 @@ function _ocultarErrorVivo() {
 let ultimoEstado = null;
 let nombreAbierto = null;
 let idAbierto = null;
+// SPEC 18: que sitio es la modelo abierta -- decide que URL de snapshot
+// usar y que parametro mandar a /api/sitio/* (ver pintarImagen/
+// resolverIdYArrancar mas abajo).
+let sitioAbierto = "stripchat";
 let cargandoImagen = false;
 let esTemporal = false;       // esta vista agrego la modelo a grabar.txt
 let sesionVivaMontada = null; // rel de la sesion que el reproductor tiene puesta
+// La pista de audio puede aparecer despues que la de video. Se guarda por
+// separado para volver a montar exactamente una vez al llegar, no en cada
+// delta de estado.
+let sesionAudioVivaMontada = null;
 let variantesDisponibles = []; // sesiones vivas de esta modelo ahora mismo
 
 function filaAbierta() {
   if (!ultimoEstado || !nombreAbierto) return null;
   const clave = nombreAbierto.toLowerCase();
-  const fila = fusionarFavoritas(ultimoEstado).find(f => f.nombre.toLowerCase() === clave);
+  // SPEC 18: fusionarFavoritas() es solo de stripchat desde que "Modelos"
+  // se seccionó por sitio -- probar tambien fusionarChaturbate() antes de
+  // caer al fallback generico, o una tarjeta de chaturbate abria el modal
+  // en blanco.
+  const filas = sitioAbierto === "chaturbate"
+    ? fusionarChaturbate(ultimoEstado)
+    : fusionarFavoritas(ultimoEstado);
+  const fila = filas.find(f => f.nombre.toLowerCase() === clave);
   if (fila) return fila;
-  // fusionarFavoritas() solo conoce favoritas.json + estado.siguiendo --
-  // una modelo agregada con "grabar directo" (solo en grabar.txt, nunca
-  // favoriteada) no tiene fila ahi. El boton "ver en vivo" de la pestana
-  // Grabando (vista_grabando.js) abre el modal igual para esas, asi que
-  // si tiene sesion viva se arma una fila minima en vez de dejar el modal
-  // en blanco -- "local:false" es la mejor suposicion posible (no se
-  // sabe si es favorita; el boton +favoritas de todos modos es correcto).
+  // Ninguna de las dos conoce una modelo agregada con "grabar directo"
+  // (solo en grabar.txt, nunca favoriteada) -- el boton "ver en vivo" de
+  // la pestana Grabando (vista_grabando.js) abre el modal igual para
+  // esas, asi que si tiene sesion viva se arma una fila minima en vez de
+  // dejar el modal en blanco -- "local:false" es la mejor suposicion
+  // posible (no se sabe si es favorita; el boton +favoritas de todos
+  // modos es correcto). "sitio" se adivina de estado.lista.sitios: no es
+  // perfecto si dos homonimas de sitios distintos tienen sesion viva a la
+  // vez (caso raro, no cubierto), pero es la unica pista disponible aca.
   const sesiones = _sesionesDe(nombreAbierto);
   if (!sesiones.length) return null;
+  const sitios = (ultimoEstado.lista && ultimoEstado.lista.sitios) || {};
   return {
-    nombre: nombreAbierto, local: false, siguiendo: false,
+    nombre: nombreAbierto, sitio: sitios[clave] || "stripchat",
+    local: false, siguiendo: false,
     enLista: true, enVpn: false, estadoSitio: "", online: true,
     grabando: true, privadoDetector: false, vivo: true,
   };
@@ -121,7 +140,11 @@ function modoVivo() {
 function pintarAcciones(fila) {
   const cont = document.getElementById("modal-previa-acciones");
   if (!fila) { cont.innerHTML = ""; return; }
-  const { nombre, local, enVpn, enLista, vivo, online } = fila;
+  const { nombre, sitio, local, enVpn, enLista, vivo, online } = fila;
+  // SPEC 18: manejarAccionFavorita (main.js) lee data-sitio para saber a
+  // que sitio postear -- sin esto, las acciones del modal sobre una
+  // modelo de chaturbate pegaban contra stripchat.
+  const s = sitio || "stripchat";
 
   // en modo vivo, snapshot/sonido/pantalla-completa viven en la barra
   // flotante sobre el video (.transporte-vivo) -- ver montarVivo().
@@ -129,22 +152,22 @@ function pintarAcciones(fila) {
   if (modoVivo()) {
     botonVivo = "";
   } else if (vivo) {
-    botonVivo = `<button class="boton-chico" data-accion="ver-vivo" data-nombre="${nombre}">ver en vivo</button>`;
+    botonVivo = `<button class="boton-chico" data-accion="ver-vivo" data-nombre="${nombre}" data-sitio="${s}">ver en vivo</button>`;
   } else if (online) {
-    botonVivo = `<button class="boton-chico" data-accion="ver-vivo" data-nombre="${nombre}"
+    botonVivo = `<button class="boton-chico" data-accion="ver-vivo" data-nombre="${nombre}" data-sitio="${s}"
                    title="agrega la modelo a grabar.txt mientras mires; la quita sola al cerrar">ver en vivo</button>`;
   }
 
   cont.innerHTML = `
     ${botonVivo}
     <label class="conmutador" title="grabar">
-      <input type="checkbox" data-accion="toggle-grabar" data-nombre="${nombre}" ${enLista ? "checked" : ""}>
+      <input type="checkbox" data-accion="toggle-grabar" data-nombre="${nombre}" data-sitio="${s}" ${enLista ? "checked" : ""}>
       <span class="pista"></span>
     </label>
-    <button class="boton-chico" data-accion="toggle-vpn" data-nombre="${nombre}" data-vpn-activo="${enVpn ? "1" : "0"}">${enVpn ? "quitar VPN" : "marcar VPN"}</button>
+    <button class="boton-chico${s === "chaturbate" ? " oculta" : ""}" data-accion="toggle-vpn" data-nombre="${nombre}" data-sitio="${s}" data-vpn-activo="${enVpn ? "1" : "0"}">${enVpn ? "quitar VPN" : "marcar VPN"}</button>
     ${local
-      ? `<button class="boton-chico peligro" data-accion="quitar-favorita" data-nombre="${nombre}">quitar</button>`
-      : `<button class="boton-chico" data-accion="agregar-favorita" data-nombre="${nombre}">+ favoritas</button>`}`;
+      ? `<button class="boton-chico peligro" data-accion="quitar-favorita" data-nombre="${nombre}" data-sitio="${s}">quitar</button>`
+      : `<button class="boton-chico" data-accion="agregar-favorita" data-nombre="${nombre}" data-sitio="${s}">+ favoritas</button>`}`;
 }
 
 function pintarVariantes() {
@@ -152,28 +175,33 @@ function pintarVariantes() {
   if (!modoVivo() || variantesDisponibles.length <= 1) { cont.innerHTML = ""; return; }
   cont.innerHTML = variantesDisponibles.map(s => `
     <button class="boton-chico${s.sesion === sesionVivaMontada ? " activa" : ""}"
-            data-accion="seleccionar-variante" data-sesion="${s.sesion}">
+            data-accion="seleccionar-variante" data-sesion="${s.sesion}"
+            data-sesion-audio="${s.sesion_audio || ""}">
       ${s.variante || s.calidad || "?"}
     </button>`).join("");
 }
 
 // -- la sesion viva: cuando aparece/rota/desaparece --------------------
 
-function _sesionesDe(nombre) {
+function _sesionesDe(nombre, sitio = sitioAbierto) {
   if (!ultimoEstado || !ultimoEstado.vivo) return [];
   const clave = (nombre || "").toLowerCase();
-  return ultimoEstado.vivo.filter(s => (s.nombre || "").toLowerCase() === clave);
+  const sitioNormalizado = sitio || "stripchat";
+  return ultimoEstado.vivo.filter(s =>
+    (s.nombre || "").toLowerCase() === clave
+    && (s.sitio || "stripchat") === sitioNormalizado);
 }
 
-function montarVivo(sesionRel) {
+function montarVivo(sesionRel, sesionAudioRel = null) {
   sesionVivaMontada = sesionRel;
+  sesionAudioVivaMontada = sesionAudioRel || null;
   pararReloj();
   _ocultarErrorVivo();
   document.getElementById("modal-previa-imagen").classList.add("oculta");
   document.getElementById("modal-previa-sin-imagen").classList.add("oculta");
   document.getElementById("modal-previa-video").classList.remove("oculta");
   document.getElementById("modal-previa-transporte").classList.remove("oculta");
-  reproductor.montar(sesionRel);
+  reproductor.montar(sesionRel, sesionAudioRel);
   relojLatido.postMessage({ accion: esTemporal ? "arrancar" : "parar", ms: ESPERA_LATIDO_MS });
   // repintar ya mismo (no esperar al proximo poll de 2s): el boton pasa
   // de "ver en vivo" a nada (los controles ahora viven en la barra
@@ -186,6 +214,7 @@ function _volverASnapshot() {
   if (!modoVivo()) return;
   reproductor.desmontar();
   sesionVivaMontada = null;
+  sesionAudioVivaMontada = null;
   // El comentario del boton "salir-vivo" ya dice que volver al snapshot
   // NO cierra la vista temporal -- pero esto paraba el latido igual, asi
   // que a los CADUCIDAD_S=30s vivo_temporal.cosechar() la cerraba sola
@@ -208,9 +237,9 @@ function _salirDePantallaCompleta() {
 
 async function iniciarVivo(nombre, fila) {
   if (fila.vivo) {
-    const disponibles = _sesionesDe(nombre);
+    const disponibles = _sesionesDe(nombre, fila.sitio);
     const elegida = disponibles.find(s => s.elegida) || disponibles[0];
-    if (elegida) montarVivo(elegida.sesion);
+    if (elegida) montarVivo(elegida.sesion, elegida.sesion_audio);
     return;
   }
   // no hay sesion todavia: pedirla temporal (agrega a grabar.txt)
@@ -237,11 +266,26 @@ async function iniciarVivo(nombre, fila) {
 
 function sincronizarVivo() {
   if (!nombreAbierto) return;
-  variantesDisponibles = _sesionesDe(nombreAbierto);
+  variantesDisponibles = _sesionesDe(nombreAbierto, sitioAbierto);
 
   if (modoVivo()) {
-    const sigueViva = variantesDisponibles.some(s => s.sesion === sesionVivaMontada);
-    if (sigueViva) { pintarVariantes(); return; }
+    const montada = variantesDisponibles.find(s => s.sesion === sesionVivaMontada);
+    if (montada) {
+      // Chaturbate publica el video y el audio por separado. Es normal que
+      // el video aparezca en el primer estado y la carpeta de audio unos
+      // instantes despues. Antes se devolvia solo por coincidir la sesion
+      // de video y el reproductor quedaba mudo hasta la siguiente rotacion.
+      // montar() ya es idempotente para la misma pareja; si acaba de llegar
+      // sesion_audio, desmonta y la incorpora al MediaSource.
+      const audioMontado = sesionAudioVivaMontada || null;
+      const audioDisponible = montada.sesion_audio || null;
+      if (audioMontado !== audioDisponible) {
+        montarVivo(montada.sesion, audioDisponible);
+      } else {
+        pintarVariantes();
+      }
+      return;
+    }
     // la sesion montada ya no esta (rotacion de calidad: el detector
     // cierra la carpeta vieja y abre una nueva con otro sello) -- si
     // sigue habiendo alguna sesion viva, saltar ahi directo. Antes esto
@@ -252,7 +296,7 @@ function sincronizarVivo() {
     // ahi (o parecia que si) controlando un reproductor ya abandonado.
     if (variantesDisponibles.length) {
       const elegida = variantesDisponibles.find(s => s.elegida) || variantesDisponibles[0];
-      montarVivo(elegida.sesion);
+      montarVivo(elegida.sesion, elegida.sesion_audio);
     } else {
       _volverASnapshot();
     }
@@ -262,7 +306,7 @@ function sincronizarVivo() {
   // se pidio "ver en vivo" temporal y recien ahora aparecio la sesion
   if (esTemporal && variantesDisponibles.length) {
     const elegida = variantesDisponibles.find(s => s.elegida) || variantesDisponibles[0];
-    montarVivo(elegida.sesion);
+    montarVivo(elegida.sesion, elegida.sesion_audio);
   }
 }
 
@@ -297,8 +341,16 @@ function arrancarReloj() {
   relojImagen.postMessage({ accion: "arrancar", ms: ESPERA_ENTRE_IMAGENES_MS });
 }
 
+// SPEC 18: chaturbate no tiene id numerico -- su snapshot se pide por
+// username directo (chaturbate.url_snapshot), nunca hace falta resolver
+// nada antes de poder pintarlo. "hayImagenDisponible" junta los dos
+// casos sin que el resto del modulo tenga que distinguirlos.
+function hayImagenDisponible() {
+  return sitioAbierto === "chaturbate" ? !!nombreAbierto : !!idAbierto;
+}
+
 function intentarPintarImagen() {
-  if (!nombreAbierto || !idAbierto || cargandoImagen) return;
+  if (!nombreAbierto || !hayImagenDisponible() || cargandoImagen) return;
   pintarImagen();
 }
 
@@ -309,13 +361,21 @@ function pintarImagen() {
   // "sin imagen" encima (p.ej. cuando resolverIdYArrancar() no consigue un
   // id numerico) tapa el <video> mientras el modo vivo esta montado.
   if (modoVivo()) return;
-  if (!idAbierto) {
+  if (!hayImagenDisponible()) {
     img.classList.add("oculta");
     sinImagen.classList.remove("oculta");
     return;
   }
   cargandoImagen = true;
-  const url = "https://img.doppiocdn.media/snapshot/" + idAbierto + "/" + Math.floor(Date.now() / 1000);
+  // Cache-bust con la hora actual en los dos casos -- stripchat la lleva
+  // en el propio path (snapshot/<id>/<epoch>), chaturbate en la query
+  // (?room=<nombre>&_=<epoch>): jpeg.live.mmcdn.com ya cambia de
+  // contenido solo, pero sin un parametro que varie el navegador podria
+  // quedarse con una copia vieja entre pedidos.
+  const ahora = Math.floor(Date.now() / 1000);
+  const url = sitioAbierto === "chaturbate"
+    ? "https://jpeg.live.mmcdn.com/stream?room=" + encodeURIComponent(nombreAbierto) + "&_=" + ahora
+    : "https://img.doppiocdn.media/snapshot/" + idAbierto + "/" + ahora;
   img.onload = () => {
     cargandoImagen = false;
     // si en el medio se cambio a modo vivo, este pedido ya estaba en
@@ -333,25 +393,32 @@ function pintarImagen() {
     img.classList.add("oculta");
     sinImagen.classList.remove("oculta");
   };
-  img.src = urlImagenProxy(url);
+  img.src = urlImagenProxy(url, sitioAbierto);
 }
 
 // El id numerico puede venir ya resuelto (si la fila viene de
 // "siguiendo", sesion.py ya lo trae) o hay que pedirlo -- una favorita
-// puramente local no tiene id hasta que se consulta el sitio.
-async function resolverIdYArrancar(nombre) {
-  const m = ultimoEstado && ultimoEstado.siguiendo && ultimoEstado.siguiendo.modelos
-    ? ultimoEstado.siguiendo.modelos.find(x => (x.username || "").toLowerCase() === nombre.toLowerCase())
-    : null;
-
-  if (m && m.id) {
-    idAbierto = m.id;
+// puramente local no tiene id hasta que se consulta el sitio. Chaturbate
+// no necesita nada de esto (ver hayImagenDisponible), pero igual arranca
+// el reloj de refresco.
+async function resolverIdYArrancar(nombre, sitio) {
+  if (sitio === "chaturbate") {
+    idAbierto = null;
   } else {
-    try {
-      const r = await obtener("/api/sitio/estado?nombre=" + encodeURIComponent(nombre));
-      idAbierto = r.id || null;
-    } catch (err) {
-      idAbierto = null;
+    const m = ultimoEstado && ultimoEstado.siguiendo && ultimoEstado.siguiendo.modelos
+      ? ultimoEstado.siguiendo.modelos.find(x => (x.username || "").toLowerCase() === nombre.toLowerCase())
+      : null;
+
+    if (m && m.id) {
+      idAbierto = m.id;
+    } else {
+      try {
+        const r = await obtener("/api/sitio/estado?nombre=" + encodeURIComponent(nombre)
+          + "&sitio=" + encodeURIComponent(sitio));
+        idAbierto = r.id || null;
+      } catch (err) {
+        idAbierto = null;
+      }
     }
   }
 
@@ -363,18 +430,20 @@ async function resolverIdYArrancar(nombre) {
   // mientras se esperaba la respuesta de /api/sitio/estado, reactivarlo
   // aca pedia /api/sitio/imagen una vez por segundo en vano durante todo
   // el modo vivo.
-  if (idAbierto && !modoVivo()) arrancarReloj();
+  if (hayImagenDisponible() && !modoVivo()) arrancarReloj();
 }
 
 // -- abrir / cerrar -----------------------------------------------------
 
-export function abrirPreviaNombre(nombre) {
+export function abrirPreviaNombre(nombre, sitio = "stripchat") {
   if (!nombre) return;
 
   nombreAbierto = nombre;
+  sitioAbierto = sitio;
   idAbierto = null;
   esTemporal = false;
   sesionVivaMontada = null;
+  sesionAudioVivaMontada = null;
   variantesDisponibles = [];
   // Cada apertura del modal arranca en silencio, a proposito -- aunque
   // la modelo anterior haya quedado con sonido. El <video> es un
@@ -390,21 +459,21 @@ export function abrirPreviaNombre(nombre) {
   sincronizar();
   pintarImagen();   // "sin imagen" hasta que resuelva el id
   document.getElementById("modal-previa").classList.remove("oculta");
-  resolverIdYArrancar(nombre);
+  resolverIdYArrancar(nombre, sitio);
 }
 
 // Desde la pestana Grabando: ya se sabe que hay sesion viva (el boton
 // "ver en vivo" de una tarjeta solo aparece cuando det.sesiones no esta
 // vacio), asi que abre directo en video en vez de esperar el click extra
 // adentro del modal.
-export function abrirPreviaEnVivo(nombre) {
-  abrirPreviaNombre(nombre);
+export function abrirPreviaEnVivo(nombre, sitio = "stripchat") {
+  abrirPreviaNombre(nombre, sitio);
   const fila = filaAbierta();
   if (fila) iniciarVivo(nombre, fila);
 }
 
 function abrirPrevia(tarjeta) {
-  abrirPreviaNombre(tarjeta.dataset.nombre);
+  abrirPreviaNombre(tarjeta.dataset.nombre, tarjeta.dataset.sitio || "stripchat");
 }
 
 function cerrarPrevia() {
@@ -420,8 +489,10 @@ function cerrarPrevia() {
   _salirDePantallaCompleta();
   nombreAbierto = null;
   idAbierto = null;
+  sitioAbierto = "stripchat";
   esTemporal = false;
   sesionVivaMontada = null;
+  sesionAudioVivaMontada = null;
   variantesDisponibles = [];
   pararReloj();
   document.getElementById("modal-previa-video").classList.add("oculta");
@@ -430,14 +501,19 @@ function cerrarPrevia() {
 }
 
 export function iniciarPrevia() {
-  document.getElementById("favoritas").addEventListener("click", (ev) => {
+  // SPEC 18: la grilla de chaturbate es un contenedor aparte
+  // (#favoritas-chaturbate) -- sin este segundo listener, sus tarjetas
+  // nunca abrian el modal.
+  const _abrirDesdeGrilla = (ev) => {
     // no abrir el modal si el click fue sobre un control de la tarjeta
     // (el conmutador de grabar, los botones de VPN/favoritas)
     if (ev.target.closest("[data-accion], .conmutador")) return;
     const tarjeta = ev.target.closest(".tarjeta-modelo");
     if (!tarjeta) return;
     abrirPrevia(tarjeta);
-  });
+  };
+  document.getElementById("favoritas").addEventListener("click", _abrirDesdeGrilla);
+  document.getElementById("favoritas-chaturbate").addEventListener("click", _abrirDesdeGrilla);
 
   document.getElementById("modal-previa-cerrar").addEventListener("click", cerrarPrevia);
 
@@ -475,7 +551,10 @@ export function iniciarPrevia() {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       else cont.requestFullscreen().catch(() => {});
     } else if (accion === "seleccionar-variante") {
-      montarVivo(boton.dataset.sesion);
+      // La variante de Chaturbate tiene una segunda ruta de audio. Al
+      // elegirla manualmente no se puede perder ese dato (el camino de
+      // seleccion automatica ya llama montarVivo con ambas rutas).
+      montarVivo(boton.dataset.sesion, boton.dataset.sesionAudio || null);
     }
   });
 

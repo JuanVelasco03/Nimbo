@@ -80,7 +80,7 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
 
 ## Arquitectura
 
-### Cuatro procesos
+### Cinco procesos
 
 1. **`nimbo\app.py`** (el que abre el usuario) — servidor HTTP + ventana de
    Edge + icono de bandeja (`pystray`). Instancia única vía
@@ -115,27 +115,55 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
    usuario la pase a mano a `@navegador=` — no hay fallback automático
    editando `grabar.txt`, porque ese archivo lo escribe solo Nimbo
    (`lista.py`, ver "Quién escribe qué").
+5. **Chaturbate** (SPEC 18) — `python nimbo\lanzador_chaturbate.py`, que
+   importa `nucleo\scripts\grabador_chaturbate.py`. Segundo sitio de
+   grabación, con alcance reducido: sin login/cuenta, sin selección de
+   calidad, sin VPN (no pasa por el proxy de grabación). Es un **puerto**
+   deliberado de la parte agnóstica del sitio de `grabador_directo.py`
+   (mismo patrón de `Escritor`/`LectorGrabar`/cola de unión/dos eventos
+   `_parar`/`_fin`), no una generalización de ese archivo — portar en vez
+   de refactorizar porque `grabador_directo.py` graba 24/7 en producción y
+   no se puede arriesgar. El protocolo (sin cifrado propio, a diferencia de
+   MOUFLON: el master trae un JWT de corta vida, la chunklist las URLs en
+   claro) vive en `nucleo\scripts\chaturbate.py`, igual de seguro de
+   importar que `mouflon.py` (sin `addons = [...]`, sin estado de módulo
+   mutable). Apagado por defecto (`chaturbate_activo` en `config.json`):
+   el quinto proceso no arranca solo en una instalación que no pidió el
+   sitio nuevo. Solo corre para los nombres marcados `@chaturbate=` en
+   `grabar.txt` (calco de `@vpn=`, ver `lista.marcar_sitio`); el
+   supervisor nunca les abre pestaña (parcheado desde
+   `lanzador_supervisor.py`, sin tocar `supervisor.py`) y el detector
+   nunca los ve (su tráfico no pasa por el proxy de mitmdump). Chaturbate
+   no tiene id numérico: la identidad estable es el username, y lo que
+   hace de "id" en el nombre de carpeta/archivo es el token alfanumérico
+   de 7 caracteres que da `/api/chatvideocontext/` (por eso
+   `grabaciones.RE_NOMBRE` acepta `[A-Za-z0-9]+` en ese campo, no solo
+   dígitos).
 
 Las rutas de segmentos, grabaciones y el escenario de unión salen de la
 sección "Carpetas y discos" de `config.json` (`dir_segmentos`,
 `dir_grabaciones`, `union_modo`, `dir_union` — ver `specs\12-rutas_de_disco.md`):
 `nimbo\ajustes.py:resolver_rutas()` las valida (y cae al defecto, con aviso,
 si el disco pedido no responde) y `motor.py` las pasa a detector y camino
-directo como `M3U8_STREAMS`/`M3U8_GRABACIONES`/`M3U8_ESCENARIO`. Vacío o
-`"auto"` sigue siendo exactamente lo de antes de este spec: `M3U8_BASE`
-(`<raíz>\datos`) queda como el defecto de las dos primeras, y el escenario
-de unión sigue resolviéndose solo (`%TEMP%`) si no se pidió nada distinto.
+directo (y chaturbate) como `M3U8_STREAMS`/`M3U8_GRABACIONES`/`M3U8_ESCENARIO`.
+Vacío o `"auto"` sigue siendo exactamente lo de antes de este spec:
+`M3U8_BASE` (`<raíz>\datos`) queda como el defecto de las dos primeras, y
+el escenario de unión sigue resolviéndose solo (`%TEMP%`) si no se pidió
+nada distinto. Los dos sitios comparten la misma configuración de
+"Carpetas y discos" — no hay una ruta aparte para chaturbate.
 
 `nimbo\motor.py` los arranca y para. **El orden importa**: arranca detector
-→ supervisor → directo; para directo → supervisor → detector. La parada va
-por **stdin** (`"parar\n"`), nunca por `kill`: los tres hijos se abren con
-`stdin=PIPE` y ese extremo se mantiene abierto justo para esto. Matar el
-detector a lo bruto deja grabaciones sin unir; matar el supervisor deja
-Chromium huérfano y el perfil con cerrojos; matar el directo puede dejar
-una unión a medias (delega en `detectar_m3u8.py --unir` como subproceso).
-La parada del detector puede tardar **minutos**
-(`ESPERA_CIERRE_DETECTOR = 960s`) porque espera a que termine de unir; la
-del directo también (`ESPERA_CIERRE_DIRECTO = 1260s`), por el mismo motivo.
+→ supervisor → directo → chaturbate; para chaturbate → directo →
+supervisor → detector. La parada va por **stdin** (`"parar\n"`), nunca por
+`kill`: los cuatro hijos se abren con `stdin=PIPE` y ese extremo se
+mantiene abierto justo para esto. Matar el detector a lo bruto deja
+grabaciones sin unir; matar el supervisor deja Chromium huérfano y el
+perfil con cerrojos; matar el directo o chaturbate puede dejar una unión a
+medias (delegan en `detectar_m3u8.py --unir` como subproceso). La parada
+del detector puede tardar **minutos** (`ESPERA_CIERRE_DETECTOR = 960s`)
+porque espera a que termine de unir; la del directo y la de chaturbate
+también (`ESPERA_CIERRE_DIRECTO = 1260s`, reusada para los dos), por el
+mismo motivo.
 
 Si alguno se cae solo, `Motor._bucle_vigilancia` lo relanza sola: backoff
 5s/15s/60s y, agotados esos tres intentos, "rendido" (aviso
@@ -147,9 +175,11 @@ siempre (cerrar páginas por stdin → detector → supervisor): las pestañas
 viejas del supervisor no vuelven a pedir el stream solas, así que dejarlas
 vivas deja dos procesos en pie y cero grabación. Si el que muere es el
 supervisor alcanza con relanzar solo eso. **Si el que muere es el
-directo, también alcanza con relanzar solo eso**: no depende del proxy ni
-abre páginas, así que una caída suya no se lleva puesto a los otros dos
-(`Motor._reiniciar("directo")`). El relanzado nunca actúa si el usuario no
+directo o chaturbate, también alcanza con relanzar solo eso**: ninguno de
+los dos depende del proxy ni abre páginas, así que una caída suya no se
+lleva puestos a los otros tres (`Motor._reiniciar` con despacho explícito
+por nombre — ya no un `else` catch-all que asumía "directo" para
+cualquier valor no reconocido). El relanzado nunca actúa si el usuario no
 pidió arrancar (`Motor._deseado`) ni mientras hay una parada en curso
 (`_parando` / `_parada_pedida`) — eso es lo que distingue "se murió solo"
 de "lo paramos nosotros", igual que ya hacía `parar()` antes de esto. Una
@@ -158,7 +188,7 @@ benigno, porque el detector las retoma solo con `recuperar_pendientes()`
 al arrancar de nuevo (cubre tanto las suyas como las que dejó el directo a
 medio unir, porque las dos comparten el mismo `datos\streams\`).
 
-Hay un cuarto proceso que nadie lanza a mano: `wireproxy.exe`, el túnel
+Hay un sexto proceso que nadie lanza a mano: `wireproxy.exe`, el túnel
 de la VPN, hijo del detector (clase `_Tunel`). Sobrevive a su padre, y
 entonces el detector siguiente lo **adopta** (`_Tunel.run()` ve el puerto
 ocupado, se da por listo y termina) — un túnel con el `.conf` viejo que
@@ -175,11 +205,11 @@ Dos interpretes de Python distintos, a propósito: el de la ventana solo
 necesita stdlib + `pystray`/`Pillow`; el del supervisor necesita Playwright
 y `ajustes.localizar_python()` lo busca entre varios instalados. El
 detector corre con el Python empaquetado de mitmdump — por eso `puente.py`
-usa **solo librería estándar**. El camino directo también usa solo
-librería estándar (no le hace falta Playwright), pero `motor.py` lo
-arranca con el mismo intérprete que el supervisor (`a["python"]`) en vez
-de inventar una tercera forma de encontrar un Python: no cuesta nada y
-simplifica `ajustes.py`.
+usa **solo librería estándar**. El camino directo y chaturbate también
+usan solo librería estándar (no les hace falta Playwright), pero
+`motor.py` los arranca con el mismo intérprete que el supervisor
+(`a["python"]`) en vez de inventar una tercera/cuarta forma de encontrar
+un Python: no cuesta nada y simplifica `ajustes.py`.
 
 ### Los dos puentes (observar sin modificar)
 
@@ -320,27 +350,42 @@ la plantilla mínima). `grabar.template.txt` es la versión documentada
 completa, para copiar a mano si se quiere algo más rico que esa
 plantilla mínima; nadie la lee en runtime.
 
+SPEC 18 agrega `nucleo\scripts\chaturbate.py` y
+`nucleo\scripts\grabador_chaturbate.py`. `chaturbate.py` es protocolo
+puro del segundo sitio, con el mismo criterio que hace seguro a
+`mouflon.py` (ver "Los dos puentes" más abajo): sin `addons = [...]`, sin
+estado de módulo mutable, solo librería estándar — lo importan por igual
+`grabador_chaturbate.py` y `nimbo\sitio_chaturbate.py`. A diferencia de
+`mouflon.py`, nada fuera del binario compilado lo necesita (el tráfico de
+chaturbate no pasa por el proxy, así que `detectar_m3u8.py` nunca lo
+importa): en un paquete compilado queda fuera de disco, igual que
+`grabador_directo.py`/`grabador_chaturbate.py` (ver "Empaquetado para
+otra máquina").
+
 ### Quién escribe qué (invariantes de estado)
 
 | Archivo | Lo escribe | Lo lee |
 |---|---|---|
-| `nucleo\scripts\grabar.txt` | solo Nimbo (`lista.py`) | detector (cada 2s), supervisor (cada 1s, acortado por `lanzador_supervisor.py` desde los 5s originales), camino directo (cada 2s, `LectorGrabar`) |
-| `nucleo\scripts\activos.txt` | solo el detector | supervisor y camino directo (traducen ID→nombre); nadie en Nimbo |
+| `nucleo\scripts\grabar.txt` | solo Nimbo (`lista.py`) | detector (cada 2s), supervisor (cada 1s, acortado por `lanzador_supervisor.py` desde los 5s originales), camino directo (cada 2s, `LectorGrabar`), chaturbate (cada 2s, su propio `LectorGrabar`) |
+| `nucleo\scripts\activos.txt` | solo el detector | supervisor y camino directo (traducen ID→nombre); nadie en Nimbo; chaturbate no lo usa (no tiene id numérico) |
 | `estado\detector.json` | `puente.py` | Nimbo |
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
-| `estado\directo.json` | `grabador_directo.py` | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json`) |
-| `estado\ids.json` | `grabador_directo.py` | `grabador_directo.py` (cache propia id↔nombre) |
+| `estado\directo.json` | `grabador_directo.py` | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json` + `chaturbate.json`) |
+| `estado\chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | Nimbo (`estado_captura.fusionar()`) |
+| `estado\ids.json` | `grabador_directo.py` | `grabador_directo.py` (cache propia id↔nombre, valores `int`) |
+| `estado\ids_chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | `grabador_chaturbate.py` (cache propia nombre↔uid, valores `str` — aparte de `ids.json` porque el uid de chaturbate no es numérico) |
 | `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
 | `estado\eventos_directo.jsonl` | `lanzador_directo.py` | Nimbo (`registro.py`) |
+| `estado\eventos_chaturbate.jsonl` (SPEC 18) | `lanzador_chaturbate.py` | Nimbo (`registro.py`) |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
 | `estado\captura_sesion.json` (SPEC 15, vida corta) | Nimbo (`login_sitio.py`) | `puente.py` |
 | `estado\sesion_capturada.json` (SPEC 15, vida corta, cifrado DPAPI) | `puente.py` | Nimbo (`login_sitio.py`), que lo borra al leerlo |
 | `estado\licencia.json` | Nimbo (`licencia.py`) — incluye `visto_max`, la marca de agua del reloj que solo crece (`specs\07-licencia_inviolable.md`) | Nimbo |
-| `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo | Nimbo |
-| `datos\grabaciones\*.mp4` | solo el detector | Nimbo (lee / borra a papelera) |
-| `datos\streams\` | el detector escribe y marca con `unido.json`; Nimbo (`cosecha_streams.py`) borra lo ya unido con `shutil.rmtree`, **no** a la papelera (SPEC 14) | Nimbo |
+| `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo — `favoritas.json` es `[{"nombre","sitio"}, ...]` desde SPEC 18 (migra en silencio un array de strings viejo) | Nimbo |
+| `datos\grabaciones\*.mp4` | el detector (stripchat) y `grabador_chaturbate.py` (chaturbate, vía `detectar_m3u8.py --unir` como subproceso) | Nimbo (lee / borra a papelera) |
+| `datos\streams\` | el detector y `grabador_chaturbate.py` escriben y marcan con `unido.json`; Nimbo (`cosecha_streams.py`) borra lo ya unido con `shutil.rmtree`, **no** a la papelera (SPEC 14) | Nimbo |
 | `datos\miniaturas\*.jpg`, `estado\miniaturas.json` | Nimbo (`miniaturas.py`, cache regenerable — borra con `os.remove`, no papelera) | Nimbo |
-| `M3U8_STREAMS` / `M3U8_GRABACIONES` / `M3U8_ESCENARIO` (variables de entorno, no archivos) | `motor.py`, según "Carpetas y discos" en `config.json` (SPEC 12) | `detectar_m3u8.py`, `grabador_directo.py` |
+| `M3U8_STREAMS` / `M3U8_GRABACIONES` / `M3U8_ESCENARIO` (variables de entorno, no archivos) | `motor.py`, según "Carpetas y discos" en `config.json` (SPEC 12) — compartidas entre los dos sitios | `detectar_m3u8.py`, `grabador_directo.py`, `grabador_chaturbate.py` |
 
 `grabar.txt` es la **única fuente de verdad** de a quién se graba, y Nimbo
 es su único escritor — de ahí que no haga falta locking. El usuario lo
@@ -704,7 +749,9 @@ Lo que hay que saber si se toca algo de ahí:
 - Compilar con Nuitka (`empaquetado\compilar.py`) es el **default** de
   `--todo`, no un paso opcional: `construir.py` lo llama él mismo
   (`compilar_con_nuitka()`) y `--sin-compilar` es el escape para armar un
-  paquete abierto a propósito. Cierra `nimbo\` + `grabador_directo.py`. **No**
+  paquete abierto a propósito. Cierra `nimbo\` + `grabador_directo.py` +
+  `grabador_chaturbate.py` + `chaturbate.py` (SPEC 18: mismo criterio que
+  el camino directo — nada fuera del binario los necesita). **No**
   cierra `detectar_m3u8.py`, `puente.py`, `supervisor.py` ni `mouflon.py`:
   los dos primeros los carga mitmdump por ruta, y `mouflon.py` lo importa
   el detector al correr, así que la tabla de claves MOUFLON queda en disco

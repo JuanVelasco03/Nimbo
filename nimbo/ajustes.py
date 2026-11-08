@@ -61,6 +61,9 @@ DIR_DATOS = os.path.join(RAIZ, "datos")
 ESTADO_DETECTOR = os.path.join(DIR_ESTADO, "detector.json")
 ESTADO_SUPERVISOR = os.path.join(DIR_ESTADO, "supervisor.json")
 ESTADO_DIRECTO = os.path.join(DIR_ESTADO, "directo.json")
+# SPEC 18: lo escribe nucleo\scripts\grabador_chaturbate.py, mismo schema
+# de fila que directo.json (ver estado_captura.fusionar).
+ESTADO_CHATURBATE = os.path.join(DIR_ESTADO, "chaturbate.json")
 # Este lo escribe el propio Nimbo (ver sesion.py / servidor.py), no un
 # hijo -- la llamada a "favoritas en linea" de la cuenta real es un
 # pedido HTTP comun, no hace falta un proceso aparte para eso.
@@ -119,6 +122,12 @@ DEFECTOS = {
     # Aviso de actualizacion (SPEC 17, C12): prendido por defecto pero
     # visible y apagable. Ver nimbo\actualizaciones.py.
     "buscar_actualizaciones": True,
+    # Segundo sitio (SPEC 18): chaturbate_activo apagado por defecto -- el
+    # quinto proceso (nimbo\lanzador_chaturbate.py) no arranca solo en una
+    # instalacion que no pidio el sitio nuevo. sitio_chaturbate es la URL
+    # base, analoga a "sitio".
+    "sitio_chaturbate": "https://chaturbate.com",
+    "chaturbate_activo": False,
 }
 
 # Los archivos que tienen que estar en nucleo\scripts\ para poder arrancar
@@ -354,6 +363,10 @@ class Ajustes:
     @property
     def estado_supervisor(self) -> str:
         return ESTADO_SUPERVISOR
+
+    @property
+    def estado_chaturbate(self) -> str:
+        return ESTADO_CHATURBATE
 
     @property
     def estado_directo(self) -> str:

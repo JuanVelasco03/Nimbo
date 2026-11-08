@@ -1,0 +1,13 @@
+2026-11-08 16:19:52 [UNA-VEZ] bailey_eilish por 1.0 min, base=C:\Users\PC\AppData\Local\Temp\claude\F--nimbo\a39a47d8-84fb-47a0-84c0-c24fa394b26c\scratchpad\test_audio_base
+2026-11-08 16:19:52 [bailey_eilish] arranca
+2026-11-08 16:19:52 [bailey_eilish] estado: ? -> public
+2026-11-08 16:19:52 [bailey_eilish] id: V4RFCAV
+2026-11-08 16:19:53 [bailey_eilish] sesion nueva: 20261108-161953 (1080p_h264) con audio
+2026-11-08 16:19:55 [bailey_eilish] init video | init_3_video_240159793099550550_llhls.m4s
+2026-11-08 16:19:55 [bailey_eilish] init audio | init_5_audio_240159793099550550_llhls.m4s
+2026-11-08 16:20:52 [bailey_eilish] cierre: 1080p_h264_20261108-161953 (114 segmentos de video, 78 de audio) -- hilo terminado | encolado para unir
+2026-11-08 16:20:52 [bailey_eilish] termina
+2026-11-08 16:20:53 [UNIR] bailey_eilish_V4RFCAV/1080p_h264_20261108-161953: listo | 16:20:52 [UNIR] bailey_eilish_V4RFCAV_1080p_h264_20261108-161953: el escenario C:\Users\PC\AppData\Local\Temp esta en el mismo disco que la sesion; leo in situ | 16:20:52 [UNIR] bailey_eilish_V4RFCAV_1080p_h264_20261108-161953 | 114 segmentos | 37.2 MB -> remuxeando... | 16:20:53 [LISTO] C:\Users\PC\AppData\Local\Temp\claude\F--nimbo\a39a47d8-84fb-47a0-84c0-c24fa394b26c\scratchpad\test_audio_base\grabaciones\bailey_eilish_V4RFCAV_1080p_h264_20261108-161953.mp4 (37.2 MB)
+2026-11-08 16:20:53 [UNIR] bailey_eilish_V4RFCAV/1080p_h264_20261108-161953_audio: listo | 16:20:53 [UNIR] bailey_eilish_V4RFCAV_1080p_h264_20261108-161953_audio: el escenario C:\Users\PC\AppData\Local\Temp esta en el mismo disco que la sesion; leo in situ | 16:20:53 [UNIR] bailey_eilish_V4RFCAV_1080p_h264_20261108-161953_audio | 78 segmentos | 1.0 MB -> remuxeando... | 16:20:53 [LISTO] C:\Users\PC\AppData\Local\Temp\claude\F--nimbo\a39a47d8-84fb-47a0-84c0-c24fa394b26c\scratchpad\test_audio_base\grabaciones\bailey_eilish_V4RFCAV_1080p_h264_20261108-161953_audio.mp4 (0.9 MB)
+2026-11-08 16:20:54 [MUX] C:\Users\PC\AppData\Local\Temp\claude\F--nimbo\a39a47d8-84fb-47a0-84c0-c24fa394b26c\scratchpad\test_audio_base\grabaciones\bailey_eilish_V4RFCAV_1080p_h264_20261108-161953.mp4: audio mezclado
+2026-11-08 16:20:54 [UNA-VEZ] listo -- revisa C:\Users\PC\AppData\Local\Temp\claude\F--nimbo\a39a47d8-84fb-47a0-84c0-c24fa394b26c\scratchpad\test_audio_base\streams\ (unido.json si ya se unio solo)

@@ -127,6 +127,10 @@ const PREFERENCIAS = [
     ayuda: "Permite reabrir Nimbo o pararlo sin dejar la ventana abierta. Hace falta reiniciar Nimbo para que el cambio tome efecto." },
   { clave: "inicio_automatico", etiqueta: "Arrancar Nimbo con Windows",
     ayuda: "Agrega un acceso directo chico a la carpeta de Inicio de Windows." },
+  { clave: "chaturbate_activo", etiqueta: "Grabar chaturbate",
+    ayuda: "Prende el quinto proceso que graba las modelos marcadas en la seccion "
+      + "Chaturbate de \"Modelos\". Apagado, esa seccion sigue mostrando favoritas y "
+      + "estado online, pero nada se graba de verdad." },
 ];
 
 // Una fila de conmutador identica en preferencias/notificaciones/
@@ -353,7 +357,8 @@ export function renderRutas(estado) {
   if (!cont || cont.childElementCount === 0) return;
 
   const m = estado.motor || {};
-  const bloqueado = !!(m.detector_vivo || m.supervisor_vivo || m.directo_vivo || m.parando);
+  const bloqueado = !!(m.detector_vivo || m.supervisor_vivo || m.directo_vivo
+    || m.chaturbate_vivo || m.parando);
   for (const c of CAMPOS_CARPETA) {
     const campo = document.getElementById("ruta-" + c.clave);
     const boton = document.getElementById("examinar-" + c.clave);

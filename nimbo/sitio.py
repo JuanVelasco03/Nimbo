@@ -125,7 +125,21 @@ def _supervisor(ruta_scripts):
     return mod
 
 
-class Sitio:
+class SitioBase:
+    """Lo que stripchat (Sitio) y chaturbate (sitio_chaturbate.Chaturbate)
+    comparten de verdad: transporte (proxy opcional de @vpn=, el contexto
+    SSL sin verificar porque el certificado es el de mitmproxy), las dos
+    caches con TTL (estado/busqueda, ver las subclases) y la LRU de
+    miniaturas con su centinela _AUSENTE (ver imagen()/_imagen_cacheada/
+    _guardar_imagen mas abajo -- identicas para los dos sitios).
+
+    Lo que NO va aca, porque es especifico de cada sitio: el endpoint de
+    busqueda, el regex/JSON de estado online, y HOSTS_IMAGEN_PERMITIDOS
+    (cada subclase declara el suyo; un host de un sitio no tiene que
+    servir de proxy abierto para pedidos del otro)."""
+
+    HOSTS_IMAGEN_PERMITIDOS: frozenset = frozenset()
+
     def __init__(self, ajustes):
         self.ajustes = ajustes
         self._cache_estado = {}
@@ -143,7 +157,9 @@ class Sitio:
         # unico sitio donde existe el enrutado hacia el tunel de wireproxy
         # (lo hace el detector al ver la cabecera x-grab-tunel). Para el
         # resto, el sitio es publico y conviene ir directo: asi la busqueda
-        # funciona aunque el motor todavia no este arrancado.
+        # funciona aunque el motor todavia no este arrancado. chaturbate
+        # nunca pasa vpn=True (fuera de alcance, SPEC 18): no pasa por el
+        # proxy de grabacion, asi que @vpn= no le aplica.
         handlers = []
         if vpn:
             proxy = self.ajustes["proxy"]
@@ -161,6 +177,89 @@ class Sitio:
             req.add_header(sup.CABECERA_TUNEL, "1")
         with self._abridor(vpn).open(req, timeout=tope) as r:
             return r.status, r.read()
+
+    # -- miniaturas (proxy de imagen) --------------------------------------
+
+    def imagen(self, url: str, vpn: bool = False):
+        """-> (content_type, bytes) | None. Pide la imagen con el Referer
+        que el sitio exige (el navegador no puede mandarlo solo, ver
+        CABECERAS_IMAGEN mas abajo) y la devuelve tal cual, para que
+        servidor.py se la pase al navegador. Solo pide a los hosts de
+        self.HOSTS_IMAGEN_PERMITIDOS -- cualquier otra cosa se descarta sin
+        ni intentar el pedido. Nunca lanza: si la miniatura no carga, la
+        tarjeta se queda sin ella (el cliente ya tiene
+        onerror="this.remove()").
+
+        Cacheada en RAM (ver CACHE_IMAGEN_* arriba): un hit no sale a la
+        red ni se queda con el hilo del pool."""
+        try:
+            partes = urllib.parse.urlsplit(url)
+        except ValueError:
+            return None
+        if partes.scheme not in ("http", "https") or partes.netloc not in self.HOSTS_IMAGEN_PERMITIDOS:
+            return None
+
+        guardado = self._imagen_cacheada(url)
+        if guardado is not _AUSENTE:
+            return guardado
+
+        cabeceras = dict(CABECERAS_IMAGEN)
+        cabeceras["Referer"] = self.ajustes[self.CLAVE_SITIO].rstrip("/") + "/"
+        req = urllib.request.Request(url, headers=cabeceras)
+        resultado = None
+        # El lock NUNCA se tiene tomado durante el open(), igual que en
+        # estado_cacheado()/buscar(): es un pedido de red de hasta
+        # TOPE_IMAGEN segundos, y adentro del lock serializaria a todos
+        # los hilos del pool que esten sirviendo miniaturas.
+        try:
+            with self._abridor(vpn).open(req, timeout=TOPE_IMAGEN) as r:
+                if r.status == 200:
+                    resultado = (r.headers.get("Content-Type", "image/jpeg"),
+                                  r.read())
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
+            resultado = None
+        self._guardar_imagen(url, resultado)
+        return resultado
+
+    def _imagen_cacheada(self, url: str):
+        """-> el resultado guardado (puede ser None, un fallo cacheado), o
+        _AUSENTE si no hay nada vigente. None es un valor valido de cache,
+        asi que no sirve de centinela."""
+        ahora = time.time()
+        with self._lock:
+            visto = self._cache_imagen.get(url)
+            if visto is None:
+                return _AUSENTE
+            guardado, resultado = visto
+            tope = (CACHE_IMAGEN_SEGUNDOS if resultado is not None
+                    else CACHE_IMAGEN_FALLO_SEGUNDOS)
+            if ahora - guardado >= tope:
+                del self._cache_imagen[url]
+                self._bytes_imagen -= len(resultado[1]) if resultado else 0
+                return _AUSENTE
+            self._cache_imagen.move_to_end(url)   # LRU: recien usada
+            return resultado
+
+    def _guardar_imagen(self, url: str, resultado) -> None:
+        with self._lock:
+            viejo = self._cache_imagen.pop(url, None)
+            if viejo is not None and viejo[1] is not None:
+                self._bytes_imagen -= len(viejo[1][1])
+            self._cache_imagen[url] = (time.time(), resultado)
+            if resultado is not None:
+                self._bytes_imagen += len(resultado[1])
+            while (len(self._cache_imagen) > CACHE_IMAGEN_ENTRADAS
+                    or self._bytes_imagen > CACHE_IMAGEN_BYTES):
+                _, (_, fuera) = self._cache_imagen.popitem(last=False)
+                if fuera is not None:
+                    self._bytes_imagen -= len(fuera[1])
+
+
+class Sitio(SitioBase):
+    # Clave de ajustes.DEFECTOS que da la URL base del sitio (para el
+    # Referer de imagen() -- ver SitioBase.imagen).
+    CLAVE_SITIO = "sitio"
+    HOSTS_IMAGEN_PERMITIDOS = frozenset({"img.doppiocdn.media", "static-proxy.strpst.com"})
 
     # -- estado online (el metodo de supervisor.py) -----------------------
 
@@ -237,79 +336,3 @@ class Sitio:
         with self._lock:
             self._cache_busqueda[clave] = (ahora, resultados)
         return resultados
-
-    # -- miniaturas (proxy de imagen) --------------------------------------
-
-    def imagen(self, url: str, vpn: bool = False):
-        """-> (content_type, bytes) | None. Pide la imagen con el
-        Referer que el sitio exige (el navegador no puede mandarlo
-        solo, ver CABECERAS_IMAGEN mas arriba) y la devuelve tal cual,
-        para que servidor.py se la pase al navegador. Solo pide a los
-        hosts de HOSTS_IMAGEN_PERMITIDOS -- cualquier otra cosa se
-        descarta sin ni intentar el pedido. Nunca lanza: si la
-        miniatura no carga, la tarjeta se queda sin ella (el cliente
-        ya tiene onerror="this.remove()").
-
-        Cacheada en RAM (ver CACHE_IMAGEN_* arriba): un hit no sale a la
-        red ni se queda con el hilo del pool."""
-        try:
-            partes = urllib.parse.urlsplit(url)
-        except ValueError:
-            return None
-        if partes.scheme not in ("http", "https") or partes.netloc not in HOSTS_IMAGEN_PERMITIDOS:
-            return None
-
-        guardado = self._imagen_cacheada(url)
-        if guardado is not _AUSENTE:
-            return guardado
-
-        cabeceras = dict(CABECERAS_IMAGEN)
-        cabeceras["Referer"] = self.ajustes["sitio"].rstrip("/") + "/"
-        req = urllib.request.Request(url, headers=cabeceras)
-        resultado = None
-        # El lock NUNCA se tiene tomado durante el open(), igual que en
-        # estado_cacheado()/buscar(): es un pedido de red de hasta
-        # TOPE_IMAGEN segundos, y adentro del lock serializaria a todos
-        # los hilos del pool que esten sirviendo miniaturas.
-        try:
-            with self._abridor(vpn).open(req, timeout=TOPE_IMAGEN) as r:
-                if r.status == 200:
-                    resultado = (r.headers.get("Content-Type", "image/jpeg"),
-                                  r.read())
-        except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError):
-            resultado = None
-        self._guardar_imagen(url, resultado)
-        return resultado
-
-    def _imagen_cacheada(self, url: str):
-        """-> el resultado guardado (puede ser None, un fallo cacheado), o
-        _AUSENTE si no hay nada vigente. None es un valor valido de cache,
-        asi que no sirve de centinela."""
-        ahora = time.time()
-        with self._lock:
-            visto = self._cache_imagen.get(url)
-            if visto is None:
-                return _AUSENTE
-            guardado, resultado = visto
-            tope = (CACHE_IMAGEN_SEGUNDOS if resultado is not None
-                    else CACHE_IMAGEN_FALLO_SEGUNDOS)
-            if ahora - guardado >= tope:
-                del self._cache_imagen[url]
-                self._bytes_imagen -= len(resultado[1]) if resultado else 0
-                return _AUSENTE
-            self._cache_imagen.move_to_end(url)   # LRU: recien usada
-            return resultado
-
-    def _guardar_imagen(self, url: str, resultado) -> None:
-        with self._lock:
-            viejo = self._cache_imagen.pop(url, None)
-            if viejo is not None and viejo[1] is not None:
-                self._bytes_imagen -= len(viejo[1][1])
-            self._cache_imagen[url] = (time.time(), resultado)
-            if resultado is not None:
-                self._bytes_imagen += len(resultado[1])
-            while (len(self._cache_imagen) > CACHE_IMAGEN_ENTRADAS
-                    or self._bytes_imagen > CACHE_IMAGEN_BYTES):
-                _, (_, fuera) = self._cache_imagen.popitem(last=False)
-                if fuera is not None:
-                    self._bytes_imagen -= len(fuera[1])

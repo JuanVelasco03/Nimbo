@@ -456,6 +456,28 @@
     border-color: var(--color-tally-vivo);
     color: var(--color-tally-vivo);
   }
+  /* SPEC 18: badge chico de sitio (SC/CB) en "Grabando" -- la unica senal
+     visual de que dos tarjetas homonimas no son la misma modelo. Gris
+     neutro a proposito: no es un estado (como VPN/SIGUIENDO), es un dato
+     de identidad que tiene que verse siempre, incluso para stripchat. */
+  .etiqueta-sitio {
+    @apply shrink-0 rounded-[3px] border border-borde px-1 text-2xs
+           font-mono tracking-wide text-atenuado;
+  }
+
+  /* SPEC 18: "Modelos" seccionada por sitio -- un <details> nativo (el
+     abierto/cerrado se guarda solo, ver vista_modelos.js:
+     iniciarSeccionesSitio). summary hace de cabecera clickeable, con la
+     misma flechita de los <details> del navegador (marker). */
+  .seccion-sitio {
+    @apply rounded-sm border border-borde bg-panel p-3;
+  }
+  .seccion-sitio > summary {
+    @apply cursor-pointer select-none text-sm font-semibold text-texto;
+  }
+  .seccion-sitio[open] > summary {
+    @apply mb-1;
+  }
 
   .barra-sesion {
     @apply mb-3 flex items-center gap-2.5 rounded-sm border border-borde bg-panel px-3 py-2;

@@ -78,6 +78,7 @@ import rutas as rutas_mod
 import salud as salud_mod
 import sesion as sesion_mod
 import sitio as sitio_mod
+import sitio_chaturbate as sitio_chaturbate_mod
 import version as version_mod
 import vivo as vivo_mod
 import vivo_temporal as vivo_temporal_mod
@@ -193,13 +194,14 @@ def _agregar_alerta_actualizacion(app, salud):
 
 
 async def _leer_detector_fusionado(app):
-    """detector.json + directo.json fusionados (ver nimbo/estado_captura.py)
-    -- el shape que ve el resto del codigo sigue siendo el de detector.json,
-    asi que vivo.py/cosecha_streams.py no se enteran de donde salio cada
-    sesion."""
+    """detector.json + directo.json + chaturbate.json fusionados (ver
+    nimbo/estado_captura.py) -- el shape que ve el resto del codigo sigue
+    siendo el de detector.json, asi que vivo.py/cosecha_streams.py no se
+    enteran de donde salio cada sesion."""
     detector = await app.a_hilo(_leer_json, app.ajustes.estado_detector)
     directo = await app.a_hilo(_leer_json, app.ajustes.estado_directo)
-    return estado_captura_mod.fusionar(detector, directo, time.time())
+    chaturbate = await app.a_hilo(_leer_json, app.ajustes.estado_chaturbate)
+    return estado_captura_mod.fusionar(detector, directo, chaturbate, time.time())
 
 
 # ===========================================================================
@@ -221,6 +223,7 @@ class Aplicacion:
         self.sesion = sesion_mod.Sesion(
             os.path.join(ajustes_mod.RAIZ, "sesion.json"))
         self.sitio = sitio_mod.Sitio(ajustes)
+        self.sitio_chaturbate = sitio_chaturbate_mod.Chaturbate(ajustes)
         self.token = secrets.token_urlsafe(24)
         self.puerto = None           # lo fija Servidor._iniciar() apenas
                                       # abre el socket -- _origen_valido lo usa
@@ -338,7 +341,8 @@ class Aplicacion:
         primer tick)."""
         detector = estado_captura_mod.fusionar(
             _leer_json(self.ajustes.estado_detector),
-            _leer_json(self.ajustes.estado_directo))
+            _leer_json(self.ajustes.estado_directo),
+            _leer_json(self.ajustes.estado_chaturbate))
         base = {
             "motor": self.motor.estado(),
             "lista": self.lista.leer(),
@@ -579,7 +583,8 @@ async def _bucle_estado(app):
             if criticos:
                 if app.ajustes["parar_por_disco"] and not app.parada_por_disco:
                     m = app.motor.estado()
-                    if m["detector_vivo"] or m["supervisor_vivo"] or m["directo_vivo"]:
+                    if (m["detector_vivo"] or m["supervisor_vivo"]
+                            or m["directo_vivo"] or m["chaturbate_vivo"]):
                         app.parada_por_disco = True
                         _lanzar_tarea(app, "motor_parar", app.motor.parar)
             elif not any(a["tipo"] == "disco" for a in salud):
@@ -757,10 +762,23 @@ async def _tarea_login(app):
         await app.a_hilo(login_sitio_mod.limpiar, app.ajustes)
 
 
+def _sitio_de(app, sitio: str):
+    """app.sitio_chaturbate si sitio=="chaturbate", si no app.sitio (el
+    default de siempre) -- usado por las tres rutas /api/sitio/* (SPEC 18)."""
+    return app.sitio_chaturbate if sitio == "chaturbate" else app.sitio
+
+
 def _nombres_sin_estado(estado):
     """Mismo calculo que hacia main.js:nombresSinEstado -- las favoritas
     puramente locales, sin dato de "siguiendo" ni del supervisor, son las
-    unicas que de verdad necesitan golpear /api/sitio/estado."""
+    unicas que de verdad necesitan golpear /api/sitio/estado.
+
+    SPEC 18: favoritas.json ahora es [{"nombre","sitio"}, ...], y "sitio"
+    de cada entrada va en la clave de salida. con_dato solo cubre
+    stripchat ("Siguiendo"/supervisor no existen para chaturbate, fuera de
+    alcance): una favorita de chaturbate SIEMPRE pide su propio estado.
+    -> [(nombre, sitio), ...].
+    """
     con_dato = set()
     for m in (estado.get("siguiendo") or {}).get("modelos") or []:
         u = m.get("username")
@@ -770,43 +788,70 @@ def _nombres_sin_estado(estado):
         n = e.get("nombre")
         if n and e.get("estado"):
             con_dato.add(n.lower())
-    return [n for n in (estado.get("favoritas") or []) if n.lower() not in con_dato]
+    salida = []
+    for f in (estado.get("favoritas") or []):
+        nombre = f.get("nombre") or ""
+        if not nombre:
+            continue
+        sitio = f.get("sitio") or "stripchat"
+        if sitio == "stripchat" and nombre.lower() in con_dato:
+            continue
+        salida.append((nombre, sitio))
+    return salida
 
 
 async def _refrescar_sitio(app, semaforo):
-    favoritas = app.estado.get("favoritas") or []
+    """SPEC 18: dos sitios, un solo cupo (CUPO_SITIO) -- el tope existe
+    por getaddrinfo() sin timeout, y duplicarlo duplicaria el riesgo de
+    agotar el pool de hilos del servidor (ver Decisiones del spec). Las
+    claves del resultado publicado por el canal "sitio" llevan el sitio
+    adelante ("sitio/nombre", ver sitio.js:claveCache) para que dos
+    homonimas de sitios distintos no compartan cache de miniatura."""
+    favoritas = [(f.get("nombre") or "", f.get("sitio") or "stripchat")
+                 for f in (app.estado.get("favoritas") or []) if f.get("nombre")]
     vpn = set((app.estado.get("lista") or {}).get("vpn") or [])
     sin_estado = _nombres_sin_estado(app.estado)
     if not favoritas and not sin_estado:
         return
 
     async def _buscar(nombre):
+        # Solo stripchat: sitio_chaturbate.Chaturbate.buscar() siempre da
+        # [] (sin endpoint de catalogo sin cuenta, ver su docstring) -- no
+        # tiene sentido pagar el pedido para chaturbate.
         async with semaforo:
-            return nombre, "avatar", await app.a_hilo(app.sitio.buscar, nombre)
+            return nombre, "stripchat", "avatar", await app.a_hilo(app.sitio.buscar, nombre)
 
-    async def _estado(nombre):
+    async def _estado(nombre, sitio):
         async with semaforo:
-            r = await app.a_hilo(app.sitio.estado_cacheado, nombre, nombre.lower() in vpn)
-            return nombre, "estado", r
+            if sitio == "chaturbate":
+                r = await app.a_hilo(app.sitio_chaturbate.estado_cacheado, nombre)
+            else:
+                r = await app.a_hilo(app.sitio.estado_cacheado, nombre, nombre.lower() in vpn)
+            return nombre, sitio, "estado", r
 
-    tareas = [asyncio.ensure_future(_buscar(n)) for n in favoritas]
-    tareas += [asyncio.ensure_future(_estado(n)) for n in sin_estado]
+    tareas = [asyncio.ensure_future(_buscar(n)) for n, s in favoritas if s == "stripchat"]
+    tareas += [asyncio.ensure_future(_estado(n, s)) for n, s in sin_estado]
 
     resultados = {}
     for tarea in asyncio.as_completed(tareas):
         try:
-            nombre, forma, r = await tarea
+            nombre, sitio, forma, r = await tarea
         except Exception:
             continue
-        clave = nombre.lower()
+        clave = sitio + "/" + nombre.lower()
         entrada = resultados.setdefault(clave, {})
         if forma == "avatar":
-            exacto = next((m for m in r if m["username"].lower() == clave), None)
+            exacto = next((m for m in r if m["username"].lower() == nombre.lower()), None)
             if exacto:
                 entrada["avatar"] = exacto.get("avatar", "")
                 entrada["online"] = bool(exacto.get("online"))
         else:
             entrada["estado"] = r.get("estado", "")
+            if sitio == "chaturbate":
+                # Sin buscar() que traiga un avatarUrl: el snapshot publico
+                # (siempre la misma forma de URL) hace de miniatura.
+                entrada["avatar"] = app.sitio_chaturbate.url_snapshot(nombre)
+                entrada["online"] = r.get("estado") == "public"
 
     if resultados:
         app._publicar("sitio", "sitio", resultados)
@@ -1171,24 +1216,34 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
     elif ruta == "/api/lista":
         await _json(writer, 200, await app.a_hilo(app.lista.leer))
     elif ruta == "/api/sitio/buscar":
-        resultados = await app.a_hilo(app.sitio.buscar, _valor(qs, "q"))
+        # sitio= con default "stripchat" (SPEC 18): el cliente de hoy nunca
+        # manda ese parametro, asi que sigue andando identico a como
+        # andaba antes de este spec.
+        sitio_obj = _sitio_de(app, _valor(qs, "sitio"))
+        resultados = await app.a_hilo(sitio_obj.buscar, _valor(qs, "q"))
         await _json(writer, 200, {"resultados": resultados})
     elif ruta == "/api/sitio/estado":
         nombre = _valor(qs, "nombre")
         if not nombre:
             await _json(writer, 400, {"error": "falta 'nombre'"})
             return
-        lista_actual = await app.a_hilo(app.lista.leer)
-        vpn = nombre.lower() in lista_actual["vpn"]
-        resultado = await app.a_hilo(app.sitio.estado_cacheado, nombre, vpn)
+        sitio = _valor(qs, "sitio") or "stripchat"
+        if sitio == "chaturbate":
+            resultado = await app.a_hilo(app.sitio_chaturbate.estado_cacheado, nombre)
+        else:
+            lista_actual = await app.a_hilo(app.lista.leer)
+            vpn = nombre.lower() in lista_actual["vpn"]
+            resultado = await app.a_hilo(app.sitio.estado_cacheado, nombre, vpn)
         await _json(writer, 200, resultado)
     elif ruta == "/api/sitio/imagen":
         # El cupo es lo unico que acota de verdad cuanto del pool de 12
         # hilos puede comerse esto: la miniatura es un HTTPS saliente, y
         # getaddrinfo() no respeta el timeout (ver sitio.TOPE_IMAGEN).
-        # Mismo criterio que CUPO_SITIO con _bucle_sitio.
+        # Mismo criterio que CUPO_SITIO con _bucle_sitio -- compartido
+        # entre los dos sitios (SPEC 18, Decisiones).
+        sitio_obj = _sitio_de(app, _valor(qs, "sitio"))
         async with app.cupo_imagen:
-            resultado = await app.a_hilo(app.sitio.imagen, _valor(qs, "url"))
+            resultado = await app.a_hilo(sitio_obj.imagen, _valor(qs, "url"))
         if resultado is None:
             await _json(writer, 404, {"error": "no encontrado"})
             return
@@ -1267,6 +1322,7 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
             "parar_por_disco": a["parar_por_disco"],
             "notif_rendido": a["notif_rendido"], "notif_degradado": a["notif_degradado"],
             "notif_disco": a["notif_disco"], "notif_licencia": a["notif_licencia"],
+            "chaturbate_activo": a["chaturbate_activo"],
         })
     elif ruta == "/api/salud":
         # Fuera del delta de 1 Hz a proposito (ver salud.canario): KEY_MAP
@@ -1431,7 +1487,13 @@ def _buscar_actualizacion(app):
 async def _despachar_post(app, ruta, cuerpo):
     """-> (codigo, datos) | None (None = ruta desconocida, 404)."""
     if ruta == "/api/lista/agregar":
-        await app.a_hilo(app.lista.agregar_modelo, cuerpo["nombre"])
+        # sitio="chaturbate" (SPEC 18): marcar_sitio ya suma la linea de
+        # seleccion si todavia no existia (calco de marcar_vpn), asi que
+        # alcanza con UN pedido para "agregar y marcar" -- no dos.
+        if (cuerpo.get("sitio") or "stripchat") == "chaturbate":
+            await app.a_hilo(app.lista.marcar_sitio, cuerpo["nombre"], "chaturbate")
+        else:
+            await app.a_hilo(app.lista.agregar_modelo, cuerpo["nombre"])
     elif ruta == "/api/lista/quitar":
         await app.a_hilo(app.lista.quitar_modelo, cuerpo["nombre"])
     elif ruta == "/api/lista/vpn":
@@ -1439,10 +1501,10 @@ async def _despachar_post(app, ruta, cuerpo):
     elif ruta == "/api/lista/directiva":
         await app.a_hilo(app.lista.establecer_directiva, cuerpo["clave"], cuerpo["valor"])
     elif ruta == "/api/favoritas/agregar":
-        await app.a_hilo(app.favoritas.agregar, cuerpo["nombre"])
+        await app.a_hilo(app.favoritas.agregar, cuerpo["nombre"], cuerpo.get("sitio") or "stripchat")
         return 200, {"favoritas": await app.a_hilo(app.favoritas.leer)}
     elif ruta == "/api/favoritas/quitar":
-        await app.a_hilo(app.favoritas.quitar, cuerpo["nombre"])
+        await app.a_hilo(app.favoritas.quitar, cuerpo["nombre"], cuerpo.get("sitio") or "stripchat")
         return 200, {"favoritas": await app.a_hilo(app.favoritas.leer)}
     elif ruta == "/api/sesion/guardar":
         resultado = await app.a_hilo(app.sesion.guardar_desde_curl, cuerpo["curl"])
@@ -1494,7 +1556,7 @@ async def _despachar_post(app, ruta, cuerpo):
         if clave not in ("arrancar_al_abrir", "bandeja", "ver_navegador",
                           "parar_por_disco", "notif_rendido", "notif_degradado",
                           "notif_disco", "notif_licencia", "acceso_lan",
-                          "buscar_actualizaciones"):
+                          "buscar_actualizaciones", "chaturbate_activo"):
             return 400, {"error": "preferencia desconocida"}
         app.ajustes[clave] = bool(cuerpo["valor"])
         await app.a_hilo(app.ajustes.guardar)
@@ -1506,8 +1568,8 @@ async def _despachar_post(app, ruta, cuerpo):
         a = app.ajustes
         if clave in ("dir_segmentos", "dir_grabaciones"):
             m = app.motor.estado()
-            if (m["detector_vivo"] or m["supervisor_vivo"]
-                    or m["directo_vivo"] or m["parando"]):
+            if (m["detector_vivo"] or m["supervisor_vivo"] or m["directo_vivo"]
+                    or m["chaturbate_vivo"] or m["parando"]):
                 return 409, {"error": "el motor esta corriendo -- parala "
                                       "antes de cambiar esta carpeta"}
         valor = cuerpo["valor"]

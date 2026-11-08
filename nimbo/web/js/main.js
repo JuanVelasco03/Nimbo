@@ -7,7 +7,7 @@ import { obtener, enviar, conectarWS } from "./api.js";
 import { agregarLog, mostrarError } from "./registro.js";
 import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
-import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, iniciarLogin, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
+import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, iniciarLogin, iniciarSeccionesSitio, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
 import { renderDirectivas, cargarPreferencias, renderRutas, cargarRutas, cargarNotificaciones, cargarAccesoLan, iniciarAccesoLan, cargarActualizaciones } from "./vista_ajustes.js";
 import { revisarPreflight } from "./preflight.js";
 import { renderSalud } from "./salud.js";
@@ -191,9 +191,14 @@ function iniciarNavegacion() {
 async function manejarAccionFavorita(ev) {
   const nombre = ev.target.dataset.nombre;
   if (!nombre) return;
+  // SPEC 18: cada boton de una tarjeta lleva su sitio en el dataset (ver
+  // vista_modelos.js:crearTarjetaModelo) -- sin esto, cualquier accion
+  // sobre una tarjeta de chaturbate pegaba contra stripchat (el default
+  // del servidor para los clientes de antes de este spec).
+  const sitio = ev.target.dataset.sitio || "stripchat";
   try {
     if (ev.target.dataset.accion === "toggle-grabar") {
-      if (ev.target.checked) await enviar("/api/lista/agregar", { nombre });
+      if (ev.target.checked) await enviar("/api/lista/agregar", { nombre, sitio });
       else await enviar("/api/lista/quitar", { nombre });
       // en las dos direcciones: tildar sube hacia "Grabando", destildar
       // baja hacia "Show publico" (o la saca de la grilla), y las dos
@@ -203,9 +208,9 @@ async function manejarAccionFavorita(ev) {
       const activo = ev.target.dataset.vpnActivo !== "1";
       await enviar("/api/lista/vpn", { nombre, activo });
     } else if (ev.target.dataset.accion === "quitar-favorita") {
-      await enviar("/api/favoritas/quitar", { nombre });
+      await enviar("/api/favoritas/quitar", { nombre, sitio });
     } else if (ev.target.dataset.accion === "agregar-favorita") {
-      await enviar("/api/favoritas/agregar", { nombre });
+      await enviar("/api/favoritas/agregar", { nombre, sitio });
     } else {
       return;   // click en la tarjeta/modal que no es ninguna de estas acciones
     }
@@ -230,7 +235,10 @@ function iniciarAcciones() {
 
   document.getElementById("tarjetas").addEventListener("click", async (ev) => {
     const botonVivo = ev.target.closest("[data-accion='ver-vivo']");
-    if (botonVivo) { abrirPreviaEnVivo(botonVivo.dataset.nombre); return; }
+    if (botonVivo) {
+      abrirPreviaEnVivo(botonVivo.dataset.nombre, botonVivo.dataset.sitio || "stripchat");
+      return;
+    }
     const boton = ev.target.closest("[data-accion='quitar']");
     if (!boton) return;
     try {
@@ -241,15 +249,18 @@ function iniciarAcciones() {
 
   // Las tarjetas de la grilla y el modal de vista previa tienen los
   // mismos controles (data-accion/data-nombre identicos) -- un solo
-  // manejador para los dos, asi no hay dos copias de esta logica.
+  // manejador para los dos, asi no hay dos copias de esta logica. SPEC 18:
+  // la grilla de chaturbate usa el mismo manejador (sus tarjetas ya llevan
+  // data-sitio="chaturbate", ver vista_modelos.js:crearTarjetaModelo).
   document.getElementById("favoritas").addEventListener("click", manejarAccionFavorita);
+  document.getElementById("favoritas-chaturbate").addEventListener("click", manejarAccionFavorita);
   document.getElementById("modal-previa").addEventListener("click", manejarAccionFavorita);
 
   document.getElementById("boton-agregar-favorita").addEventListener("click", async () => {
     const campo = document.getElementById("nombre-nuevo");
     if (!campo.value.trim()) return;
     try {
-      await enviar("/api/favoritas/agregar", { nombre: campo.value.trim() });
+      await enviar("/api/favoritas/agregar", { nombre: campo.value.trim(), sitio: "stripchat" });
       campo.value = "";
     } catch (err) { mostrarError(err); }
     refrescar();
@@ -260,7 +271,33 @@ function iniciarAcciones() {
     const nombre = campo.value.trim();
     if (!nombre) return;
     try {
-      await enviar("/api/lista/agregar", { nombre });
+      await enviar("/api/lista/agregar", { nombre, sitio: "stripchat" });
+      marcarReubicarModelo(nombre);
+      campo.value = "";
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  // SPEC 18: la barra de agregar de chaturbate -- sin buscador (sin
+  // endpoint de catalogo sin cuenta, ver sitio_chaturbate.py), solo el
+  // campo + los mismos dos botones que la de stripchat.
+  document.getElementById("boton-agregar-favorita-cb").addEventListener("click", async () => {
+    const campo = document.getElementById("nombre-nuevo-cb");
+    const nombre = campo.value.trim();
+    if (!nombre) return;
+    try {
+      await enviar("/api/favoritas/agregar", { nombre, sitio: "chaturbate" });
+      campo.value = "";
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  document.getElementById("boton-grabar-directo-cb").addEventListener("click", async () => {
+    const campo = document.getElementById("nombre-nuevo-cb");
+    const nombre = campo.value.trim();
+    if (!nombre) return;
+    try {
+      await enviar("/api/lista/agregar", { nombre, sitio: "chaturbate" });
       marcarReubicarModelo(nombre);
       campo.value = "";
     } catch (err) { mostrarError(err); }
@@ -376,7 +413,7 @@ function otroModalAbierto() {
 // de aca (evita un ciclo main.js <-> paleta.js).
 function primeraModeloGrabando() {
   const tarjeta = document.querySelector('#tarjetas .tarjeta-modelo[data-estado="grabando"]');
-  return tarjeta ? tarjeta.dataset.nombre : null;
+  return tarjeta ? { nombre: tarjeta.dataset.nombre, sitio: tarjeta.dataset.sitio || "stripchat" } : null;
 }
 
 function iniciarAtajos() {
@@ -396,8 +433,8 @@ function iniciarAtajos() {
       const boton = document.getElementById("boton-motor");
       if (!boton.disabled) boton.click();
     } else if (ev.key === "v" || ev.key === "V") {
-      const nombre = primeraModeloGrabando();
-      if (nombre) abrirPreviaEnVivo(nombre);
+      const fila = primeraModeloGrabando();
+      if (fila) abrirPreviaEnVivo(fila.nombre, fila.sitio);
     }
   });
 }
@@ -410,6 +447,7 @@ iniciarBuscador();
 iniciarPanelSesion();
 iniciarLogin();
 iniciarFiltros();
+iniciarSeccionesSitio();
 iniciarPrevia();
 iniciarRegistro();
 iniciarGrabaciones();

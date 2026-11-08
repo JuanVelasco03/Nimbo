@@ -3,7 +3,7 @@
 
 import { obtener, bandera } from "./api.js";
 import { inicialDe } from "./formato.js";
-import { cacheSitio, sincronizarMiniatura, urlImagenProxy } from "./sitio.js";
+import { cacheSitio, claveCache, sincronizarMiniatura, urlImagenProxy } from "./sitio.js";
 import { agregarLog } from "./registro.js";
 
 // Favoritas locales (favoritas.json) + las que vienen de la cuenta real
@@ -61,7 +61,7 @@ export function fusionarFavoritas(estado) {
     if (deSiguiendo) return deSiguiendo;
     const sup = emisionPorNombre.get(clave);
     if (sup && sup.estado) return sup.estado;
-    const cache = cacheSitio[clave];
+    const cache = cacheSitio[claveCache("stripchat", clave)];
     if (cache && cache.estado) return cache.estado;
     return "";
   }
@@ -69,15 +69,25 @@ export function fusionarFavoritas(estado) {
   const filas = [];
   const porClave = new Map();
 
-  for (const nombre of (estado.favoritas || [])) {
+  // SPEC 18: favoritas.json ahora es [{"nombre","sitio"}, ...] -- esta
+  // funcion sigue siendo la de stripchat (siguiendo/VPN no existen para
+  // chaturbate), asi que filtra a las de sitio=="stripchat". enLista
+  // tambien chequea el sitio de grabar.txt: un nombre marcado
+  // @chaturbate= no cuenta como "en lista" para la tarjeta de stripchat
+  // (esta en la OTRA lista), aunque el literal este en la seleccion.
+  const sitios = estado.lista.sitios || {};
+  for (const f of (estado.favoritas || [])) {
+    if ((f.sitio || "stripchat") !== "stripchat") continue;
+    const nombre = f.nombre;
     const clave = nombre.toLowerCase();
     if (porClave.has(clave)) continue;
     const det = datosDeteccion(clave);
     const estadoSitio = estadoSitioDe(clave, "");
-    const cache = cacheSitio[clave];
+    const cache = cacheSitio[claveCache("stripchat", clave)];
     const fila = {
-      nombre, local: true, siguiendo: false,
-      enLista: enLista.has(clave), enVpn: vpn.has(clave),
+      nombre, sitio: "stripchat", local: true, siguiendo: false,
+      enLista: enLista.has(clave) && sitios[clave] !== "chaturbate",
+      enVpn: vpn.has(clave),
       estadoSitio,
       online: !!(cache && cache.online) || estadoVivo(estadoSitio),
       ...det,
@@ -89,7 +99,10 @@ export function fusionarFavoritas(estado) {
   for (const m of siguiendo) {
     if (!m.online || !m.username) continue;
     const clave = m.username.toLowerCase();
-    if (m.avatar) cacheSitio[clave] = { ...cacheSitio[clave], avatar: m.avatar, online: true };
+    if (m.avatar) {
+      const cc = claveCache("stripchat", clave);
+      cacheSitio[cc] = { ...cacheSitio[cc], avatar: m.avatar, online: true };
+    }
     const det = datosDeteccion(clave);
     const existente = porClave.get(clave);
     if (existente) {
@@ -100,8 +113,9 @@ export function fusionarFavoritas(estado) {
       continue;
     }
     const fila = {
-      nombre: m.username, local: false, siguiendo: true,
-      enLista: enLista.has(clave), enVpn: vpn.has(clave),
+      nombre: m.username, sitio: "stripchat", local: false, siguiendo: true,
+      enLista: enLista.has(clave) && sitios[clave] !== "chaturbate",
+      enVpn: vpn.has(clave),
       estadoSitio: m.estado || "", online: true,
       ...det,
     };
@@ -109,6 +123,59 @@ export function fusionarFavoritas(estado) {
     filas.push(fila);
   }
 
+  return filas;
+}
+
+// SPEC 18: la contraparte de fusionarFavoritas() para chaturbate --
+// sin "Siguiendo" (sin cuenta, fuera de alcance) ni VPN (chaturbate no
+// pasa por el proxy de grabacion). Una favorita de sitio=="chaturbate" +
+// lo que estado.detector.streams reporte para sitio=="chaturbate".
+export function fusionarChaturbate(estado) {
+  const enLista = new Set((estado.lista.seleccion || []).map(n => n.toLowerCase()));
+  const sitios = estado.lista.sitios || {};
+  const streams = ((estado.detector && estado.detector.streams) || [])
+    .filter(s => (s.sitio || "stripchat") === "chaturbate");
+  const generado = (estado.detector && estado.detector.generado) || 0;
+  const streamPorNombre = new Map(streams.map(s => [(s.modelo || "").toLowerCase(), s]));
+
+  function datosDeteccion(clave) {
+    const s = streamPorNombre.get(clave);
+    return {
+      grabando: !!(s && s.grabando), privadoDetector: !!(s && s.privado),
+      detectado: !!(s && !s.grabando && s.estado === "detectado"),
+      vivo: !!(s && s.sesiones && s.sesiones.length),
+      ultimoSegmento: s && s.ultimo_segmento,
+      esperando: !!(s && s.esperando),
+      generado,
+    };
+  }
+
+  function estadoSitioDe(clave) {
+    const cache = cacheSitio[claveCache("chaturbate", clave)];
+    return (cache && cache.estado) || "";
+  }
+
+  const filas = [];
+  const porClave = new Map();
+  for (const f of (estado.favoritas || [])) {
+    if ((f.sitio || "stripchat") !== "chaturbate") continue;
+    const nombre = f.nombre;
+    const clave = nombre.toLowerCase();
+    if (porClave.has(clave)) continue;
+    const det = datosDeteccion(clave);
+    const estadoSitio = estadoSitioDe(clave);
+    const cache = cacheSitio[claveCache("chaturbate", clave)];
+    const fila = {
+      nombre, sitio: "chaturbate", local: true, siguiendo: false,
+      enLista: enLista.has(clave) && sitios[clave] === "chaturbate",
+      enVpn: false,
+      estadoSitio,
+      online: !!(cache && cache.online) || estadoVivo(estadoSitio),
+      ...det,
+    };
+    porClave.set(clave, fila);
+    filas.push(fila);
+  }
   return filas;
 }
 
@@ -224,30 +291,9 @@ const FILTROS = [
   { clave: "siguiendo", etiqueta: "Siguiendo", test: f => f.siguiendo },
 ];
 
-const filtrosActivos = new Set();
-let ultimoEstadoModelos = null;
-
-// Pide que la proxima renderFavoritas() reacomode de verdad el orden
-// fisico de la grilla (reordenarse SOLA mientras el usuario esta
-// tildando conmutadores abajo del todo es justo lo que no se quiere --
-// ver el comentario largo en renderFavoritas). Se prende al cambiar los
-// chips de prioridad y al entrar a la pestana; se apaga sola al final de
-// cada render.
-let pedirReordenModelos = true;
-export function marcarReordenModelos() { pedirReordenModelos = true; }
-
-// Seguimiento puntual de una tarjeta que el usuario acaba de tocar
-// (tildo grabar, "Grabar ahora"): nombre (lowercase) -> vencimiento
-// (Date.now() + TOPE_REUBICAR_MS). El conmutador solo escribe grabar.txt;
-// el rango "Grabando" recien llega cuando el detector confirma la sesion,
-// unos segundos despues -- sin este seguimiento no hay forma de subir
-// SOLO esa tarjeta sin reabrir pedirReordenModelos (que reacomoda TODA
-// la grilla, el problema que el commit 0472331 evito a proposito).
-const reubicarHasta = new Map();
-const TOPE_REUBICAR_MS = 60_000;
-export function marcarReubicarModelo(nombre) {
-  reubicarHasta.set(nombre.toLowerCase(), Date.now() + TOPE_REUBICAR_MS);
-}
+// SPEC 18: chaturbate no tiene ni VPN ni "Siguiendo" (sin cuenta, fuera de
+// alcance) -- esos dos chips no tendrian sentido en su barra de filtros.
+const FILTROS_CHATURBATE = FILTROS.filter(f => f.clave !== "vpn" && f.clave !== "siguiendo");
 
 // Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
 // se mezclan en la lista -- primero las que graban de verdad, despues las
@@ -257,89 +303,253 @@ export function marcarReubicarModelo(nombre) {
 // al final, en el orden que ya traia -- sort() es estable.
 const ORDEN_PRIORIDAD = ["grabando", "en-lista", "publico"];
 
-function rangoPrioridad(fila) {
-  for (let i = 0; i < ORDEN_PRIORIDAD.length; i++) {
-    const clave = ORDEN_PRIORIDAD[i];
-    if (!filtrosActivos.has(clave)) continue;
-    const filtro = FILTROS.find(f => f.clave === clave);
-    if (filtro && filtro.test(fila)) return i;
+// SPEC 18: "Modelos" se seccionó por sitio -- cada sección necesita su
+// propio estado de filtros/orden/reconciliación de tarjetas, sin que
+// tocar uno afecte al otro. Esta fábrica es la MISMA lógica que ya tenía
+// el módulo cuando era un solo juego de globals (ver historial de este
+// archivo): el único cambio es que esos globals ahora viven en el cierre
+// de cada sección en vez de a nivel de módulo. La sección de stripchat se
+// instancia con los mismos ids/filtros de siempre, así que su
+// comportamiento no cambia en nada.
+function crearSeccion(idGrilla, idBarra, filtros) {
+  const filtrosActivos = new Set();
+  let ultimoEstado = null;
+  // Pide que el proximo render() reacomode de verdad el orden fisico de
+  // la grilla -- ver el comentario largo mas abajo, dentro de render().
+  let pedirReorden = true;
+  // Seguimiento puntual de una tarjeta que el usuario acaba de tocar:
+  // nombre (lowercase) -> vencimiento (Date.now() + TOPE_REUBICAR_MS).
+  const reubicarHasta = new Map();
+  const TOPE_REUBICAR_MS = 60_000;
+  // Nodos de los chips, cacheados una sola vez (ver el motivo mas abajo).
+  const chipsFiltro = new Map();
+  let elConteo = null;
+  const tarjetas = new Map();   // nombre -> elemento
+
+  function rangoPrioridad(fila) {
+    for (let i = 0; i < ORDEN_PRIORIDAD.length; i++) {
+      const clave = ORDEN_PRIORIDAD[i];
+      if (!filtrosActivos.has(clave)) continue;
+      const filtro = filtros.find(f => f.clave === clave);
+      if (filtro && filtro.test(fila)) return i;
+    }
+    return ORDEN_PRIORIDAD.length;
   }
-  return ORDEN_PRIORIDAD.length;
+
+  // Antes renderBarraFiltros hacia 11 filas.filter() completos (uno por
+  // filtro, cada uno recorriendo TODAS las filas y recalculando
+  // estadoDeFila() para "publico"/"offline") mas 22 querySelector por
+  // tick (uno por boton, uno por contador) -- a 1 Hz, con N modelos eso
+  // es ~11*N comparaciones repetidas y 22 busquedas en el DOM por
+  // segundo. Ahora es una sola pasada sobre las filas (estadoDeFila se
+  // calcula una vez por fila, no una vez por filtro) y cero
+  // querySelector fuera de la construccion inicial.
+  function renderBarraFiltros(filas) {
+    const cont = document.getElementById(idBarra);
+    if (!cont) return filas;
+    // Se arma una sola vez; despues solo se actualizan contadores y la
+    // clase .prendido -- reconstruir el innerHTML cada 2s (un render
+    // mas, via refrescar()) haria parpadear la barra y perder el click
+    // en curso.
+    if (cont.childElementCount === 0) {
+      cont.innerHTML = filtros.map(f => `
+        <button class="chip-filtro" data-filtro="${f.clave}" type="button">
+          ${f.etiqueta} <span class="cuenta"></span>
+        </button>`).join("")
+        + '<span class="conteo-modelos ml-auto font-mono text-xs text-atenuado"></span>';
+      chipsFiltro.clear();
+    }
+    if (chipsFiltro.size === 0) {
+      for (const f of filtros) {
+        const boton = cont.querySelector(`[data-filtro="${f.clave}"]`);
+        chipsFiltro.set(f.clave, { boton, cuenta: boton.querySelector(".cuenta") });
+      }
+      elConteo = cont.querySelector(".conteo-modelos");
+    }
+
+    const cuentas = new Array(filtros.length).fill(0);
+    const haySeleccion = filtrosActivos.size > 0;
+    const visibles = [];
+    for (const fila of filas) {
+      // estadoDeFila(fila) se calcula UNA vez por fila aca (lo usan los
+      // filtros "publico"/"offline" via fila._infoSitio), no una vez por
+      // cada filtro.
+      fila._infoSitio = estadoDeFila(fila);
+      let pasa = !haySeleccion;
+      for (let i = 0; i < filtros.length; i++) {
+        if (!filtros[i].test(fila)) continue;
+        cuentas[i]++;
+        if (filtrosActivos.has(filtros[i].clave)) pasa = true;
+      }
+      if (pasa) visibles.push(fila);
+    }
+
+    for (let i = 0; i < filtros.length; i++) {
+      const f = filtros[i];
+      const { boton, cuenta } = chipsFiltro.get(f.clave);
+      const n = cuentas[i];
+      if (cuenta.textContent !== String(n)) cuenta.textContent = n;
+      boton.classList.toggle("prendido", filtrosActivos.has(f.clave));
+      boton.classList.toggle("en-cero", n === 0);
+    }
+    elConteo.textContent = visibles.length + " de " + filas.length;
+    return visibles;
+  }
+
+  function iniciarFiltros() {
+    const cont = document.getElementById(idBarra);
+    if (!cont) return;
+    cont.addEventListener("click", (ev) => {
+      const boton = ev.target.closest("[data-filtro]");
+      if (!boton) return;
+      const clave = boton.dataset.filtro;
+      if (filtrosActivos.has(clave)) filtrosActivos.delete(clave);
+      else filtrosActivos.add(clave);
+      // Cambiar el filtro SI es el borde explicito donde corresponde
+      // reacomodar todo.
+      pedirReorden = true;
+      if (ultimoEstado) render(ultimoEstado);
+    });
+  }
+
+  function marcarReorden() { pedirReorden = true; }
+  function marcarReubicar(nombre) {
+    reubicarHasta.set(nombre.toLowerCase(), Date.now() + TOPE_REUBICAR_MS);
+  }
+
+  function vaciar(cont, html) {
+    tarjetas.clear();
+    cont.innerHTML = html;
+  }
+
+  function render(estado, fusionar, mensajeVacio, mensajeFiltro) {
+    ultimoEstado = estado;
+    const cont = document.getElementById(idGrilla);
+    if (!cont) return;
+    const filas = fusionar(estado);
+
+    // El array que devuelve ya viene filtrado: una sola pasada sobre
+    // `filas` sirve para los contadores de la barra Y para esta lista,
+    // en vez de que cada uno recorra todo de nuevo con su propio
+    // criterio.
+    const visibles = renderBarraFiltros(filas);
+    // Grabando / En lista / Show publico son OR entre si (el filtro ya
+    // los incluye a todos en `visibles`), pero el usuario los quiere
+    // agrupados y no mezclados: ver ORDEN_PRIORIDAD/rangoPrioridad.
+    const hayPrioridad = ORDEN_PRIORIDAD.some(c => filtrosActivos.has(c));
+    if (hayPrioridad) {
+      visibles.sort((a, b) => rangoPrioridad(a) - rangoPrioridad(b));
+    }
+    // Guardado por fila para que el bucle de abajo no tenga que
+    // recalcularlo: una tarjeta nueva se inserta segun este rango, pero
+    // una que ya estaba no se mueve salvo que pedirReorden este prendido.
+    for (const fila of visibles) fila._rango = hayPrioridad ? rangoPrioridad(fila) : 0;
+
+    if (filas.length === 0) {
+      vaciar(cont, '<div class="vacio">' + mensajeVacio + '</div>');
+      pedirReorden = true;   // la proxima vez que haya filas, reagrupar de cero
+      return;
+    }
+    if (visibles.length === 0) {
+      vaciar(cont, '<div class="vacio">' + mensajeFiltro + '</div>');
+      pedirReorden = true;
+      return;
+    }
+
+    // El "antes" del experimento, igual que en vista_grabando.js:
+    // localStorage.nimbo_tarjetas_in_place = "0" vuelve a reconstruir todo.
+    if (!bandera("nimbo_tarjetas_in_place", true)) {
+      tarjetas.clear();
+      cont.innerHTML = "";
+      for (const fila of visibles) {
+        const el = crearTarjetaModelo(fila.nombre, fila.sitio);
+        actualizarTarjetaModelo(el, fila);
+        cont.appendChild(el);
+      }
+      return;
+    }
+
+    if (cont.querySelector(".vacio")) cont.innerHTML = "";   // venia del caso vacio
+
+    const vistos = new Set();
+    for (const fila of visibles) {
+      vistos.add(fila.nombre);
+      let el = tarjetas.get(fila.nombre);
+      const esNueva = !el;
+      if (esNueva) {
+        el = crearTarjetaModelo(fila.nombre, fila.sitio);
+        tarjetas.set(fila.nombre, el);
+      }
+      actualizarTarjetaModelo(el, fila);
+      const rangoAnterior = el._rango;
+      el._rango = fila._rango;
+
+      if (pedirReorden) {
+        // Borde explicito (cambio de filtro, entrar a la pestana,
+        // primera pintada): reagrupar todo de cero. appendChild sobre un
+        // nodo que ya esta en el DOM lo MUEVE, no lo recrea -- la <img>
+        // no se vuelve a pedir.
+        cont.appendChild(el);
+      } else if (esNueva) {
+        // Tarjeta que recien aparece: se inserta en la posicion que le
+        // toca por rango SIN mover ninguna de las que ya estaban.
+        let destino = null;
+        for (const hijo of cont.children) {
+          if (hijo !== el && (hijo._rango || 0) > el._rango) { destino = hijo; break; }
+        }
+        cont.insertBefore(el, destino);
+      } else {
+        // Tarjeta puntual que el usuario toco hace poco (ver
+        // marcarReubicar): si de verdad cambio de grupo desde la ultima
+        // pintada, subirla sola.
+        const clave = fila.nombre.toLowerCase();
+        const vencimiento = reubicarHasta.get(clave);
+        if (vencimiento !== undefined) {
+          if (Date.now() > vencimiento) {
+            reubicarHasta.delete(clave);
+          } else if (rangoAnterior !== fila._rango) {
+            let destino = null;
+            for (const hijo of cont.children) {
+              if (hijo !== el && (hijo._rango || 0) > fila._rango) { destino = hijo; break; }
+            }
+            cont.insertBefore(el, destino);
+            reubicarHasta.delete(clave);
+          }
+        }
+      }
+    }
+    for (const [nombre, el] of tarjetas) {
+      if (vistos.has(nombre)) continue;
+      el.remove();
+      tarjetas.delete(nombre);
+      reubicarHasta.delete(nombre.toLowerCase());
+    }
+    pedirReorden = false;
+  }
+
+  return { render, iniciarFiltros, marcarReorden, marcarReubicar };
 }
 
-// Nodos de los chips, cacheados una sola vez: antes renderBarraFiltros
-// hacia 11 filas.filter() completos (uno por filtro, cada uno recorriendo
-// TODAS las filas y recalculando estadoDeFila() para "publico"/"offline")
-// mas 22 querySelector por tick (uno por boton, uno por contador) -- a
-// 1 Hz, con N modelos eso es ~11*N comparaciones repetidas y 22
-// busquedas en el DOM por segundo. Ahora es una sola pasada sobre las
-// filas (estadoDeFila se calcula una vez por fila, no una vez por
-// filtro) y cero querySelector fuera de la construccion inicial.
-const chipsFiltro = new Map();   // clave -> {boton, cuenta}
-let elConteoModelos = null;
+const seccionStripchat = crearSeccion("favoritas", "barra-filtros-modelos", FILTROS);
+const seccionChaturbate = crearSeccion("favoritas-chaturbate", "barra-filtros-chaturbate", FILTROS_CHATURBATE);
 
-function renderBarraFiltros(filas) {
-  const cont = document.getElementById("barra-filtros-modelos");
-  // Se arma una sola vez; despues solo se actualizan contadores y la
-  // clase .prendido -- reconstruir el innerHTML cada 2s (un render mas,
-  // via refrescar()) haria parpadear la barra y perder el click en curso.
-  if (cont.childElementCount === 0) {
-    cont.innerHTML = FILTROS.map(f => `
-      <button class="chip-filtro" data-filtro="${f.clave}" type="button">
-        ${f.etiqueta} <span class="cuenta"></span>
-      </button>`).join("")
-      + '<span id="conteo-modelos" class="ml-auto font-mono text-xs text-atenuado"></span>';
-    chipsFiltro.clear();
-  }
-  if (chipsFiltro.size === 0) {
-    for (const f of FILTROS) {
-      const boton = cont.querySelector(`[data-filtro="${f.clave}"]`);
-      chipsFiltro.set(f.clave, { boton, cuenta: boton.querySelector(".cuenta") });
-    }
-    elConteoModelos = document.getElementById("conteo-modelos");
-  }
+export function marcarReordenModelos() {
+  seccionStripchat.marcarReorden();
+  seccionChaturbate.marcarReorden();
+}
 
-  const cuentas = new Array(FILTROS.length).fill(0);
-  const haySeleccion = filtrosActivos.size > 0;
-  const visibles = [];
-  for (const fila of filas) {
-    // estadoDeFila(fila) se calcula UNA vez por fila aca (lo usan los
-    // filtros "publico"/"offline" via fila._infoSitio), no una vez por
-    // cada uno de los 11 filtros.
-    fila._infoSitio = estadoDeFila(fila);
-    let pasa = !haySeleccion;
-    for (let i = 0; i < FILTROS.length; i++) {
-      if (!FILTROS[i].test(fila)) continue;
-      cuentas[i]++;
-      if (filtrosActivos.has(FILTROS[i].clave)) pasa = true;
-    }
-    if (pasa) visibles.push(fila);
-  }
-
-  for (let i = 0; i < FILTROS.length; i++) {
-    const f = FILTROS[i];
-    const { boton, cuenta } = chipsFiltro.get(f.clave);
-    const n = cuentas[i];
-    if (cuenta.textContent !== String(n)) cuenta.textContent = n;
-    boton.classList.toggle("prendido", filtrosActivos.has(f.clave));
-    boton.classList.toggle("en-cero", n === 0);
-  }
-  elConteoModelos.textContent = visibles.length + " de " + filas.length;
-  return visibles;
+// Sin saber de que sitio es "nombre" (los llamadores de main.js no lo
+// saben): se marca en las dos secciones, que es inocuo -- la que no
+// tenga esa tarjeta simplemente no usa la entrada (ver Map.get en
+// render()).
+export function marcarReubicarModelo(nombre) {
+  seccionStripchat.marcarReubicar(nombre);
+  seccionChaturbate.marcarReubicar(nombre);
 }
 
 export function iniciarFiltros() {
-  document.getElementById("barra-filtros-modelos").addEventListener("click", (ev) => {
-    const boton = ev.target.closest("[data-filtro]");
-    if (!boton) return;
-    const clave = boton.dataset.filtro;
-    if (filtrosActivos.has(clave)) filtrosActivos.delete(clave);
-    else filtrosActivos.add(clave);
-    // Cambiar el filtro SI es el borde explicito donde corresponde
-    // reacomodar todo -- ver pedirReordenModelos.
-    marcarReordenModelos();
-    if (ultimoEstadoModelos) renderFavoritas(ultimoEstadoModelos);
-  });
+  seccionStripchat.iniciarFiltros();
+  seccionChaturbate.iniciarFiltros();
 }
 
 // -- la tarjeta de una modelo: se crea una vez y se actualiza in-place ---
@@ -357,12 +567,11 @@ export function iniciarFiltros() {
 // dependen de `local`) esta siempre en el DOM y se prende/apaga con
 // .oculta, asi la estructura no cambia nunca.
 
-const tarjetasModelos = new Map();   // nombre -> elemento
-
-function crearTarjetaModelo(nombre) {
+function crearTarjetaModelo(nombre, sitio) {
   const div = document.createElement("div");
   div.className = "tarjeta-modelo";
   div.dataset.nombre = nombre;
+  div.dataset.sitio = sitio;
   div.innerHTML = `
     <div class="riel"></div>
     <div class="miniatura-grande"></div>
@@ -389,7 +598,14 @@ function crearTarjetaModelo(nombre) {
   const nom = div.querySelector(".nombre");
   nom.textContent = nombre;
   nom.title = nombre;
-  for (const b of div.querySelectorAll("[data-accion]")) b.dataset.nombre = nombre;
+  for (const b of div.querySelectorAll("[data-accion]")) {
+    b.dataset.nombre = nombre;
+    // SPEC 18: el manejador generico (main.js:manejarAccionFavorita) usa
+    // esto para saber a que sitio postear -- sin esto, cualquier accion
+    // sobre una tarjeta de chaturbate pegaba contra stripchat por el
+    // default del servidor.
+    b.dataset.sitio = sitio;
+  }
   // Resuelto UNA vez por tarjeta, no una vez por tick: actualizarTarjetaModelo
   // corre a 1 Hz (ver el comentario de mas abajo) y antes hacia ~12
   // querySelector por tarjeta en cada vuelta -- con 48 modelos en
@@ -426,7 +642,7 @@ function pintarBadge(badge, info) {
 }
 
 function actualizarTarjetaModelo(el, fila) {
-  const { nombre, local, siguiendo, enVpn, enLista } = fila;
+  const { nombre, sitio, local, siguiendo, enVpn, enLista } = fila;
   // fila._infoSitio ya lo calculo renderBarraFiltros() para esta misma
   // fila en esta misma vuelta -- evita una tercera corrida de
   // estadoDeFila() por tarjeta por tick.
@@ -437,7 +653,7 @@ function actualizarTarjetaModelo(el, fila) {
 
   const estado = rec && rec.clase === "grabando" ? "grabando" : info.clase;
   if (el.dataset.estado !== estado) el.dataset.estado = estado;
-  sincronizarMiniatura(n.mini, nombre);
+  sincronizarMiniatura(n.mini, nombre, sitio);
 
   n.sigue.classList.toggle("oculta", !siguiendo);
   n.vpn.classList.toggle("oculta", !enVpn);
@@ -456,127 +672,21 @@ function actualizarTarjetaModelo(el, fila) {
 
   n.botonVpn.dataset.vpnActivo = enVpn ? "1" : "0";
   ponerTexto(n.botonVpn, enVpn ? "quitar VPN" : "marcar VPN");
+  // chaturbate no tiene VPN (fuera de alcance, SPEC 18): el boton no
+  // tiene nada util que hacer en esa seccion.
+  n.botonVpn.classList.toggle("oculta", sitio === "chaturbate");
 
   n.quitar.classList.toggle("oculta", !local);
   n.agregar.classList.toggle("oculta", local);
 }
 
-function vaciarFavoritas(cont, html) {
-  tarjetasModelos.clear();
-  cont.innerHTML = html;
-}
-
 export function renderFavoritas(estado) {
-  ultimoEstadoModelos = estado;
-  const cont = document.getElementById("favoritas");
-  const filas = fusionarFavoritas(estado);
-
-  // El array que devuelve ya viene filtrado: una sola pasada sobre
-  // `filas` sirve para los contadores de la barra Y para esta lista, en
-  // vez de que cada uno recorra todo de nuevo con su propio criterio.
-  const visibles = renderBarraFiltros(filas);
-  // Grabando / En lista / Show publico son OR entre si (el filtro ya los
-  // incluye a todos en `visibles`), pero el usuario los quiere agrupados
-  // y no mezclados: ver ORDEN_PRIORIDAD/rangoPrioridad mas arriba.
-  const hayPrioridad = ORDEN_PRIORIDAD.some(c => filtrosActivos.has(c));
-  if (hayPrioridad) {
-    visibles.sort((a, b) => rangoPrioridad(a) - rangoPrioridad(b));
-  }
-  // Guardado por fila para que el bucle de abajo no tenga que
-  // recalcularlo: una tarjeta nueva se inserta segun este rango, pero una
-  // que ya estaba no se mueve salvo que pedirReordenModelos este prendido
-  // (ver mas abajo).
-  for (const fila of visibles) fila._rango = hayPrioridad ? rangoPrioridad(fila) : 0;
-
-  if (filas.length === 0) {
-    vaciarFavoritas(cont, '<div class="vacio">Sin favoritas todavia. Agrega un nombre arriba, '
-      + 'o pega tu sesion para ver a quien segui en linea.</div>');
-    pedirReordenModelos = true;   // la proxima vez que haya filas, reagrupar de cero
-    return;
-  }
-  if (visibles.length === 0) {
-    vaciarFavoritas(cont, '<div class="vacio">Ninguna favorita coincide con el filtro elegido.</div>');
-    pedirReordenModelos = true;
-    return;
-  }
-
-  // El "antes" del experimento, igual que en vista_grabando.js:
-  // localStorage.nimbo_tarjetas_in_place = "0" vuelve a reconstruir todo.
-  if (!bandera("nimbo_tarjetas_in_place", true)) {
-    tarjetasModelos.clear();
-    cont.innerHTML = "";
-    for (const fila of visibles) {
-      const el = crearTarjetaModelo(fila.nombre);
-      actualizarTarjetaModelo(el, fila);
-      cont.appendChild(el);
-    }
-    return;
-  }
-
-  if (cont.querySelector(".vacio")) cont.innerHTML = "";   // venia del caso vacio
-
-  const vistos = new Set();
-  for (const fila of visibles) {
-    vistos.add(fila.nombre);
-    let el = tarjetasModelos.get(fila.nombre);
-    const esNueva = !el;
-    if (esNueva) {
-      el = crearTarjetaModelo(fila.nombre);
-      tarjetasModelos.set(fila.nombre, el);
-    }
-    actualizarTarjetaModelo(el, fila);
-    const rangoAnterior = el._rango;
-    el._rango = fila._rango;
-
-    if (pedirReordenModelos) {
-      // Borde explicito (cambio de filtro, entrar a la pestana, primera
-      // pintada): reagrupar todo de cero. appendChild sobre un nodo que
-      // ya esta en el DOM lo MUEVE, no lo recrea -- la <img> no se vuelve
-      // a pedir. Recorriendo `visibles` ya ordenado por rango, si nada
-      // cambio de lugar el navegador no toca nada.
-      cont.appendChild(el);
-    } else if (esNueva) {
-      // Tarjeta que recien aparece (una modelo nueva en linea): se
-      // inserta en la posicion que le toca por rango SIN mover ninguna
-      // de las que ya estaban -- eso es lo que el usuario esta mirando
-      // mientras tilda conmutadores de a una, y moverlas bajo el cursor
-      // es justo el problema que esto evita (ver pedirReordenModelos).
-      let destino = null;
-      for (const hijo of cont.children) {
-        if (hijo !== el && (hijo._rango || 0) > el._rango) { destino = hijo; break; }
-      }
-      cont.insertBefore(el, destino);
-    } else {
-      // Tarjeta puntual que el usuario toco hace poco (ver
-      // marcarReubicarModelo): si de verdad cambio de grupo desde la
-      // ultima pintada, subirla sola -- sin esto, tildar grabar en una
-      // modelo del grupo de abajo no la movia ni ahora ni cuando el
-      // detector confirmaba la sesion segundos despues.
-      const clave = fila.nombre.toLowerCase();
-      const vencimiento = reubicarHasta.get(clave);
-      if (vencimiento !== undefined) {
-        if (Date.now() > vencimiento) {
-          reubicarHasta.delete(clave);   // vencio el plazo: se queda donde esta
-        } else if (rangoAnterior !== fila._rango) {
-          let destino = null;
-          for (const hijo of cont.children) {
-            if (hijo !== el && (hijo._rango || 0) > fila._rango) { destino = hijo; break; }
-          }
-          cont.insertBefore(el, destino);
-          reubicarHasta.delete(clave);   // ya cumplio su proposito
-        }
-      }
-    }
-    // si no es nueva, no se pidio reorden y no hay seguimiento puntual
-    // pendiente: no se toca -- ni una operacion de DOM.
-  }
-  for (const [nombre, el] of tarjetasModelos) {
-    if (vistos.has(nombre)) continue;
-    el.remove();
-    tarjetasModelos.delete(nombre);
-    reubicarHasta.delete(nombre.toLowerCase());
-  }
-  pedirReordenModelos = false;
+  seccionStripchat.render(estado, fusionarFavoritas,
+    "Sin favoritas todavia. Agrega un nombre arriba, o pega tu sesion para ver a quien segui en linea.",
+    "Ninguna favorita coincide con el filtro elegido.");
+  seccionChaturbate.render(estado, fusionarChaturbate,
+    "Sin favoritas de chaturbate todavia. Agrega un nombre en el campo de arriba.",
+    "Ninguna favorita coincide con el filtro elegido.");
 }
 
 // -- estado de la sesion de la cuenta real ----------------------------------
@@ -681,6 +791,25 @@ export function iniciarPanelSesion() {
   });
 }
 
+// SPEC 18: abierto/cerrado de cada seccion de sitio ("Modelos") persiste
+// en localStorage -- un <details> nativo ya guarda su propio estado en el
+// DOM, esto solo lo hace sobrevivir a un refresco/reapertura de Nimbo.
+const CLAVE_SECCIONES = "nimbo_secciones_modelos";
+
+export function iniciarSeccionesSitio() {
+  let guardado = {};
+  try { guardado = JSON.parse(localStorage.getItem(CLAVE_SECCIONES) || "{}"); }
+  catch (err) { guardado = {}; }
+  for (const det of document.querySelectorAll(".seccion-sitio")) {
+    if (det.id in guardado) det.open = !!guardado[det.id];
+    det.addEventListener("toggle", () => {
+      guardado[det.id] = det.open;
+      try { localStorage.setItem(CLAVE_SECCIONES, JSON.stringify(guardado)); }
+      catch (err) { /* localStorage lleno o deshabilitado: no es critico */ }
+    });
+  }
+}
+
 // -- buscador con autocompletado -------------------------------------------
 
 let temporizadorBusqueda = null;
@@ -750,7 +879,8 @@ export function iniciarBuscador() {
         // los resultados de esta misma busqueda alimentan tambien la
         // cache de miniaturas, para no pedirlas dos veces
         for (const m of r.resultados) {
-          cacheSitio[m.username.toLowerCase()] = { ...cacheSitio[m.username.toLowerCase()], avatar: m.avatar, online: m.online };
+          const cc = claveCache("stripchat", m.username);
+          cacheSitio[cc] = { ...cacheSitio[cc], avatar: m.avatar, online: m.online };
         }
         renderSugerencias(r.resultados);
       } catch (err) { ocultarSugerencias(); }

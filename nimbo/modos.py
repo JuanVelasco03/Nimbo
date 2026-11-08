@@ -12,7 +12,10 @@ necesita no viola la invariante dura del repo (nunca importar
 `grabador_directo`, no el detector, y en un proceso que no es el de la
 ventana.
 
-Hoy el unico modo es `directo`. El supervisor **no** esta aca a proposito:
+SPEC 18 agrega `chaturbate`, el mismo patron exacto que `directo` (su
+propio `grabador_chaturbate.py`, sin Playwright ni proxy de por medio).
+
+El supervisor **no** esta aca a proposito:
 necesita Playwright con su driver de Node, y empaquetar eso adentro de un
 binario de Nuitka es pelearse con rutas de archivos de datos para nada --
 `supervisor.py` vive en disco de todas formas, porque no se puede cerrar
@@ -22,7 +25,7 @@ subproceso.
 """
 import sys
 
-MODOS = ("directo",)
+MODOS = ("directo", "chaturbate")
 
 
 def correr(argv) -> int:
@@ -51,6 +54,18 @@ def correr(argv) -> int:
         # el servidor, ni la bandeja, ni websockets.
         import lanzador_directo
         lanzador_directo.main()     # el suyo ya hace sys.exit()
+        return 0
+
+    if nombre == "chaturbate":
+        import ajustes as ajustes_mod
+        import licencia as licencia_mod
+        try:
+            ajustes_mod.cargar()
+        except licencia_mod.SinLicencia as e:
+            print("[NIMBO] licencia: " + str(e.motivo), file=sys.stderr)
+            return 3
+        import lanzador_chaturbate
+        lanzador_chaturbate.main()
         return 0
 
     print("modo desconocido: %s (hay: %s)" % (nombre, ", ".join(MODOS)),

@@ -161,6 +161,42 @@ class _EmisionVigilada(supervisor.Emision):
 
 supervisor.Emision = _EmisionVigilada
 
+
+class _ListaConChaturbate(supervisor.Lista):
+    """SPEC 18: @chaturbate= marca nombres que graba
+    nucleo\\scripts\\grabador_chaturbate.py por su cuenta (quinto proceso,
+    ver CLAUDE.md "El camino directo" / nimbo\\motor.py) -- el supervisor
+    no tiene por que abrirles pestana, ni descargar el stream de un sitio
+    que no pasa por su proxy. En vez de tocar supervisor.py, se reusa el
+    mismo mecanismo que ya filtra @directo=1: supervisar() (linea ~838)
+    abre pestana solo para "lista.actual() - lista.directo", asi que
+    sumar los nombres de @chaturbate= a ese mismo set logra el filtro sin
+    que supervisar() sepa que existe un segundo sitio."""
+
+    def actual(self):
+        nombres = super().actual()
+        chaturbate = set()
+        try:
+            with open(self.ruta, "r", encoding="utf-8", errors="replace") as f:
+                for linea in f:
+                    linea = linea.split("#", 1)[0].strip()
+                    if not linea.startswith("@"):
+                        continue
+                    clave, _, valor = linea[1:].partition("=")
+                    if clave.strip().lower() == "chaturbate":
+                        chaturbate |= {v.strip().lower()
+                                      for v in valor.split(",") if v.strip()}
+        except OSError:
+            pass
+        if chaturbate - self.directo:
+            _log("sin pestana (sitio chaturbate): %s"
+                 % (", ".join(sorted(chaturbate)) or "-"))
+        self.directo |= chaturbate
+        return nombres
+
+
+supervisor.Lista = _ListaConChaturbate
+
 # El bucle maestro de supervisar() solo nota nombres nuevos (o bajas) de
 # grabar.txt en su tick, y lee INTERVALO_LISTA como global del modulo en
 # cada iteracion del "await asyncio.sleep(INTERVALO_LISTA)" -- mismo

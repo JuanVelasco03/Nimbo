@@ -42,10 +42,13 @@ DIR_SCRIPTS = os.path.join(RAIZ, "nucleo", "scripts")
 
 # Modulos que Nuitka no encuentra siguiendo imports desde app.py:
 #   modos            lo importa una rama condicional del arranque
-#   lanzador_directo lo importa modos adentro de una funcion
+#   lanzador_directo, lanzador_chaturbate   los importa modos adentro de
+#                    una funcion (SPEC 18: mismo patron para chaturbate)
 #   grabador_directo + mouflon  los importa lanzador_directo DESPUES de
 #                    tocar sys.path en tiempo de ejecucion
-OCULTOS = ("modos", "lanzador_directo", "grabador_directo", "mouflon")
+#   grabador_chaturbate + chaturbate   idem, via lanzador_chaturbate
+OCULTOS = ("modos", "lanzador_directo", "grabador_directo", "mouflon",
+           "lanzador_chaturbate", "grabador_chaturbate", "chaturbate")
 
 # Lo que queda en disco igual (y por que). Solo informativo: lo copia
 # construir.py, no esto.
@@ -72,7 +75,7 @@ def comprobar():
         if rel in ABIERTOS:
             continue
         _log("   ", rel)
-    for n in ("grabador_directo.py",):
+    for n in ("grabador_directo.py", "grabador_chaturbate.py", "chaturbate.py"):
         _log("    nucleo\\scripts\\" + n)
     _log("")
     _log("queda legible en disco:")

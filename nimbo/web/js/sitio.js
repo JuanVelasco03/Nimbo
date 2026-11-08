@@ -1,5 +1,8 @@
 // Miniaturas y datos en vivo del sitio real (sitio.py del lado del
-// servidor). cacheSitio: nombre en minuscula -> {avatar, online, estado}.
+// servidor). cacheSitio: "sitio/nombre en minuscula" -> {avatar, online,
+// estado}. SPEC 18: la clave lleva el sitio adelante (claveCache) porque
+// dos modelos homonimas de sitios distintos no pueden compartir cache de
+// miniatura -- una pisaria el avatar de la otra sin ningun error visible.
 // Ya no lo llena este modulo pidiendo /api/sitio/* por su cuenta: el
 // servidor corre ese refresco el mismo (canal "sitio" del WebSocket, ver
 // servidor.py:_bucle_sitio) y aplicarSitio() solo mezcla lo que llega --
@@ -13,19 +16,27 @@ import { inicialDe } from "./formato.js";
 
 export const cacheSitio = {};
 
-// Las miniaturas del sitio (sobre todo el snapshot en vivo de
-// img.doppiocdn.media) exigen un Referer que el navegador nunca manda
-// solo -- por eso no van directo a <img src="url-del-sitio">, pasan por
-// /api/sitio/imagen, que las pide del lado de Nimbo con las cabeceras
-// que hacen falta (ver sitio.py: Sitio.imagen).
-export function urlImagenProxy(url) {
-  return conToken("/api/sitio/imagen?url=" + encodeURIComponent(url));
+export function claveCache(sitio, nombre) {
+  return (sitio || "stripchat") + "/" + (nombre || "").toLowerCase();
 }
 
-export function construirMiniatura(nombre) {
-  const info = cacheSitio[(nombre || "").toLowerCase()];
+// Las miniaturas del sitio (sobre todo el snapshot en vivo de
+// img.doppiocdn.media/jpeg.live.mmcdn.com) exigen un Referer que el
+// navegador nunca manda solo -- por eso no van directo a
+// <img src="url-del-sitio">, pasan por /api/sitio/imagen, que las pide
+// del lado de Nimbo con las cabeceras que hacen falta (ver sitio.py:
+// SitioBase.imagen). SPEC 18: "sitio" decide que HOSTS_IMAGEN_PERMITIDOS
+// aplica del lado del servidor -- sin pasarlo, una URL de chaturbate se
+// probaba contra la lista blanca de stripchat y siempre daba 404.
+export function urlImagenProxy(url, sitio = "stripchat") {
+  return conToken("/api/sitio/imagen?url=" + encodeURIComponent(url)
+    + "&sitio=" + encodeURIComponent(sitio));
+}
+
+export function construirMiniatura(nombre, sitio = "stripchat") {
+  const info = cacheSitio[claveCache(sitio, nombre)];
   if (info && info.avatar) {
-    return `<img src="${urlImagenProxy(info.avatar)}" alt="" loading="lazy" onerror="this.remove()">`;
+    return `<img src="${urlImagenProxy(info.avatar, sitio)}" alt="" loading="lazy" onerror="this.remove()">`;
   }
   return inicialDe(nombre);
 }
@@ -44,8 +55,8 @@ export function construirMiniatura(nombre) {
 // Nota: compara contra img.getAttribute("src"), no img.src -- el segundo
 // devuelve la URL absoluta ya resuelta por el navegador y nunca seria
 // igual a la relativa que arma urlImagenProxy().
-export function sincronizarMiniatura(contenedor, nombre) {
-  const info = cacheSitio[(nombre || "").toLowerCase()];
+export function sincronizarMiniatura(contenedor, nombre, sitio = "stripchat") {
+  const info = cacheSitio[claveCache(sitio, nombre)];
   const img = contenedor.querySelector("img");
 
   if (!info || !info.avatar) {
@@ -56,7 +67,7 @@ export function sincronizarMiniatura(contenedor, nombre) {
     return;
   }
 
-  const url = urlImagenProxy(info.avatar);
+  const url = urlImagenProxy(info.avatar, sitio);
   if (img) {
     if (img.getAttribute("src") !== url) {
       img.classList.add("cargando");
@@ -79,7 +90,7 @@ export function sincronizarMiniatura(contenedor, nombre) {
   contenedor.appendChild(nuevo);
 }
 
-// Mezcla lo que llego por el canal "sitio" del WebSocket -- {nombre:
+// Mezcla lo que llego por el canal "sitio" del WebSocket -- {"sitio/nombre":
 // {avatar?, online?, estado?}}, una entrada por cada favorita o modelo
 // sin estado que el servidor pudo resolver en esa vuelta (ver
 // servidor.py:_refrescar_sitio) -- sin pisar los campos que ya estaban.

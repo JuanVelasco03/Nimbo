@@ -60,6 +60,7 @@ _AQUI = os.path.dirname(os.path.abspath(__file__))
 PUENTE = os.path.join(_AQUI, "puente.py")
 LANZADOR_SUPERVISOR = os.path.join(_AQUI, "lanzador_supervisor.py")
 LANZADOR_DIRECTO = os.path.join(_AQUI, "lanzador_directo.py")
+LANZADOR_CHATURBATE = os.path.join(_AQUI, "lanzador_chaturbate.py")
 
 CREAR_SIN_VENTANA = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
 
@@ -130,6 +131,14 @@ def _cmd_directo(ajustes):
         # el docstring de ajustes.ejecutable, con la medicion).
         return [ajustes_mod.ejecutable(), "--modo", "directo"]
     return [ajustes["python"], LANZADOR_DIRECTO]
+
+
+def _cmd_chaturbate(ajustes):
+    """SPEC 18: mismo patron exacto que _cmd_directo, con su propio modo
+    de nimbo\\modos.py (ver ese modulo)."""
+    if ajustes_mod.compilado():
+        return [ajustes_mod.ejecutable(), "--modo", "chaturbate"]
+    return [ajustes["python"], LANZADOR_CHATURBATE]
 
 
 # Ningun componente de Nimbo necesita el proxy expuesto a la red local
@@ -330,6 +339,7 @@ class Motor:
         self.detector = None       # subprocess.Popen o None
         self.supervisor = None
         self.directo = None        # lanzador_directo.py (camino sin navegador)
+        self.chaturbate = None     # lanzador_chaturbate.py (SPEC 18, opt-in)
         self._lock = threading.Lock()
         self._parando = False
         # Un wireproxy que levantamos nosotros para tapar el agujero que
@@ -340,11 +350,12 @@ class Motor:
         # -- relanzado automatico de un hijo que se cae solo --------------
         self._deseado = False          # el usuario pidio que esto corra
         self._parada_pedida = threading.Event()
-        self._reiniciando = None       # "detector" | "supervisor" | "directo" | None
-        self._reintentos = {"detector": 0, "supervisor": 0, "directo": 0}
-        self._proximo = {"detector": 0.0, "supervisor": 0.0, "directo": 0.0}  # time.time()
+        self._reiniciando = None       # "detector"|"supervisor"|"directo"|"chaturbate"|None
+        self._reintentos = {"detector": 0, "supervisor": 0, "directo": 0, "chaturbate": 0}
+        self._proximo = {"detector": 0.0, "supervisor": 0.0, "directo": 0.0,
+                         "chaturbate": 0.0}  # time.time()
         self._rendido = set()
-        self._vivo_desde = {}          # "detector"/"supervisor"/"directo" -> monotonic
+        self._vivo_desde = {}          # "detector"/"supervisor"/"directo"/"chaturbate" -> monotonic
         # -- persistencia del log propio, ver "Los logs del motor" --------
         self._ruta_eventos = os.path.join(ajustes.dir_estado, "eventos_motor.jsonl")
         self._lock_eventos = threading.Lock()   # propio: no el de arranque/parada
@@ -366,12 +377,16 @@ class Motor:
     def directo_vivo(self) -> bool:
         return self._vivo(self.directo)
 
+    def chaturbate_vivo(self) -> bool:
+        return self._vivo(self.chaturbate)
+
     def estado(self) -> dict:
         proximos = [t for t in self._proximo.values() if t > time.time()]
         return {
             "detector_vivo": self.detector_vivo(),
             "supervisor_vivo": self.supervisor_vivo(),
             "directo_vivo": self.directo_vivo(),
+            "chaturbate_vivo": self.chaturbate_vivo(),
             "parando": self._parando,
             "tunel_propio": self._vivo(self._tunel_propio),
             "reiniciando": self._reiniciando,
@@ -419,8 +434,9 @@ class Motor:
         # agotado sus reintentos y quedo "rendido", esto lo revive.
         self._deseado = True
         self._parada_pedida.clear()
-        self._reintentos = {"detector": 0, "supervisor": 0, "directo": 0}
-        self._proximo = {"detector": 0.0, "supervisor": 0.0, "directo": 0.0}
+        self._reintentos = {"detector": 0, "supervisor": 0, "directo": 0, "chaturbate": 0}
+        self._proximo = {"detector": 0.0, "supervisor": 0.0, "directo": 0.0,
+                         "chaturbate": 0.0}
         self._rendido.clear()
         with self._lock:
             self._parando = False
@@ -443,6 +459,9 @@ class Motor:
                 algo = True
             if not self.directo_vivo():
                 self._arrancar_directo()
+                algo = True
+            if self.ajustes["chaturbate_activo"] and not self.chaturbate_vivo():
+                self._arrancar_chaturbate()
                 algo = True
             return algo
 
@@ -568,6 +587,38 @@ class Motor:
                          args=(self.directo, "directo"), daemon=True).start()
         self._vivo_desde["directo"] = time.monotonic()
 
+    def _arrancar_chaturbate(self):
+        # SPEC 18: mismo patron que _arrancar_directo (quinto proceso,
+        # sin proxy ni Playwright) -- las tres variables de "Carpetas y
+        # discos" se comparten con stripchat (un solo lugar donde elegir
+        # disco, ver specs\18-segundo-sitio-chaturbate.md).
+        a = self.ajustes
+        env = dict(os.environ)
+        env["NIMBO_SCRIPTS"] = a.scripts
+        env["NIMBO_ESTADO"] = a.dir_estado
+        env.setdefault("M3U8_BASE", a.dir_datos)
+        env["M3U8_STREAMS"] = a.streams
+        env["M3U8_GRABACIONES"] = a.grabaciones
+        env["M3U8_ESCENARIO"] = a.dir_union or "apagado"
+        if ajustes_mod.compilado():
+            # Mismos tres globals rotos que el camino directo adentro del
+            # binario (ver _arrancar_directo / lanzador_chaturbate.py:
+            # _rutas_compilado).
+            env.setdefault("M3U8_GRABAR",
+                           os.path.join(a.scripts, "grabar.txt"))
+            env["NIMBO_PYTHON"] = a["python"]
+        cmd = _cmd_chaturbate(a)
+        self._aviso("arrancando chaturbate (sin navegador)...")
+        self.chaturbate = subprocess.Popen(
+            cmd, cwd=a.scripts, env=env,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
+            creationflags=CREAR_SIN_VENTANA,
+        )
+        threading.Thread(target=self._leer_salida,
+                         args=(self.chaturbate, "chaturbate"), daemon=True).start()
+        self._vivo_desde["chaturbate"] = time.monotonic()
+
     # -- parada ordenada --------------------------------------------------
 
     def _mandar_parar(self, proc):
@@ -593,12 +644,13 @@ class Motor:
 
     def parar(self, espera_supervisor=ESPERA_CIERRE_SUPERVISOR,
               espera_detector=ESPERA_CIERRE_DETECTOR,
-              espera_directo=ESPERA_CIERRE_DIRECTO):
-        """Bloquea hasta que los tres terminaron (o se forzaron). Llamar
+              espera_directo=ESPERA_CIERRE_DIRECTO,
+              espera_chaturbate=ESPERA_CIERRE_DIRECTO):
+        """Bloquea hasta que los cuatro terminaron (o se forzaron). Llamar
         desde un hilo aparte si no se quiere congelar quien lo pida --
-        el cierre del detector (o de una union en curso del directo)
-        puede tardar minutos de verdad. Orden: directo -> supervisor ->
-        detector (el inverso del arranque)."""
+        el cierre del detector (o de una union en curso del directo o de
+        chaturbate) puede tardar minutos de verdad. Orden: chaturbate ->
+        directo -> supervisor -> detector (el inverso del arranque)."""
         # Antes de pelear por el lock: si hay un _reiniciar() en curso
         # puede tenerlo tomado hasta decenas de segundos, y ese reinicio
         # tiene que poder enterarse del pedido de parada sin el lock.
@@ -609,6 +661,18 @@ class Motor:
                 return
             self._parando = True
         try:
+            if self.chaturbate_vivo():
+                self._aviso("cerrando chaturbate -- si hay una union en "
+                           "curso puede tardar unos minutos")
+                self._mandar_parar(self.chaturbate)
+                if self._esperar_salida(self.chaturbate, espera_chaturbate):
+                    self._aviso("chaturbate cerrado")
+                else:
+                    self._aviso("chaturbate no cerro a tiempo -- lo fuerzo",
+                               nivel="error")
+                    self._matar(self.chaturbate)
+            self.chaturbate = None
+
             if self.directo_vivo():
                 self._aviso("cerrando el camino directo -- si hay una union "
                            "en curso puede tardar unos minutos")
@@ -931,17 +995,36 @@ class Motor:
                     if self._parando or self._parada_pedida.is_set():
                         return
                     self._arrancar_supervisor()
-            else:
-                # "directo": no depende del proxy (no pasa por el
-                # detector), asi que relanzarlo solo no necesita tocar
-                # nada mas -- a diferencia de una caida del detector, que
-                # si se lleva al supervisor con ella.
+            elif cual == "directo":
+                # No depende del proxy (no pasa por el detector), asi que
+                # relanzarlo solo no necesita tocar nada mas -- a
+                # diferencia de una caida del detector, que si se lleva al
+                # supervisor con ella.
                 self._aviso("reiniciando el motor: vuelvo a arrancar el "
                            "camino directo")
                 with self._lock:
                     if self._parando or self._parada_pedida.is_set():
                         return
                     self._arrancar_directo()
+            elif cual == "chaturbate":
+                # SPEC 18: mismo razonamiento que "directo" -- no depende
+                # del proxy ni abre paginas, asi que una caida suya no se
+                # lleva puestos a los otros tres.
+                self._aviso("reiniciando el motor: vuelvo a arrancar "
+                           "chaturbate")
+                with self._lock:
+                    if self._parando or self._parada_pedida.is_set():
+                        return
+                    self._arrancar_chaturbate()
+            else:
+                # Despacho explicito (SPEC 18): un "cual" que no es
+                # ninguno de los cuatro nombres conocidos no relanza nada
+                # a ciegas -- antes el "else" de abajo asumia "directo"
+                # para cualquier valor no reconocido, lo que hubiera
+                # relanzado el proceso equivocado en silencio.
+                self._aviso("no se que reiniciar (%r) -- no hago nada" % cual,
+                           nivel="error")
+                return
             self._aviso("motor reiniciado (intento %d)" %
                        self._reintentos[cual])
         except Exception as e:
@@ -1009,6 +1092,16 @@ class Motor:
                            proceso="directo", tipo="murio")
                 self.directo = None
                 self._agendar_reinicio("directo")
+            if self.chaturbate is not None and not self.chaturbate_vivo():
+                if (time.monotonic() - self._vivo_desde.get("chaturbate", 0)
+                        > ESTABLE_S):
+                    self._reintentos["chaturbate"] = 0
+                    self._rendido.discard("chaturbate")
+                self._aviso("chaturbate se cerro solo (codigo %s)" %
+                           self.chaturbate.returncode,
+                           proceso="chaturbate", tipo="murio")
+                self.chaturbate = None
+                self._agendar_reinicio("chaturbate")
             if murio_detector:
                 # Sin detector no hay nada que enrutar por el tunel.
                 self._parar_tunel_propio("el detector se cerro solo")
@@ -1025,13 +1118,19 @@ class Motor:
             # El detector tiene prioridad: si varios estan listos para
             # reintentar a la vez, se lanza primero el suyo (relanza
             # tambien al supervisor) y los demas quedan para el turno
-            # siguiente. El directo va al final: no depende de los otros
-            # dos ni ellos de el.
+            # siguiente. El directo y chaturbate van al final: no dependen
+            # de los otros ni ellos de ellos.
             if self._deseado and not self._parando and not self._reiniciando:
-                for cual in ("detector", "supervisor", "directo"):
+                candidatos = ["detector", "supervisor", "directo"]
+                # chaturbate_activo apagado: nunca se relanza solo, igual
+                # que arrancar() nunca lo arranca solo (ver SPEC 18).
+                if self.ajustes["chaturbate_activo"]:
+                    candidatos.append("chaturbate")
+                for cual in candidatos:
                     vivo = (self.detector_vivo() if cual == "detector"
                             else self.supervisor_vivo() if cual == "supervisor"
-                            else self.directo_vivo())
+                            else self.directo_vivo() if cual == "directo"
+                            else self.chaturbate_vivo())
                     if vivo or time.time() < self._proximo[cual]:
                         continue
                     threading.Thread(target=self._reiniciar, args=(cual,),

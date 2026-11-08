@@ -118,9 +118,17 @@ def _relativa(dir_streams, carpeta_abs) -> str | None:
 # -- quien esta vivo ahora mismo, segun detector.json ----------------------
 
 def sesiones_vivas(dir_streams, estado_detector: dict) -> list:
-    """-> [{"nombre","id","sesion","carpeta","calidad","codec","variante",
-    "elegida"}], una entrada por Stream con sesiones en estado_detector
-    (ver puente.py: el campo "sesiones" que se agrego por fila)."""
+    """-> [{"nombre","id","sesion","sesion_audio","carpeta","calidad",
+    "codec","variante","elegida"}], una entrada por Stream con sesiones en
+    estado_detector (ver puente.py: el campo "sesiones" que se agrego por
+    fila).
+
+    "sesion_audio" (SPEC 18, hallazgo tardio) es la pista de audio hermana
+    que grabador_chaturbate.py escribe en "<misma carpeta>_audio" cuando la
+    rendicion de chaturbate declara un grupo de audio (ver su docstring,
+    "Video y audio son DOS streams HLS separados") -- None si no existe
+    esa carpeta (stripchat/mouflon, que siempre vienen muxados en una sola
+    sesion, o una rendicion de chaturbate sin audio)."""
     salida = []
     for fila in (estado_detector or {}).get("streams") or []:
         sesiones = fila.get("sesiones") or []
@@ -131,9 +139,24 @@ def sesiones_vivas(dir_streams, estado_detector: dict) -> list:
             rel = _relativa(dir_streams, carpeta) if carpeta else None
             if rel is None:
                 continue
+            carpeta_audio = carpeta + "_audio"
+            # No anunciar la pista apenas existe su directorio: el escritor
+            # crea video y audio de forma independiente. Si el frontend la
+            # monta entre esos dos writes, su perfil todavia seria vacio y
+            # no volveria a intentarlo para la misma sesion. El init se
+            # escribe atomico, por lo que es la compuerta estable de que la
+            # pista ya se puede entregar a MSE.
+            rel_audio = (_relativa(dir_streams, carpeta_audio)
+                         if os.path.isdir(carpeta_audio)
+                         and os.path.isfile(ruta_init(carpeta_audio)) else None)
             salida.append({
                 "nombre": fila.get("modelo", ""), "id": fila.get("id", ""),
-                "sesion": rel, "variante": s.get("variante", ""),
+                # La identidad completa importa tambien para el reproductor:
+                # dos salas homonimas de sitios distintos pueden estar vivas
+                # al mismo tiempo (SPEC 18).
+                "sitio": fila.get("sitio") or "stripchat",
+                "sesion": rel, "sesion_audio": rel_audio,
+                "variante": s.get("variante", ""),
                 "calidad": s.get("calidad", ""), "codec": s.get("codec", ""),
                 "elegida": s.get("variante") == fila.get("elegida"),
             })

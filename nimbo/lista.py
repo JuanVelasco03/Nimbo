@@ -83,10 +83,11 @@ class Lista:
     # -- lectura de alto nivel ------------------------------------------
 
     def leer(self) -> dict:
-        """Snapshot completo: seleccion activa, @vpn=, y cada directiva
-        vista (con su clave ya canonicalizada)."""
+        """Snapshot completo: seleccion activa, @vpn=, @chaturbate= (como
+        "sitios": {nombre.lower(): sitio}) y cada directiva vista (con su
+        clave ya canonicalizada)."""
         lineas, _ = self._leer_lineas()
-        seleccion, vpn = [], set()
+        seleccion, vpn, chaturbate = [], set(), set()
         directivas = {}
         for cruda in lineas:
             sin_com = cruda.split("#", 1)[0]
@@ -103,12 +104,17 @@ class Lista:
                 if clave == "vpn":
                     vpn |= {v.strip().lower() for v in valor.split(",")
                            if v.strip()}
+                elif clave == "chaturbate":
+                    chaturbate |= {v.strip().lower() for v in valor.split(",")
+                                  if v.strip()}
                 else:
                     directivas[clave] = valor
                 continue
             seleccion.append(l)
+        sitios = {nombre.lower(): ("chaturbate" if nombre.lower() in chaturbate
+                                    else "stripchat") for nombre in seleccion}
         return {"seleccion": seleccion, "vpn": sorted(vpn),
-                "directivas": directivas}
+                "sitios": sitios, "directivas": directivas}
 
     # -- escritura de bajo nivel -----------------------------------------
 
@@ -201,6 +207,37 @@ class Lista:
 
             if idx_vpn is not None:
                 lineas[idx_vpn] = nueva
+            else:
+                lineas.insert(self._indice_primera_directiva(lineas), nueva)
+
+            if activo and self._indice_de_nombre(lineas, nombre_l) is None:
+                lineas.insert(self._indice_primera_directiva(lineas), nombre)
+
+            self._escribir(lineas, fin)
+
+    def marcar_sitio(self, nombre: str, sitio: str) -> None:
+        """Pone o saca a 'nombre' de @chaturbate=, calco de marcar_vpn().
+        sitio == "chaturbate" lo suma al set; cualquier otro valor
+        (normalmente "stripchat") lo saca. Si se marca chaturbate y el
+        nombre todavia no es una linea suelta, tambien se agrega -- sin la
+        linea de seleccion no graba nada, igual que con @vpn=."""
+        nombre = nombre.strip()
+        nombre_l = nombre.lower()
+        activo = sitio.strip().lower() == "chaturbate"
+        with self._lock:
+            lineas, fin = self._leer_lineas()
+            idx_cb, m = self._indice_de_directiva(lineas, "chaturbate")
+            actuales = ({v.strip().lower() for v in m.group(3).split(",")
+                        if v.strip()} if m else set())
+
+            if activo:
+                actuales.add(nombre_l)
+            else:
+                actuales.discard(nombre_l)
+            nueva = "@chaturbate=" + ",".join(sorted(actuales))
+
+            if idx_cb is not None:
+                lineas[idx_cb] = nueva
             else:
                 lineas.insert(self._indice_primera_directiva(lineas), nueva)
 

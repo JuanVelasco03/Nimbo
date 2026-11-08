@@ -119,6 +119,7 @@ function crearTarjeta(nombre) {
     <div class="cuerpo">
       <div class="fila-nombre">
         <span class="nombre"></span>
+        <span class="etiqueta-sitio"></span>
         <span class="etiqueta-vpn oculta">VPN</span>
       </div>
       <div class="estado-badge"><span class="bola"></span><span class="texto"></span></div>
@@ -140,11 +141,18 @@ function crearTarjeta(nombre) {
     badge: div.querySelector(".estado-badge"),
     texto: div.querySelector(".estado-badge .texto"),
     detalle: div.querySelector(".detalle"),
+    sitio: div.querySelector(".etiqueta-sitio"),
     vpn: div.querySelector(".etiqueta-vpn"),
     verVivo: div.querySelector("[data-accion='ver-vivo']"),
   };
   return div;
 }
+
+// SPEC 18: "Grabando" mezcla los dos sitios en una sola lista (ver
+// specs\18-segundo-sitio-chaturbate.md, Decisiones) -- este badge chico es
+// lo unico que distingue a simple vista una modelo de chaturbate de una
+// homonima de stripchat grabando al mismo tiempo.
+const ETIQUETA_SITIO = { stripchat: "SC", chaturbate: "CB" };
 
 // Escribe solo lo que cambio. Comparar antes de asignar no es cosmetico:
 // escribir el mismo textContent igual invalida el layout de ese nodo, y
@@ -153,21 +161,27 @@ function poner(nodo, texto) {
   if (nodo.textContent !== texto) nodo.textContent = texto;
 }
 
-function actualizarTarjeta(el, nombre, det, sup, enVpn, generado) {
+function actualizarTarjeta(el, nombre, det, sup, enVpn, generado, sitio) {
   const { clase, texto, detalle } = estadoDeTarjeta(det, sup, generado);
   const n = el._nodos;
 
   if (el.dataset.estado !== clase) el.dataset.estado = clase;
-  sincronizarMiniatura(n.mini, nombre);
+  if (el.dataset.sitio !== sitio) el.dataset.sitio = sitio;
+  sincronizarMiniatura(n.mini, nombre, sitio);
 
   const claseBadge = "estado-badge " + clase;
   if (n.badge.className !== claseBadge) n.badge.className = claseBadge;
   poner(n.texto, texto);
   poner(n.detalle, detalle);
+  poner(n.sitio, ETIQUETA_SITIO[sitio] || sitio);
+  n.sitio.title = sitio;
 
   n.vpn.classList.toggle("oculta", !enVpn);
   const vivo = !!(det && det.sesiones && det.sesiones.length);
   n.verVivo.classList.toggle("oculta", !vivo);
+  // vista_previa.js necesita el sitio para pedir la miniatura/el video
+  // correctos -- ver main.js:iniciarAcciones, boton "ver-vivo".
+  n.verVivo.dataset.sitio = sitio;
 }
 
 // -- la grilla ----------------------------------------------------------
@@ -192,7 +206,23 @@ export function renderTarjetas(estado) {
   const streams = (estado.detector && estado.detector.streams) || [];
   const emisiones = (estado.supervisor && estado.supervisor.emisiones) || [];
   const vpn = new Set(estado.lista.vpn || []);
+  const sitios = (estado.lista && estado.lista.sitios) || {};
   const generado = (estado.detector && estado.detector.generado) || 0;
+
+  // SPEC 18: dos modelos homonimas (una por sitio) no pueden matchear la
+  // misma fila de streams/emisiones solo por nombre -- streams ya trae
+  // "sitio" en cada fila (estado_captura.fusionar), y emisiones (el
+  // supervisor) es pura de stripchat por construccion (ver
+  // lanzador_supervisor.py: a @chaturbate= nunca se le abre pestana).
+  function datosDe(nombre) {
+    const clave = nombre.toLowerCase();
+    const sitio = sitios[clave] || "stripchat";
+    const det = streams.find(s => (s.modelo || "").toLowerCase() === clave
+                              && (s.sitio || "stripchat") === sitio);
+    const sup = sitio === "stripchat"
+      ? emisiones.find(e => e.nombre.toLowerCase() === clave) : undefined;
+    return { sitio, det, sup };
+  }
 
   // El "antes" del experimento (localStorage.nimbo_tarjetas_in_place =
   // "0"): la reconstruccion completa de antes del 25/10/2026, para poder
@@ -203,10 +233,8 @@ export function renderTarjetas(estado) {
     cont.innerHTML = "";
     for (const nombre of nombres) {
       const el = crearTarjeta(nombre);
-      actualizarTarjeta(el, nombre,
-                        streams.find(s => (s.modelo || "").toLowerCase() === nombre.toLowerCase()),
-                        emisiones.find(e => e.nombre.toLowerCase() === nombre.toLowerCase()),
-                        vpn.has(nombre.toLowerCase()), generado);
+      const { sitio, det, sup } = datosDe(nombre);
+      actualizarTarjeta(el, nombre, det, sup, vpn.has(nombre.toLowerCase()), generado, sitio);
       cont.appendChild(el);
     }
     return;
@@ -222,10 +250,8 @@ export function renderTarjetas(estado) {
       el = crearTarjeta(nombre);
       tarjetas.set(nombre, el);
     }
-    actualizarTarjeta(el, nombre,
-                      streams.find(s => (s.modelo || "").toLowerCase() === nombre.toLowerCase()),
-                      emisiones.find(e => e.nombre.toLowerCase() === nombre.toLowerCase()),
-                      vpn.has(nombre.toLowerCase()), generado);
+    const { sitio, det, sup } = datosDe(nombre);
+    actualizarTarjeta(el, nombre, det, sup, vpn.has(nombre.toLowerCase()), generado, sitio);
     // appendChild sobre un nodo que ya esta en el DOM lo MUEVE al final,
     // no lo recrea: la <img> no se vuelve a pedir. Haciendolo en el orden
     // de `nombres` queda ordenado igual que grabar.txt, y para el caso

@@ -61,45 +61,65 @@
   </section>
 
   <section id="vista-modelos" class="vista oculta min-h-0 flex-1 overflow-y-auto p-4">
-    <div class="agregar-rapido-cont relative mb-4">
-      <div class="flex gap-2">
-        <input id="nombre-nuevo" autocomplete="off"
-          class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
-          placeholder="nombre de la modelo (como aparece en la URL)">
-        <button class="boton-chico" id="boton-agregar-favorita">+ favoritas</button>
-        <button class="principal" id="boton-grabar-directo">Grabar ahora</button>
+    <details id="seccion-stripchat" class="seccion-sitio mb-4" open>
+      <summary>Stripchat</summary>
+      <div class="agregar-rapido-cont relative mb-4 mt-3">
+        <div class="flex gap-2">
+          <input id="nombre-nuevo" autocomplete="off"
+            class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
+            placeholder="nombre de la modelo (como aparece en la URL)">
+          <button class="boton-chico" id="boton-agregar-favorita">+ favoritas</button>
+          <button class="principal" id="boton-grabar-directo">Grabar ahora</button>
+        </div>
+        <div id="sugerencias" class="sugerencias oculta absolute inset-x-0 top-[calc(100%+6px)] z-10 max-h-72 overflow-y-auto rounded-sm border border-borde bg-panel shadow-xl shadow-black/40"></div>
       </div>
-      <div id="sugerencias" class="sugerencias oculta absolute inset-x-0 top-[calc(100%+6px)] z-10 max-h-72 overflow-y-auto rounded-sm border border-borde bg-panel shadow-xl shadow-black/40"></div>
-    </div>
 
-    <div id="barra-sesion" class="barra-sesion">
-      <span class="punto" id="punto-sesion"></span>
-      <span id="resumen-sesion" class="font-mono text-xs text-atenuado">sin sesion</span>
-      <button class="principal" id="boton-login">Iniciar sesion</button>
-      <span id="estado-login" class="font-mono text-xs text-atenuado oculta"></span>
-      <button class="boton-chico peligro oculta" id="boton-cancelar-login">Cancelar</button>
-      <button class="boton-chico ml-auto" id="boton-actualizar-siguiendo">Actualizar</button>
-      <button class="boton-chico peligro" id="boton-olvidar-sesion">Cerrar sesion</button>
-      <button class="boton-chico" id="boton-toggle-sesion">otra forma</button>
-    </div>
-    <div id="panel-sesion" class="panel-sesion oculta">
-      <p class="mb-2 text-xs text-atenuado">
-        En tu navegador (con la sesion de stripchat ya iniciada): F12 &rarr; pestana
-        <strong>Red</strong>, filtrar por Fetch/XHR, entrar a "Favoritas", click derecho
-        sobre el pedido a <code class="text-texto">favorites</code> &rarr; <strong>Copiar</strong>,
-        y pegar aca lo que copiaste -- sirve <strong>"Copiar como cURL (bash)"</strong> o
-        <strong>"Copiar como PowerShell"</strong>, el que te deje copiar.
-      </p>
-      <textarea id="campo-curl" rows="4" placeholder="curl 'https://es.stripchat.com/api/...' -H '...' ... (o el script de PowerShell)"
-        class="w-full rounded-sm border border-borde bg-panel px-3 py-2 font-mono text-xs text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"></textarea>
-      <div class="mt-2 flex gap-2">
-        <button class="principal" id="boton-guardar-sesion">Guardar sesion</button>
+      <div id="barra-sesion" class="barra-sesion">
+        <span class="punto" id="punto-sesion"></span>
+        <span id="resumen-sesion" class="font-mono text-xs text-atenuado">sin sesion</span>
+        <button class="principal" id="boton-login">Iniciar sesion</button>
+        <span id="estado-login" class="font-mono text-xs text-atenuado oculta"></span>
+        <button class="boton-chico peligro oculta" id="boton-cancelar-login">Cancelar</button>
+        <button class="boton-chico ml-auto" id="boton-actualizar-siguiendo">Actualizar</button>
+        <button class="boton-chico peligro" id="boton-olvidar-sesion">Cerrar sesion</button>
+        <button class="boton-chico" id="boton-toggle-sesion">otra forma</button>
       </div>
-    </div>
+      <div id="panel-sesion" class="panel-sesion oculta">
+        <p class="mb-2 text-xs text-atenuado">
+          En tu navegador (con la sesion de stripchat ya iniciada): F12 &rarr; pestana
+          <strong>Red</strong>, filtrar por Fetch/XHR, entrar a "Favoritas", click derecho
+          sobre el pedido a <code class="text-texto">favorites</code> &rarr; <strong>Copiar</strong>,
+          y pegar aca lo que copiaste -- sirve <strong>"Copiar como cURL (bash)"</strong> o
+          <strong>"Copiar como PowerShell"</strong>, el que te deje copiar.
+        </p>
+        <textarea id="campo-curl" rows="4" placeholder="curl 'https://es.stripchat.com/api/...' -H '...' ... (o el script de PowerShell)"
+          class="w-full rounded-sm border border-borde bg-panel px-3 py-2 font-mono text-xs text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"></textarea>
+        <div class="mt-2 flex gap-2">
+          <button class="principal" id="boton-guardar-sesion">Guardar sesion</button>
+        </div>
+      </div>
 
-    <div id="barra-filtros-modelos" class="barra-filtros mb-3"></div>
+      <div id="barra-filtros-modelos" class="barra-filtros mb-3"></div>
 
-    <div id="favoritas" class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3"></div>
+      <div id="favoritas" class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3"></div>
+    </details>
+
+    <details id="seccion-chaturbate" class="seccion-sitio">
+      <summary>Chaturbate</summary>
+      <div class="agregar-rapido-cont relative mb-4 mt-3">
+        <div class="flex gap-2">
+          <input id="nombre-nuevo-cb" autocomplete="off"
+            class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
+            placeholder="nombre de la modelo (como aparece en la URL) -- sin autocompletado">
+          <button class="boton-chico" id="boton-agregar-favorita-cb">+ favoritas</button>
+          <button class="principal" id="boton-grabar-directo-cb">Grabar ahora</button>
+        </div>
+      </div>
+
+      <div id="barra-filtros-chaturbate" class="barra-filtros mb-3"></div>
+
+      <div id="favoritas-chaturbate" class="grid grid-cols-[repeat(auto-fill,minmax(220px,1fr))] gap-3"></div>
+    </details>
   </section>
 
   <section id="vista-ajustes" class="vista oculta min-h-0 flex-1 overflow-y-auto p-4">
@@ -149,6 +169,7 @@
         <option value="detector">detector</option>
         <option value="supervisor">supervisor</option>
         <option value="directo">directo</option>
+        <option value="chaturbate">chaturbate</option>
         <option value="motor">motor</option>
       </select>
       <select id="registro-nivel">

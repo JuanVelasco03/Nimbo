@@ -29,7 +29,15 @@ from ctypes import wintypes
 import miniaturas as miniaturas_mod
 
 RE_NOMBRE = re.compile(
-    r"^(?P<modelo>.+)_(?P<id>\d+)_(?P<calidad>[^_]+)_(?P<codec>[^_]+)_"
+    # SPEC 18: el id era siempre numerico (el id de stripchat/doppiocdn)
+    # hasta que chaturbate obligo a aflojarlo -- no tiene id numerico, su
+    # identidad estable es el username, y lo unico parecido a un id es un
+    # token alfanumerico de 7 caracteres (ver
+    # nucleo\scripts\chaturbate.py:resolver_id). [A-Za-z0-9]+ sigue
+    # aceptando cualquier id puramente numerico de antes de este spec, asi
+    # que esto no mueve ninguna grabacion de stripchat del grupo que ya
+    # tenia.
+    r"^(?P<modelo>.+)_(?P<id>[A-Za-z0-9]+)_(?P<calidad>[^_]+)_(?P<codec>[^_]+)_"
     r"(?P<fecha>\d{8}-\d{6})"
     r"(?:-(?P<ini>\d{2}\.\d{2}\.\d{2}\.\d{3})-(?P<fin>\d{2}\.\d{2}\.\d{2}\.\d{3})"
     r"-seg(?P<seg>\d+))?\.mp4$",

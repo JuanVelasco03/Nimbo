@@ -1,6 +1,6 @@
 # SPEC 18 — Segundo sitio: chaturbate con alcance reducido
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 01 (deltas de estado por WebSocket), SPEC 03 (camino
 > directo: patrón de proceso propio y método de sonda), SPEC 11 (interfaz de
 > modelos y previa)

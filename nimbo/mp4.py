@@ -251,9 +251,16 @@ def perfil_de_init(ruta):
     pistas.sort(key=lambda p: 0 if p["tipo"] == "video" else 1)
     codecs = ",".join(p["codec"] for p in pistas)
     escalas = {p["pista"]: p["escala"] for p in pistas if p["escala"]}
+    # SPEC 18 (hallazgo tardio): un init de chaturbate puede traer SOLO
+    # audio (la pista hermana de grabador_chaturbate.py, ver su docstring
+    # "Video y audio son DOS streams HLS separados") -- "video/mp4" para
+    # eso es el tipo MIME equivocado, y MediaSource.isTypeSupported() lo
+    # rechaza. "audio/mp4" solo cuando no hay ninguna pista de video.
+    tiene_video = any(p["tipo"] == "video" for p in pistas)
+    mayor = "video/mp4" if tiene_video else "audio/mp4"
     return {
         "codecs": codecs,
-        "mime": 'video/mp4; codecs="%s"' % codecs,
+        "mime": '%s; codecs="%s"' % (mayor, codecs),
         "pistas": pistas,
         "escalas": escalas,
     }

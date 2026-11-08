@@ -114,7 +114,16 @@ _PY_EN_DISCO_COMPILADO = ("puente.py", "lanzador_supervisor.py",
 # (lo arranca --modo directo), asi que no hace falta en disco. mouflon.py
 # SI, porque detectar_m3u8.py hace `import mouflon` al correr bajo el
 # interprete de mitmdump, que no ve nada de lo compilado.
-_NUCLEO_FUERA_COMPILADO = ("grabador_directo.py",)
+#
+# SPEC 18: grabador_chaturbate.py es el mismo caso que grabador_directo.py
+# (--modo chaturbate lo arranca desde adentro del binario). chaturbate.py
+# es DISTINTO de mouflon.py pese a jugar un rol parecido: nada fuera del
+# binario lo necesita -- el trafico de chaturbate no pasa por el proxy, asi
+# que detectar_m3u8.py nunca lo importa -- asi que tambien sale del disco
+# (compilar.py lo agrega a OCULTOS para que su bytecode quede adentro del
+# binario igual, via --include-module).
+_NUCLEO_FUERA_COMPILADO = ("grabador_directo.py", "grabador_chaturbate.py",
+                          "chaturbate.py")
 
 # Valor de --compilado cuando se pide el flag pelado (o viene de --todo):
 # "compila vos mismo con Nuitka antes de armar el paquete", en vez de

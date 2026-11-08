@@ -20,7 +20,7 @@ _BYTES_POR_GB = 1024 ** 3
 def _alertas_disco(estado: dict, ajustes) -> list:
     motor = estado.get("motor") or {}
     motor_corriendo = bool(motor.get("detector_vivo") or motor.get("supervisor_vivo")
-                           or motor.get("directo_vivo"))
+                           or motor.get("directo_vivo") or motor.get("chaturbate_vivo"))
     alertas = []
     for fila in estado.get("disco") or []:
         unidad = fila.get("unidad") or "?"
@@ -59,9 +59,13 @@ def _alerta_rendido(estado: dict) -> dict | None:
 
 
 def _alerta_degradado(estado: dict) -> dict | None:
+    # SPEC 18: estado_captura.fusionar() agrega "chaturbate" con el mismo
+    # shape que "directo" -- una modelo degradada de cualquiera de los dos
+    # cuenta igual (streams ya trae las de los dos sitios mezcladas).
     detector = estado.get("detector") or {}
     directo = detector.get("directo") or {}
-    if not directo.get("degradado"):
+    chaturbate = detector.get("chaturbate") or {}
+    if not directo.get("degradado") and not chaturbate.get("degradado"):
         return None
     degradadas = [f.get("modelo") for f in (detector.get("streams") or [])
                   if f.get("degradado")]
@@ -73,7 +77,8 @@ def _alerta_degradado(estado: dict) -> dict | None:
         "clave": "degradado", "tipo": "degradado", "nivel": "error",
         "titulo": "%d modelo%s sin grabar" % (n, "s" if n != 1 else ""),
         "texto": "el camino directo las degrado tras 3 fallos; pasalas a "
-                 "@navegador= en grabar.txt para que las grabe el navegador",
+                 "@navegador= en grabar.txt para que las grabe el navegador "
+                 "(o revisa el registro si son de chaturbate)",
     }
 
 

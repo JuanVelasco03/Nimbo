@@ -27,6 +27,7 @@ FUENTES = {
     "supervisor": "eventos_supervisor.jsonl",
     "motor": "eventos_motor.jsonl",
     "directo": "eventos_directo.jsonl",
+    "chaturbate": "eventos_chaturbate.jsonl",
 }
 
 BLOQUE = 65536                     # tamano de cada lectura hacia atras
