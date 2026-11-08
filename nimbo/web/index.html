@@ -113,6 +113,34 @@
     <div id="rutas" class="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-3"></div>
     <h3 class="titulo-seccion">Notificaciones</h3>
     <div id="notificaciones" class="lista-ajustes"></div>
+
+    <h3 class="titulo-seccion">Acceso remoto</h3>
+    <div id="acceso-lan-toggle" class="lista-ajustes"></div>
+    <div id="acceso-lan-panel" class="directiva oculta">
+      <label>Contrasena y puerto</label>
+      <div class="ayuda">Sin TLS: la contrasena y la cookie viajan en claro dentro de tu red
+        local. No lo actives en una red que no controles. Para que el puerto o el
+        prendido/apagado tomen efecto hay que <strong>cerrar Nimbo del todo</strong>
+        (icono de la bandeja &rarr; Salir) y volver a abrirlo -- cerrar la ventana no alcanza,
+        Nimbo sigue corriendo en la bandeja.</div>
+      <div class="fila-check">
+        <input type="number" id="lan-puerto" min="1" max="65535" placeholder="8787" style="width:100px">
+        <input type="password" id="lan-pw" placeholder="contrasena nueva" autocomplete="new-password" style="flex:1">
+        <button type="button" class="boton-chico" id="lan-guardar">Guardar</button>
+      </div>
+      <div class="alerta oculta" id="lan-mensaje"></div>
+      <div class="flex gap-4 items-start mt-3">
+        <img id="lan-qr" alt="QR de acceso LAN" width="160" height="160">
+        <div class="flex flex-col gap-2">
+          <p class="ayuda" id="lan-url"></p>
+          <button type="button" class="boton-chico peligro" id="lan-cerrar-sesiones">Cerrar todas las sesiones</button>
+        </div>
+      </div>
+    </div>
+
+    <h3 class="titulo-seccion">Actualizaciones</h3>
+    <div id="actualizaciones" class="lista-ajustes"></div>
+    <div id="actualizaciones-info" class="directiva"></div>
   </section>
 
   <section id="vista-registro" class="vista oculta flex min-h-0 flex-1 flex-col overflow-hidden p-4">
@@ -180,6 +208,7 @@
           <span class="bola"></span><span id="modal-previa-badge-grabacion-texto"></span>
         </div>
       </div>
+      <div class="alerta oculta" id="modal-previa-error-vivo"></div>
       <div class="acciones-tarjeta" id="modal-previa-acciones"></div>
       <div class="partes-selector" id="modal-previa-variantes"></div>
     </div>
@@ -197,6 +226,28 @@
         <span class="nombre" id="modal-grabacion-nombre"></span>
       </div>
       <div class="lista-partes" id="modal-grabacion-partes"></div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-paleta" class="modal-fondo oculta">
+  <div class="modal" id="modal-paleta-panel">
+    <button class="modal-cerrar" id="modal-paleta-cerrar" title="Cerrar" aria-label="Cerrar">&times;</button>
+    <div class="modal-cuerpo">
+      <input type="text" id="paleta-campo" autocomplete="off"
+        class="w-full rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
+        placeholder="buscar una accion...">
+      <div id="paleta-lista" class="mt-3 flex flex-col gap-1 max-h-80 overflow-y-auto"></div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-ayuda" class="modal-fondo oculta">
+  <div class="modal" id="modal-ayuda-panel">
+    <button class="modal-cerrar" id="modal-ayuda-cerrar" title="Cerrar" aria-label="Cerrar">&times;</button>
+    <div class="modal-cuerpo">
+      <h3 class="titulo-seccion">Atajos de teclado</h3>
+      <div id="ayuda-lista" class="flex flex-col gap-2"></div>
     </div>
   </div>
 </div>

@@ -1,6 +1,6 @@
 # SPEC 17 — Acceso LAN, aviso de actualización y atajos de teclado
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 01 (deltas de estado por WebSocket), SPEC 16 (franja de
 > salud, donde se integra el aviso de actualización)
 > **Fecha:** 2026-11-07

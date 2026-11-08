@@ -107,6 +107,18 @@ DEFECTOS = {
     "notif_degradado": True,
     "notif_disco": True,
     "notif_licencia": True,
+    # Acceso LAN (SPEC 17, C10): apagado por defecto, nunca implicito. Ver
+    # nimbo\lan.py para el hash/cookie y servidor.py para el login.
+    "acceso_lan": False,
+    "puerto_lan": 8787,            # fijo mientras acceso_lan este prendido
+    "lan_pass_hash": "",           # PBKDF2-HMAC-SHA256, hex
+    "lan_pass_sal": "",            # sal aleatoria, hex
+    "lan_cookie_clave": "",        # secreto HMAC de las cookies de sesion;
+                                    # se regenera al activar y al "cerrar
+                                    # sesiones"
+    # Aviso de actualizacion (SPEC 17, C12): prendido por defecto pero
+    # visible y apagable. Ver nimbo\actualizaciones.py.
+    "buscar_actualizaciones": True,
 }
 
 # Los archivos que tienen que estar en nucleo\scripts\ para poder arrancar

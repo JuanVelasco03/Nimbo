@@ -40,6 +40,19 @@ import zipfile
 AQUI = os.path.dirname(os.path.abspath(__file__))
 RAIZ = os.path.dirname(AQUI)
 
+
+def leer_version() -> str:
+    """VERSION de nimbo\\version.py, sin importarlo (SPEC 17): construir.py
+    corre con el Python de la maquina que arma el paquete, no con el
+    embebido, pero igual conviene no meter nimbo\\ en sys.path solo para
+    leer una constante."""
+    ruta = os.path.join(RAIZ, "nimbo", "version.py")
+    with open(ruta, encoding="utf-8") as f:
+        for linea in f:
+            if linea.startswith("VERSION"):
+                return linea.split("=", 1)[1].strip().strip("\"'")
+    raise SystemExit("no se encontro VERSION en nimbo\\version.py")
+
 # Lo mismo que requirements.txt, pero resuelto para el Python embebido: el
 # embeddable no trae pip, asi que las ruedas las baja el pip de la maquina
 # que construye (ver _poner_dependencias).
@@ -608,7 +621,9 @@ def compilar_instalador(salida):
     # /DOrigen: que empaquete LA carpeta que acabamos de armar, no la que
     # el .iss tiene por defecto. Importa cuando se usa --salida para
     # probar un build sin pisar el bueno.
-    cmd = [iscc, "/DOrigen=" + salida, iss]
+    # /DVersion: nimbo\version.py es la fuente unica (SPEC 17) -- sin esto
+    # el .iss se queda con el defecto fijo del propio archivo.
+    cmd = [iscc, "/DOrigen=" + salida, "/DVersion=" + leer_version(), iss]
     nombre = "NimboSetup"
     if os.path.normcase(salida) != os.path.normcase(
             os.path.join(RAIZ, "dist", "Nimbo")):
@@ -873,6 +888,7 @@ def main(argv=None):
     with open(os.path.join(salida, "paquete.json"), "w", encoding="utf-8") as f:
         json.dump({
             "armado": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "version": leer_version(),
             "version_python": args.version_python,
             "completo": bool(args.completo),
             "licencia": bool(args.clave_publica),
