@@ -52,10 +52,26 @@ relojLatido.onmessage = (ev) => {
 const reproductor = crearReproductor(
   document.getElementById("modal-previa-video"),
   {
-    alErrar: () => { _volverASnapshot(); },
+    alErrar: (e) => { _mostrarErrorVivo(e); _volverASnapshot(); },
     alCambiarEstado: () => {},
   },
 );
+
+// Antes esto volvia al snapshot en silencio, sin decir por que -- en un
+// celular (sobre todo iOS: WebKit tiene soporte parcial de MediaSource
+// Extensions para el fragmented MP4 que graba Nimbo) eso se ve como "el
+// boton no hace nada". El mensaje se queda puesto hasta la proxima
+// apertura o el proximo intento de montar -- ver abrirPreviaNombre() y
+// montarVivo().
+function _mostrarErrorVivo(e) {
+  const el = document.getElementById("modal-previa-error-vivo");
+  el.textContent = "no se pudo reproducir en vivo: " + ((e && e.message) || "error desconocido");
+  el.classList.remove("oculta");
+}
+
+function _ocultarErrorVivo() {
+  document.getElementById("modal-previa-error-vivo").classList.add("oculta");
+}
 
 let ultimoEstado = null;
 let nombreAbierto = null;
@@ -152,6 +168,7 @@ function _sesionesDe(nombre) {
 function montarVivo(sesionRel) {
   sesionVivaMontada = sesionRel;
   pararReloj();
+  _ocultarErrorVivo();
   document.getElementById("modal-previa-imagen").classList.add("oculta");
   document.getElementById("modal-previa-sin-imagen").classList.add("oculta");
   document.getElementById("modal-previa-video").classList.remove("oculta");
@@ -369,6 +386,7 @@ export function abrirPreviaNombre(nombre) {
   document.getElementById("modal-previa-video").muted = true;
   document.getElementById("modal-previa-video").classList.add("oculta");
   document.getElementById("modal-previa-transporte").classList.add("oculta");
+  _ocultarErrorVivo();
   sincronizar();
   pintarImagen();   // "sin imagen" hasta que resuelva el id
   document.getElementById("modal-previa").classList.remove("oculta");

@@ -1,7 +1,7 @@
 // Pestana "Ajustes": las directivas de grabar.txt y las preferencias
 // propias de Nimbo (ajustes.py / config.json, no grabar.txt).
 
-import { obtener, enviar } from "./api.js";
+import { obtener, enviar, TOKEN } from "./api.js";
 import { mostrarError } from "./registro.js";
 import { acusarOk, acusarMal } from "./acuse.js";
 import { formatoGB } from "./formato.js";
@@ -376,4 +376,103 @@ export function renderRutas(estado) {
     el.textContent = fila
       ? "espacio libre: " + formatoGB(fila.libres) + " de " + formatoGB(fila.total) : "";
   }
+}
+
+// -- Acceso remoto por LAN (SPEC 17, C10) ------------------------------
+
+export async function cargarAccesoLan() {
+  try {
+    const datos = await obtener("/api/lan/estado");
+    const contToggle = document.getElementById("acceso-lan-toggle");
+    contToggle.innerHTML = "";
+    _filaConmutador(contToggle, "acceso_lan",
+      "Permitir entrar a Nimbo desde otro dispositivo de la misma red",
+      "Sin TLS: la contrasena y la cookie viajan en claro dentro de tu LAN. "
+      + "Para que el cambio tome efecto hay que cerrar Nimbo del todo (icono de la "
+      + "bandeja → Salir) y volver a abrirlo -- cerrar la ventana no alcanza.",
+      datos.acceso_lan,
+      async (checked) => {
+        await enviar("/api/preferencias", { clave: "acceso_lan", valor: checked });
+        cargarAccesoLan();
+      });
+
+    const panel = document.getElementById("acceso-lan-panel");
+    panel.classList.toggle("oculta", !datos.acceso_lan);
+    if (!datos.acceso_lan) return;
+
+    const campoPuerto = document.getElementById("lan-puerto");
+    if (campoPuerto !== document.activeElement) campoPuerto.value = datos.puerto_lan;
+    const url = "http://" + datos.ip_lan + ":" + datos.puerto_lan + "/";
+    document.getElementById("lan-url").textContent = datos.configurada
+      ? url : url + " -- todavia sin contrasena configurada";
+    document.getElementById("lan-qr").src =
+      "/api/lan/qr?t=" + encodeURIComponent(TOKEN) + "&_=" + Date.now();
+  } catch (err) { mostrarError(err); }
+}
+
+export function iniciarAccesoLan() {
+  document.getElementById("lan-guardar").addEventListener("click", async () => {
+    const mensaje = document.getElementById("lan-mensaje");
+    mensaje.classList.add("oculta");
+    const campoPuerto = document.getElementById("lan-puerto");
+    const campoPw = document.getElementById("lan-pw");
+    try {
+      const puerto = parseInt(campoPuerto.value, 10);
+      if (puerto) await enviar("/api/lan/puerto", { valor: puerto });
+      if (campoPw.value.trim()) {
+        await enviar("/api/lan/configurar", { pw: campoPw.value.trim() });
+        campoPw.value = "";
+      }
+      acusarOk(document.getElementById("acceso-lan-panel"));
+      cargarAccesoLan();
+    } catch (err) {
+      mensaje.textContent = (err && err.message) || "no se pudo guardar";
+      mensaje.classList.remove("oculta");
+      acusarMal(document.getElementById("acceso-lan-panel"));
+    }
+  });
+
+  document.getElementById("lan-cerrar-sesiones").addEventListener("click", async () => {
+    try {
+      await enviar("/api/lan/cerrar_sesiones", {});
+      acusarOk(document.getElementById("acceso-lan-panel"));
+    } catch (err) { mostrarError(err); }
+  });
+}
+
+// -- aviso de actualizacion (SPEC 17, C12) -----------------------------
+
+export async function cargarActualizaciones() {
+  try {
+    const datos = await obtener("/api/actualizacion");
+    const contToggle = document.getElementById("actualizaciones");
+    contToggle.innerHTML = "";
+    _filaConmutador(contToggle, "buscar_actualizaciones",
+      "Buscar actualizaciones",
+      "Revisa el repo de GitHub al arrancar y una vez por dia. Nunca descarga ni instala nada.",
+      datos.buscar_actualizaciones,
+      (checked) => enviar("/api/preferencias", { clave: "buscar_actualizaciones", valor: checked }));
+
+    const info = document.getElementById("actualizaciones-info");
+    const partes = [`<label>Version actual: ${_escAtributo(datos.version_actual)}</label>`];
+    partes.push(datos.revisado
+      ? `<p class="ayuda">ultima verificacion: ${new Date(datos.revisado * 1000).toLocaleString()}</p>`
+      : `<p class="ayuda">todavia no se verifico</p>`);
+    if (datos.hay_nueva) {
+      partes.push(`<p class="ayuda estado-badge aviso"><span class="bola"></span>`
+        + `hay una version nueva: ${_escAtributo(datos.version)} -- `
+        + `<a href="${_escAtributo(datos.url)}" target="_blank" rel="noopener">ver el release</a></p>`);
+      if (datos.notas) partes.push(`<p class="ayuda">${_escAtributo(datos.notas)}</p>`);
+    }
+    partes.push(`<button type="button" class="boton-chico" id="actualizaciones-buscar">Buscar ahora</button>`);
+    info.innerHTML = partes.join("");
+
+    document.getElementById("actualizaciones-buscar").addEventListener("click", async (ev) => {
+      ev.target.disabled = true;
+      try {
+        await enviar("/api/actualizacion/buscar", {});
+      } catch (err) { mostrarError(err); }
+      setTimeout(() => cargarActualizaciones(), 1500);
+    });
+  } catch (err) { mostrarError(err); }
 }

@@ -10,7 +10,12 @@
 ; specs\distribucion_instalador.md S3.
 
 #define NombreApp "Nimbo"
-#define Version "1.0.0"
+; construir.py (SPEC 17) la pasa con /DVersion=<x.y.z>, leida de
+; nimbo\version.py -- esa es la fuente unica. Compilando el .iss a mano
+; (sin pasar por construir.py) queda este defecto.
+#ifndef Version
+  #define Version "1.0.0"
+#endif
 #define Editor "Nimbo"
 ; De donde salen los archivos. construir.py --instalador lo pasa con
 ; /DOrigen=<ruta> para poder empaquetar una carpeta que no sea la de

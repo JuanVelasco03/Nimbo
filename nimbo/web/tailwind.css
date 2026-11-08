@@ -553,6 +553,10 @@
   .nombre-sug { @apply flex-1 truncate; }
   .punto-online { @apply h-2 w-2 shrink-0 rounded-full bg-apagado; }
   .punto-online.si { background: var(--color-tally-vivo); }
+  /* fila resaltada por teclado en la paleta de comandos (SPEC 17, C13) --
+     mismo tono que :hover, para que subir/bajar con las flechas se vea
+     igual que pasar el mouse. */
+  .sugerencia.activa { @apply bg-panel-alto; }
 
   /* -- ajustes / directivas ------------------------------------------------ */
 

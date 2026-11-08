@@ -8,12 +8,13 @@ import { agregarLog, mostrarError } from "./registro.js";
 import { aplicarSitio } from "./sitio.js";
 import { renderTarjetas, renderBarraGlobal } from "./vista_grabando.js";
 import { renderFavoritas, renderSesion, iniciarBuscador, iniciarPanelSesion, iniciarFiltros, iniciarLogin, marcarReordenModelos, marcarReubicarModelo } from "./vista_modelos.js";
-import { renderDirectivas, cargarPreferencias, renderRutas, cargarRutas, cargarNotificaciones } from "./vista_ajustes.js";
+import { renderDirectivas, cargarPreferencias, renderRutas, cargarRutas, cargarNotificaciones, cargarAccesoLan, iniciarAccesoLan, cargarActualizaciones } from "./vista_ajustes.js";
 import { revisarPreflight } from "./preflight.js";
 import { renderSalud } from "./salud.js";
 import { renderPrevia, iniciarPrevia, abrirPreviaEnVivo } from "./vista_previa.js";
 import { iniciarRegistro, entrarARegistro, salirDeRegistro } from "./vista_registro.js";
 import { iniciarGrabaciones, entrarAGrabaciones, salirDeGrabaciones } from "./vista_grabaciones.js";
+import { iniciarPaletaYAyuda } from "./paleta.js";
 
 let ultimoEstado = null;
 let ws = null;
@@ -346,6 +347,61 @@ function iniciarAcciones() {
   });
 }
 
+// -- atajos de teclado globales (SPEC 17, C13) -------------------------
+// 1-5 cambian de pestana en el orden del nav (ver index.html), Espacio
+// alterna arrancar/parar (el mismo boton que ya tiene su propio click),
+// "v" abre la previa de la primera modelo que este grabando. Ctrl+K
+// (paleta de comandos) y "?" (ayuda) viven en paleta.js -- comparten el
+// mismo patron de modal, asi que van juntos ahi.
+
+const PESTANA_POR_TECLA = {
+  "1": "grabando", "2": "grabaciones", "3": "modelos", "4": "ajustes", "5": "registro",
+};
+
+function enCampoDeTexto() {
+  const el = document.activeElement;
+  if (!el) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
+function otroModalAbierto() {
+  const paleta = document.getElementById("modal-paleta");
+  const ayuda = document.getElementById("modal-ayuda");
+  return !paleta.classList.contains("oculta") || !ayuda.classList.contains("oculta");
+}
+
+// Leido del DOM (data-estado lo pone vista_grabando.js:actualizarTarjeta)
+// y no de ultimoEstado.detector a proposito: asi paleta.js puede usar el
+// mismo criterio para su propia accion "ver en vivo" sin importar nada
+// de aca (evita un ciclo main.js <-> paleta.js).
+function primeraModeloGrabando() {
+  const tarjeta = document.querySelector('#tarjetas .tarjeta-modelo[data-estado="grabando"]');
+  return tarjeta ? tarjeta.dataset.nombre : null;
+}
+
+function iniciarAtajos() {
+  document.addEventListener("keydown", (ev) => {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;   // Ctrl+K es de paleta.js
+    if (enCampoDeTexto() || otroModalAbierto()) return;
+
+    if (ev.key in PESTANA_POR_TECLA) {
+      const boton = document.querySelector("nav button[data-vista='" + PESTANA_POR_TECLA[ev.key] + "']");
+      if (boton) boton.click();
+    } else if (ev.key === " ") {
+      // preventDefault: Espacio sobre un <button> con foco ya lo clickea
+      // solo (comportamiento nativo) -- sin esto, con el foco todavia en
+      // "boton-motor" despues de un click previo, esta misma tecla lo
+      // dispararia DOS veces (arrancar y parar en el mismo golpe).
+      ev.preventDefault();
+      const boton = document.getElementById("boton-motor");
+      if (!boton.disabled) boton.click();
+    } else if (ev.key === "v" || ev.key === "V") {
+      const nombre = primeraModeloGrabando();
+      if (nombre) abrirPreviaEnVivo(nombre);
+    }
+  });
+}
+
 // -- arranque ---------------------------------------------------------
 
 iniciarNavegacion();
@@ -357,6 +413,9 @@ iniciarFiltros();
 iniciarPrevia();
 iniciarRegistro();
 iniciarGrabaciones();
+iniciarAccesoLan();
+iniciarAtajos();
+iniciarPaletaYAyuda();
 
 refrescar();
 ws = conectarWS(conMensaje, conEstadoConexion);
@@ -364,3 +423,5 @@ revisarPreflight();
 cargarPreferencias();
 cargarRutas();
 cargarNotificaciones();
+cargarAccesoLan();
+cargarActualizaciones();

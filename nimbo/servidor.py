@@ -57,12 +57,14 @@ from websockets.frames import Frame, Opcode
 from websockets.http11 import Request
 from websockets.server import ServerProtocol
 
+import actualizaciones as actualizaciones_mod
 import ajustes as ajustes_mod
 import cosecha_streams as cosecha_streams_mod
 import estado_captura as estado_captura_mod
 import favoritas as favoritas_mod
 import grabaciones as grabaciones_mod
 import inicio_automatico as inicio_mod
+import lan as lan_mod
 import licencia as licencia_mod
 import lista as lista_mod
 import login_sitio as login_sitio_mod
@@ -70,11 +72,13 @@ import miniaturas as miniaturas_mod
 import motor as motor_mod
 import notificaciones as notificaciones_mod
 import preflight as preflight_mod
+import qr as qr_mod
 import registro as registro_mod
 import rutas as rutas_mod
 import salud as salud_mod
 import sesion as sesion_mod
 import sitio as sitio_mod
+import version as version_mod
 import vivo as vivo_mod
 import vivo_temporal as vivo_temporal_mod
 
@@ -104,6 +108,10 @@ INTERVALO_LIMPIEZA = 600.0      # cada cuanto se barre datos\streams\ --
                                  # el listdir de dos niveles no es gratis
 INTERVALO_SITIO = 15.0          # mismo intervalo que tenia el setInterval
                                  # del lado del cliente
+INTERVALO_ACTUALIZACIONES = 86400.0   # 24 h (SPEC 17, C12) -- al arrancar y
+                                 # despues cada dia; actualizaciones.verificar
+                                 # ya cachea en RAM, asi que "buscar ahora"
+                                 # (forzar=True) no espera a este reloj
 INTERVALO_LICENCIA = 21600.0    # 6 h. La licencia se revisa al arrancar
                                  # (app.py) y despues cada tanto: el token
                                  # tiene dias de vida, no hay por que
@@ -124,6 +132,10 @@ CUPO_IMAGEN = 6                 # miniaturas simultaneas: el navegador puede
 
 INTERVALO_PING = 15.0
 TOPE_PONG = 20.0
+
+# Acceso LAN (SPEC 17, C10): fuerza bruta sobre /api/lan/login.
+LAN_MAX_INTENTOS = 5
+LAN_BLOQUEO_S = 60.0
 
 
 def _leer_json(ruta):
@@ -158,6 +170,26 @@ def _rutas_snapshot(a):
         "union_modo": a["union_modo"], "dir_union": a["dir_union"],
         "resuelto": resuelto, "espacio": espacio, "caidas": a.rutas_caidas,
     }
+
+
+def _agregar_alerta_actualizacion(app, salud):
+    """La alerta de actualizacion (SPEC 17, C12), mismo formato que las de
+    salud.py pero aparte de salud.evaluar(): depende de una respuesta de
+    red (actualizaciones_mod.verificar, cacheada en app.actualizacion por
+    _bucle_actualizaciones) y no del estado de disco/motor/detector que
+    esa funcion mira. Comparte esta logica estado_completo() (la foto
+    inicial) y _bucle_estado (cada tick) -- asi las dos ven la misma
+    alerta en vez de que la primera foto salga sin ella."""
+    if app.actualizacion and app.actualizacion.get("hay_nueva"):
+        salud.append({
+            "clave": "actualizacion", "tipo": "actualizacion", "nivel": "aviso",
+            "titulo": "Hay una version nueva (%s)" % app.actualizacion["version"],
+            # Las notas de verdad y el link al release van en el panel
+            # "Actualizaciones" de Ajustes (GET /api/actualizacion) -- la
+            # franja de salud es texto fijo a proposito, mismo formato
+            # que el ejemplo del spec.
+            "texto": "notas del release -- ver el link en Ajustes",
+        })
 
 
 async def _leer_detector_fusionado(app):
@@ -227,6 +259,16 @@ class Aplicacion:
         # cuando el espacio vuelve por encima del umbral de AVISO (no del
         # critico) -- ver _bucle_estado.
         self.parada_por_disco = False
+        # Fuerza bruta de /api/lan/login (SPEC 17): contador en memoria por
+        # IP, se pierde al reiniciar -- aceptable, el acceso LAN es nuevo
+        # en cada arranque de todas formas.
+        self.lan_intentos = {}      # ip -> fallos consecutivos
+        self.lan_bloqueos = {}      # ip -> epoch hasta el que esa ip esta bloqueada
+        # SPEC 17, C12: ultimo resultado de actualizaciones.verificar (o
+        # None si nunca se pudo evaluar nada valido) -- lo pisa
+        # _bucle_actualizaciones, lo lee _bucle_estado para la alerta de
+        # salud y /api/actualizacion para el panel de Ajustes.
+        self.actualizacion = None
 
     def fijar_loop(self, loop):
         self.loop = loop
@@ -311,6 +353,7 @@ class Aplicacion:
             "login": self.login,
         }
         base["salud"] = salud_mod.evaluar(base, self.ajustes)
+        _agregar_alerta_actualizacion(self, base["salud"])
         return base
 
 
@@ -528,6 +571,7 @@ async def _bucle_estado(app):
             # puede venir solo en delta todavia sin aplicar a app.estado.
             vista = {**app.estado, **delta}
             salud = await app.a_hilo(salud_mod.evaluar, vista, app.ajustes)
+            _agregar_alerta_actualizacion(app, salud)
             if salud != app.estado.get("salud"):
                 delta["salud"] = salud
 
@@ -645,6 +689,18 @@ async def _bucle_licencia(app):
                                     "forma ordenada",
                            "nivel": "error"})
             _lanzar_tarea(app, "motor_parar", app.motor.parar)
+
+
+async def _bucle_actualizaciones(app):
+    """Al arrancar y cada INTERVALO_ACTUALIZACIONES (SPEC 17, C12).
+    actualizaciones.verificar ya corta solo si buscar_actualizaciones esta
+    apagado, y ya degrada en silencio sin red -- aca solo hay que guardar
+    el resultado para que _bucle_estado arme la alerta y
+    /api/actualizacion tenga algo que mostrar."""
+    while True:
+        with contextlib.suppress(Exception):
+            app.actualizacion = await app.a_hilo(actualizaciones_mod.verificar, app.ajustes)
+        await asyncio.sleep(INTERVALO_ACTUALIZACIONES)
 
 
 def _fijar_login(app, fase, vence, motivo):
@@ -817,16 +873,37 @@ def _token_valido(app, qs):
     return secrets.compare_digest(_valor(qs, "t"), app.token)
 
 
+def _cookie(cabeceras, nombre):
+    """El valor de una cookie del header "Cookie: a=1; b=2", o "" si no
+    esta. email.message.Message.get() devuelve ese header tal cual, sin
+    parsear -- no hay Cookie: en ningun otro lado del servidor todavia."""
+    crudo = cabeceras.get("Cookie") or ""
+    for parte in crudo.split(";"):
+        if "=" not in parte:
+            continue
+        clave, valor = parte.strip().split("=", 1)
+        if clave == nombre:
+            return valor
+    return ""
+
+
 def _origen_valido(app, cabeceras):
     """Defensa en profundidad, no la puerta: el token sigue siendo lo
     que autoriza. Un GET same-origin no manda 'Origin' -- exigirla
     rompería la interfaz entera, asi que sin la cabecera esto da True.
-    Con la cabecera, solo vale la propia ventana de Nimbo."""
+    Con la cabecera, solo vale la propia ventana de Nimbo (o, con
+    acceso_lan prendido, la propia IP de LAN -- ahi es donde de verdad
+    escucha el socket, ver Servidor._iniciar)."""
     origen = cabeceras.get("Origin")
     if not origen:
         return True
-    return origen in ("http://127.0.0.1:%d" % app.puerto,
-                       "http://localhost:%d" % app.puerto)
+    validos = ("http://127.0.0.1:%d" % app.puerto,
+               "http://localhost:%d" % app.puerto)
+    if origen in validos:
+        return True
+    if app.ajustes["acceso_lan"]:
+        return origen == "http://%s:%d" % (lan_mod.ip_lan(), app.puerto)
+    return False
 
 
 # -- estaticos, con el traversal cerrado (recomendacion 6) ------------------
@@ -940,10 +1017,147 @@ async def _servir_bytes(writer, datos, tipo):
 
 
 # ===========================================================================
+# Acceso LAN (SPEC 17, C10): pagina de login y fuerza bruta
+# ===========================================================================
+#
+# El celular nunca llega a ver el token por la red: entra a "/" sin ?t=,
+# recibe esta pagina minima, manda la contrasena a /api/lan/login y, si
+# vale, se lleva una cookie HMAC propia (nimbo\lan.py) que en la vuelta
+# siguiente a "/" alcanza para que el servidor lo mande con el token real
+# -- api.js sigue leyendo ?t= de la URL exactamente igual que siempre.
+
+_LOGIN_HTML = """<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nimbo</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background:#13161c; color:#e6e6e6;
+         display:flex; align-items:center; justify-content:center; height:100vh; margin:0; }
+  form { background:#1c2029; padding:28px 32px; border-radius:8px; width:260px; }
+  h1 { font-size:18px; margin:0 0 16px; }
+  input { width:100%; box-sizing:border-box; padding:10px; margin-bottom:12px;
+          border-radius:4px; border:1px solid #333; background:#0f1115; color:#e6e6e6; }
+  button { width:100%; padding:10px; border:0; border-radius:4px; background:#3c78ff;
+           color:#fff; font-weight:600; cursor:pointer; }
+  p.error { color:#ff6b6b; font-size:13px; margin:0 0 12px; display:none; }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>Nimbo</h1>
+  <p class="error" id="error"></p>
+  <input type="password" id="pw" placeholder="contrasena" autofocus autocomplete="current-password">
+  <button type="submit">Entrar</button>
+</form>
+<script>
+document.getElementById("f").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const err = document.getElementById("error");
+  err.style.display = "none";
+  try {
+    const r = await fetch("/api/lan/login", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pw: document.getElementById("pw").value}),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      err.textContent = d.error || "no se pudo entrar";
+      err.style.display = "block";
+      return;
+    }
+    location.href = "/";
+  } catch (e) {
+    err.textContent = "sin conexion con Nimbo";
+    err.style.display = "block";
+  }
+});
+</script>
+</body>
+</html>"""
+
+
+async def _servir_login(writer):
+    await _responder(writer, 200, {"Content-Type": "text/html; charset=utf-8"},
+                      _LOGIN_HTML.encode("utf-8"))
+
+
+def _ip_cliente(writer) -> str:
+    info = writer.get_extra_info("peername")
+    return info[0] if info else "?"
+
+
+def _lan_bloqueada(app, ip) -> bool:
+    hasta = app.lan_bloqueos.get(ip)
+    return bool(hasta and time.time() < hasta)
+
+
+def _lan_fallo(app, ip) -> None:
+    n = app.lan_intentos.get(ip, 0) + 1
+    if n >= LAN_MAX_INTENTOS:
+        app.lan_bloqueos[ip] = time.time() + LAN_BLOQUEO_S
+        app.lan_intentos[ip] = 0
+    else:
+        app.lan_intentos[ip] = n
+
+
+def _lan_ok(app, ip) -> None:
+    app.lan_intentos.pop(ip, None)
+    app.lan_bloqueos.pop(ip, None)
+
+
+async def _lan_login(app, cuerpo, writer):
+    """POST /api/lan/login -- la unica ruta de este servidor que no pide
+    ?t=: todavia no hay token que pedirle a un celular que recien entro.
+    El gate es la contrasena (mas el bloqueo de fuerza bruta); igual se
+    corta temprano si acceso_lan esta apagado, para no dejar una puerta
+    que compare contra un hash vacio."""
+    if not app.ajustes["acceso_lan"]:
+        await _json(writer, 404, {"error": "acceso LAN apagado"})
+        return
+    ip = _ip_cliente(writer)
+    if _lan_bloqueada(app, ip):
+        await _json(writer, 403, {"error": "demasiados intentos -- espera un minuto"})
+        return
+    pw = cuerpo.get("pw") or ""
+    ok = await app.a_hilo(lan_mod.verificar_password, pw,
+                          app.ajustes["lan_pass_hash"], app.ajustes["lan_pass_sal"])
+    if not ok:
+        _lan_fallo(app, ip)
+        await _json(writer, 403, {"error": "contrasena incorrecta"})
+        return
+    _lan_ok(app, ip)
+    cookie = lan_mod.emitir_cookie(app.ajustes["lan_cookie_clave"])
+    cabeceras = {
+        "Content-Type": "application/json; charset=utf-8",
+        "Set-Cookie": "nimbo_lan=%s; Max-Age=%d; Path=/; HttpOnly; SameSite=Lax"
+                     % (cookie, 30 * 86400),
+    }
+    await _responder(writer, 200, cabeceras, json.dumps({"ok": True}).encode("utf-8"))
+
+
+# ===========================================================================
 # HTTP: rutas
 # ===========================================================================
 
 async def _manejar_get(app, ruta, qs, cabeceras, writer):
+    # Acceso LAN: "/" sin token valido no es un 403 -- es la pagina de
+    # login, o (con una cookie de sesion LAN vigente) un redirect directo
+    # al token real. Nunca se activa con acceso_lan apagado: ahi "/" se
+    # comporta exactamente igual que siempre, token o 403.
+    if (ruta in ("/", "/index.html") and app.ajustes["acceso_lan"]
+            and not _token_valido(app, qs)):
+        cookie = _cookie(cabeceras, "nimbo_lan")
+        payload = (lan_mod.verificar_cookie(app.ajustes["lan_cookie_clave"], cookie)
+                  if cookie else None)
+        if payload:
+            await _responder(writer, 302, {"Location": "/?t=" + app.token})
+        else:
+            await _servir_login(writer)
+        return
+
     necesita_token = ruta in ("/", "/index.html") or ruta.startswith("/api/")
     if necesita_token and not _token_valido(app, qs):
         await _json(writer, 403, {"error": "token invalido"})
@@ -1098,6 +1312,27 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         resultado = await app.a_hilo(
             cosecha_streams_mod.resumen, a.streams, detector, a["dias_segmentos"])
         await _json(writer, 200, resultado)
+    elif ruta == "/api/lan/estado":
+        await _json(writer, 200, {
+            "acceso_lan": app.ajustes["acceso_lan"],
+            "puerto_lan": app.ajustes["puerto_lan"],
+            "configurada": bool(app.ajustes["lan_pass_hash"]),
+            "ip_lan": await app.a_hilo(lan_mod.ip_lan),
+        })
+    elif ruta == "/api/lan/qr":
+        url = "http://%s:%d/" % (await app.a_hilo(lan_mod.ip_lan), app.ajustes["puerto_lan"])
+        try:
+            png = await app.a_hilo(qr_mod.generar_png, url)
+        except ValueError as e:
+            await _json(writer, 400, {"error": str(e)})
+            return
+        await _responder(writer, 200, {"Content-Type": "image/png"}, png)
+    elif ruta == "/api/actualizacion":
+        resultado = {"version_actual": version_mod.VERSION,
+                    "buscar_actualizaciones": app.ajustes["buscar_actualizaciones"]}
+        if app.actualizacion:
+            resultado.update(app.actualizacion)
+        await _json(writer, 200, resultado)
     elif ruta.startswith("/api/"):
         await _json(writer, 404, {"error": "no encontrado"})
     else:
@@ -1189,6 +1424,10 @@ def _lanzar_tarea_coro(app, nombre, coro):
     return True
 
 
+def _buscar_actualizacion(app):
+    app.actualizacion = actualizaciones_mod.verificar(app.ajustes, forzar=True)
+
+
 async def _despachar_post(app, ruta, cuerpo):
     """-> (codigo, datos) | None (None = ruta desconocida, 404)."""
     if ruta == "/api/lista/agregar":
@@ -1254,7 +1493,8 @@ async def _despachar_post(app, ruta, cuerpo):
         clave = cuerpo["clave"]
         if clave not in ("arrancar_al_abrir", "bandeja", "ver_navegador",
                           "parar_por_disco", "notif_rendido", "notif_degradado",
-                          "notif_disco", "notif_licencia"):
+                          "notif_disco", "notif_licencia", "acceso_lan",
+                          "buscar_actualizaciones"):
             return 400, {"error": "preferencia desconocida"}
         app.ajustes[clave] = bool(cuerpo["valor"])
         await app.a_hilo(app.ajustes.guardar)
@@ -1329,32 +1569,89 @@ async def _despachar_post(app, ruta, cuerpo):
                 "bytes": resultado["bytes"],
             }
         return 200, resultado
+    elif ruta == "/api/lan/configurar":
+        # Primera vez (o cambio de contrasena) desde el panel de Ajustes --
+        # autenticado con el token normal, a diferencia de /api/lan/login
+        # (ver _lan_login). lan_cookie_clave se genera una sola vez: si ya
+        # existe, cambiar la contrasena no invalida las sesiones ya
+        # abiertas (para eso esta "Cerrar todas las sesiones").
+        pw = (cuerpo.get("pw") or "").strip()
+        if not pw:
+            return 400, {"error": "falta la contrasena"}
+        a = app.ajustes
+        hash_, sal = await app.a_hilo(lan_mod.hashear, pw)
+        a["lan_pass_hash"] = hash_
+        a["lan_pass_sal"] = sal
+        if not a["lan_cookie_clave"]:
+            a["lan_cookie_clave"] = lan_mod.generar_clave()
+        await app.a_hilo(a.guardar)
+        return 200, {"ok": True}
+    elif ruta == "/api/lan/puerto":
+        try:
+            puerto = int(cuerpo["valor"])
+        except (KeyError, TypeError, ValueError):
+            return 400, {"error": "puerto invalido"}
+        if not (1 <= puerto <= 65535):
+            return 400, {"error": "puerto invalido"}
+        a = app.ajustes
+        a["puerto_lan"] = puerto
+        await app.a_hilo(a.guardar)
+        return 200, {"puerto_lan": puerto}
+    elif ruta == "/api/lan/cerrar_sesiones":
+        # Rota lan_cookie_clave: invalida de una cualquier cookie emitida
+        # antes, sin llevar una lista de sesiones vivas.
+        a = app.ajustes
+        a["lan_cookie_clave"] = lan_mod.generar_clave()
+        await app.a_hilo(a.guardar)
+        return 200, {"ok": True}
+    elif ruta == "/api/actualizacion/buscar":
+        # "buscar ahora" del panel de Ajustes: 202 + tarea de fondo, mismo
+        # patron que sesion_actualizar -- es un pedido de red (hasta
+        # actualizaciones.ESPERA_RED) y no tiene por que colgar la
+        # respuesta HTTP.
+        lanzada = _lanzar_tarea(app, "actualizacion_buscar", _buscar_actualizacion, app)
+        return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     else:
         return None
     return 200, await app.a_hilo(app.lista.leer)
 
 
+async def _leer_cuerpo(cabeceras, reader, writer):
+    """-> dict, o None si ya se respondio un 400 al cliente."""
+    try:
+        n = int(cabeceras.get("Content-Length") or 0)
+    except ValueError:
+        await _json(writer, 400, {"error": "Content-Length invalido"})
+        return None
+    try:
+        crudo = await reader.readexactly(n) if n else b""
+    except asyncio.IncompleteReadError:
+        await _json(writer, 400, {"error": "cuerpo incompleto"})
+        return None
+    try:
+        return json.loads(crudo) if crudo else {}
+    except ValueError:
+        await _json(writer, 400, {"error": "json invalido"})
+        return None
+
+
 async def _manejar_post(app, ruta, qs, cabeceras, reader, writer):
+    if ruta == "/api/lan/login":
+        # La unica ruta POST sin ?t=: ver _lan_login.
+        cuerpo = await _leer_cuerpo(cabeceras, reader, writer)
+        if cuerpo is None:
+            return
+        await _lan_login(app, cuerpo, writer)
+        return
+
     if not _token_valido(app, qs):
         await _json(writer, 403, {"error": "token invalido"})
         return
     if not _origen_valido(app, cabeceras):
         await _json(writer, 403, {"error": "origen invalido"})
         return
-    try:
-        n = int(cabeceras.get("Content-Length") or 0)
-    except ValueError:
-        await _json(writer, 400, {"error": "Content-Length invalido"})
-        return
-    try:
-        crudo = await reader.readexactly(n) if n else b""
-    except asyncio.IncompleteReadError:
-        await _json(writer, 400, {"error": "cuerpo incompleto"})
-        return
-    try:
-        cuerpo = json.loads(crudo) if crudo else {}
-    except ValueError:
-        await _json(writer, 400, {"error": "json invalido"})
+    cuerpo = await _leer_cuerpo(cabeceras, reader, writer)
+    if cuerpo is None:
         return
 
     try:
@@ -1507,8 +1804,16 @@ class Servidor:
 
     async def _iniciar(self):
         self.app.estado = await self.app.a_hilo(self.app.estado_completo)
+        # Acceso LAN (SPEC 17): el bind no cambia en caliente -- hace falta
+        # reiniciar Nimbo para que el toggle de Ajustes tome efecto (ver
+        # Decisiones del spec). Con acceso_lan apagado, exactamente lo de
+        # siempre: loopback, puerto al azar.
+        if self.app.ajustes["acceso_lan"]:
+            host, puerto_pedido = "0.0.0.0", self.app.ajustes["puerto_lan"]
+        else:
+            host, puerto_pedido = "127.0.0.1", self._puerto_pedido
         self._servidor_asyncio = await asyncio.start_server(
-            lambda r, w: _atender(self.app, r, w), "127.0.0.1", self._puerto_pedido)
+            lambda r, w: _atender(self.app, r, w), host, puerto_pedido)
         self.puerto = self._servidor_asyncio.sockets[0].getsockname()[1]
         self.app.puerto = self.puerto    # _origen_valido lo necesita
         self._loop.create_task(_bucle_estado(self.app))
@@ -1516,6 +1821,7 @@ class Servidor:
         self._loop.create_task(_bucle_miniaturas(self.app))
         self._loop.create_task(_bucle_sitio(self.app))
         self._loop.create_task(_bucle_licencia(self.app))
+        self._loop.create_task(_bucle_actualizaciones(self.app))
 
     async def _cerrar(self):
         if self._servidor_asyncio is not None:
