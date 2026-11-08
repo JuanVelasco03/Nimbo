@@ -55,10 +55,44 @@
   --spacing-sm: 0.75rem;   /* 12px */
   --spacing-md: 1.25rem;   /* 20px */
   --spacing-lg: 2rem;      /* 32px */
+
+  /* El default de `transition-*` de Tailwind pasa a ser el paso de estado
+     de la escala de movimiento (ver --dur-* en :root, mas abajo): asi cada
+     regla de abajo escribe `transition-colors` pelado y hereda la duracion
+     del sistema, en vez de repetir duration-150 / duration-200 /
+     duration-300 sueltos como hasta ahora. Solo se declara una duracion
+     explicita donde el cambio pertenece a OTRO paso de la escala. */
+  --default-transition-duration: var(--dur-estado);
 }
 
 @layer base {
   * { @apply box-border; }
+
+  /* -- escala de movimiento ------------------------------------------------
+     Mismo criterio que la escala tipografica y la de espaciado: cuatro
+     pasos con significado, en vez de un duration-150/200/300 elegido a
+     ojo en cada regla. La duracion tiene que decir de que tamano es el
+     cambio -- un acuse de click es instantaneo, una luz tally tarda lo
+     que tarda una lampara en levantar, una capa que aparece tarda mas que
+     una que se va.
+
+     No van en @theme porque no generan utilidades: las lee el CSS a mano
+     de mas abajo (y, via --default-transition-duration, todo
+     `transition-*` sin sufijo). En :root quedan emitidas siempre, sin
+     depender de que Tailwind las vea usadas. */
+  :root {
+    --dur-tap: 90ms;       /* acuse inmediato: el control cede bajo el dedo */
+    --dur-estado: 180ms;   /* cambio de estado y hover -- el paso por defecto */
+    --dur-capa: 240ms;     /* una capa que aparece: modal, desplegable */
+    --dur-salida: 130ms;   /* salir SIEMPRE mas rapido que entrar */
+    --dur-acuse: 620ms;    /* el destello de "guardado": un recibo, no un hover */
+
+    /* llegada: desaceleracion exponencial, para lo que aparece y se
+       asienta. estado: la curva estandar de Tailwind, para color y hover
+       (donde no hay distancia que recorrer, solo un valor que cambia). */
+    --ease-llegada: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-estado: cubic-bezier(0.4, 0, 0.2, 1);
+  }
 
   html, body {
     /* 13.5px absoluto, no un token de la escala: esto FIJA el root del que
@@ -78,6 +112,18 @@
   }
   ::-webkit-scrollbar-thumb:hover { @apply bg-borde-fuerte; }
 
+  /* Las dos piezas de interaccion que el navegador dibuja solo y que
+     seguian llegando con el default del sistema (azul de Windows sobre
+     fondo grafito): la seleccion de texto y el cursor de los campos. El
+     azul interactivo del sistema ya existe -- usarlo aca es gratis y es
+     lo que hace que un copiar/pegar en el registro se vea parte de la
+     misma interfaz. */
+  ::selection {
+    background: color-mix(in srgb, var(--color-tally-conectando) 36%, transparent);
+    color: var(--color-texto);
+  }
+  input, textarea, select { caret-color: var(--color-tally-conectando); }
+
   :focus-visible {
     @apply outline-2 outline-offset-2 outline-tally-conectando;
   }
@@ -91,8 +137,13 @@
 
   /* -- cabecera: barra de transporte, no un navbar de SaaS ------------ */
 
+  /* El halo de .ok entraba de golpe: box-shadow no esta en
+     transition-colors, asi que el color del punto cruzaba suave y el aro
+     aparecia de un tiron. Con las dos propiedades en la lista, el punto
+     "levanta" como una lampara en vez de repintarse. */
   .punto {
-    @apply inline-block h-2.5 w-2.5 rounded-full bg-apagado transition-colors duration-300;
+    @apply inline-block h-2.5 w-2.5 rounded-full bg-apagado
+           transition-[background-color,box-shadow];
   }
   .punto.ok {
     background: var(--color-tally-vivo);
@@ -111,7 +162,8 @@
 
   nav button {
     @apply border-none bg-transparent text-atenuado px-3.5 py-2 text-sm font-medium
-           rounded-sm cursor-pointer tracking-[0.01em] transition-colors duration-150;
+           rounded-sm cursor-pointer tracking-[0.01em]
+           transition-[color,background-color,transform];
   }
   nav button:hover { @apply text-texto bg-panel-alto; }
   nav button.activa { @apply text-texto bg-panel-alto relative; }
@@ -126,7 +178,8 @@
      posible era mirar un circulo de 10px. Mismo vocabulario tally que ya
      usa .estado-badge, pero sin la bolita duplicada (el .punto ya la es). */
   .estado-transporte {
-    @apply flex items-center gap-2 font-mono text-xs font-medium tracking-wide text-atenuado;
+    @apply flex items-center gap-2 font-mono text-xs font-medium tracking-wide text-atenuado
+           transition-colors;
   }
   .estado-transporte.ok { color: var(--color-tally-vivo); }
   /* tally-rec puro da 4.3:1 sobre el panel del header, bajo el piso de
@@ -138,7 +191,8 @@
 
   button.principal {
     @apply bg-tally-conectando text-grafito border-none px-4 py-2 rounded-sm cursor-pointer
-           font-semibold text-sm tracking-[0.01em] transition-[filter,background-color] duration-150;
+           font-semibold text-sm tracking-[0.01em]
+           transition-[filter,background-color,transform];
   }
   button.principal:hover { @apply brightness-110; }
   button.principal.parar { @apply bg-tally-rec text-[#1a0d0d]; }
@@ -160,7 +214,7 @@
      (ver preflight.js) */
   .aviso-preflight .boton-arreglo {
     @apply ml-1 rounded-[3px] border px-2 py-0.5 text-xs cursor-pointer
-           transition-colors duration-150;
+           transition-[color,background-color,border-color,transform];
     border-color: color-mix(in srgb, var(--color-tally-privado) 55%, transparent);
     color: var(--color-tally-privado);
   }
@@ -182,8 +236,18 @@
      DOM, y .miniatura-grande viene despues y es opaca. El riel quedaba
      totalmente tapado, probablemente desde siempre. z-index explicito lo
      saca de esa ambiguedad. */
+  /* El grosor ya cruzaba suave, el COLOR no: al pasar de online a
+     grabando el riel repintaba de azul a rojo de un fotograma al otro, y
+     el cambio de estado -- lo unico que esta pestana existe para
+     mostrar -- se perdia si no estabas mirando ese riel justo en ese
+     tick. Con background-color en la lista, grosor y color se mueven
+     juntos y el cambio se ve de reojo.
+     El degradado de `mal` no interpola (es background-image): esa
+     transicion sigue siendo un corte seco, y esta bien que lo sea --
+     unas rayas de peligro no tienen que aparecer con delicadeza. */
   .riel {
-    @apply absolute inset-y-0 left-0 z-10 w-[3px] bg-borde-fuerte transition-[height] duration-200;
+    @apply absolute inset-y-0 left-0 z-10 w-[3px] bg-borde-fuerte
+           transition-[height,background-color];
   }
   /* el riel es la luz tally de la tarjeta: su urgencia no es solo de
      color, tambien de peso -- grabando y mal (los dos estados que
@@ -195,6 +259,7 @@
   .modal[data-estado="grabando"] .riel {
     background: var(--color-tally-rec);
     height: 4px;
+    animation: golpe-tally 420ms var(--ease-llegada);
   }
   .tarjeta-modelo[data-estado="privado"] .riel,
   .modal[data-estado="privado"] .riel { background: var(--color-tally-privado); }
@@ -208,6 +273,7 @@
       transparent 3px 6px
     );
     height: 4px;
+    animation: golpe-tally 420ms var(--ease-llegada);
   }
   .tarjeta-modelo[data-estado="offline"] .riel,
   .modal[data-estado="offline"] .riel { background: var(--color-borde-fuerte); }
@@ -220,9 +286,17 @@
 
   .tarjeta-modelo {
     @apply relative flex cursor-pointer flex-col overflow-hidden rounded-sm border border-borde
-           bg-panel transition-colors duration-150;
+           bg-panel transition-colors;
   }
   .tarjeta-modelo:hover, .tarjeta-modelo:focus-within { @apply border-borde-fuerte; }
+  /* La tarjeta entera abre la previa (cursor-pointer), pero lo unico que
+     lo decia era un filete de 1px cambiando de gris a gris. El fotograma
+     levantando un poco de luz es la senal que el ojo ya espera de una
+     imagen clickeable -- y es luz, no un resplandor agregado alrededor
+     (ver la No-Glow Rule de DESIGN.md). .tarjeta-grabacion no la lleva:
+     ahi la portada ya anuncia el click con su propio ▶. */
+  .tarjeta-modelo:hover .miniatura-grande img,
+  .tarjeta-modelo:focus-within .miniatura-grande img { filter: brightness(1.08); }
   .tarjeta-modelo .riel {
     top: 0; right: 0; bottom: auto; left: 0;
     height: 2px; width: auto;
@@ -235,12 +309,37 @@
 
   /* -- modal de vista previa (click en una tarjeta de Modelos) ------------ */
 
+  /* El modal aparecia y desaparecia de un fotograma al otro: un scrim
+     negro sobre el 100% de la ventana entrando de golpe es el corte mas
+     duro que tiene la app, y cerrarlo dejaba la sensacion de que algo se
+     habia roto. .oculta es `display:none`, que no transiciona -- de ahi
+     allow-discrete (el display se queda en `flex` hasta que termina la
+     opacidad) y @starting-style (de donde ARRANCA la opacidad la primera
+     vez que el elemento se renderiza). Las dos van en Chromium 117+, y
+     esta app corre en el Edge que ella misma abre.
+     Si algun dia faltaran: el modal vuelve a aparecer de golpe, que es
+     exactamente lo que hacia antes -- nunca queda invisible. */
   .modal-fondo {
     @apply fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4;
+    transition: opacity var(--dur-capa) var(--ease-llegada),
+                display var(--dur-capa) allow-discrete;
+  }
+  @starting-style { .modal-fondo { opacity: 0; } }
+  /* Salir mas rapido que entrar: una vez que decidiste cerrar, la capa
+     estorba. */
+  .modal-fondo.oculta {
+    opacity: 0;
+    transition-duration: var(--dur-salida);
   }
   .modal {
     @apply relative flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden
            rounded-sm border border-borde bg-panel;
+    /* El panel llega por su cuenta, con la curva de llegada: el scrim se
+       aclara y el panel se asienta encima. Una animacion (no una
+       transicion) porque un elemento que pasa de display:none a
+       renderizado reinicia sus animaciones -- justo el gancho que hace
+       falta, sin una linea de JS. */
+    animation: entrar-modal var(--dur-capa) var(--ease-llegada) both;
   }
   .modal .riel {
     top: 0; right: 0; bottom: auto; left: 0;
@@ -248,7 +347,8 @@
   }
   .modal-cerrar {
     @apply absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-sm
-           bg-grafito/70 text-[1.3rem] leading-none text-texto transition-colors duration-150;
+           bg-grafito/70 text-[1.3rem] leading-none text-texto
+           transition-[color,background-color,transform];
   }
   .modal-cerrar:hover { @apply bg-grafito text-tally-rec; }
   /* sin aspect-video a proposito: una grabacion vertical en una caja 16:9
@@ -323,7 +423,7 @@
     @apply relative flex h-[4.75rem] w-28 shrink-0 items-center justify-center overflow-hidden
            rounded-sm bg-panel-alto text-[1.3rem] font-semibold text-atenuado;
   }
-  .miniatura-grande img { @apply block h-full w-full object-cover transition-opacity duration-200; }
+  .miniatura-grande img { @apply block h-full w-full object-cover transition-[opacity,filter]; }
   .miniatura-grande img.cargando { @apply opacity-0; }
 
   .fila-nombre { @apply mb-xs flex items-center gap-2; }
@@ -353,10 +453,17 @@
     @apply rounded-[3px] bg-panel-alto px-1 font-mono text-xs;
   }
 
+  /* Mismo motivo que el riel: el badge y su bolita son las otras dos
+     lamparas de la tarjeta, y pintarBadge() (vista_modelos.js) les pisa
+     el className entero en cada cambio de estado. Con la transicion, las
+     tres piezas del mismo estado cruzan juntas y a la misma velocidad --
+     eso es lo que hace que la grilla se lea como una pared de tally y no
+     como texto que se reescribe. */
   .estado-badge {
-    @apply inline-flex items-center gap-1.5 py-0.5 text-xs font-semibold font-mono tracking-wide;
+    @apply inline-flex items-center gap-1.5 py-0.5 text-xs font-semibold font-mono tracking-wide
+           transition-colors;
   }
-  .estado-badge .bola { @apply h-[6px] w-[6px] shrink-0 rounded-full; }
+  .estado-badge .bola { @apply h-[6px] w-[6px] shrink-0 rounded-full transition-colors; }
   .estado-badge.grabando { color: var(--color-tally-rec); }
   .estado-badge.grabando .bola { background: var(--color-tally-rec); animation: parpadeo 1.6s ease-in-out infinite; }
   .estado-badge.privado { color: var(--color-tally-privado); }
@@ -384,15 +491,21 @@
   .acciones-tarjeta { @apply mt-xs flex gap-1.5; }
   .boton-chico {
     @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-xs
-           text-texto cursor-pointer transition-colors duration-150;
+           text-texto cursor-pointer
+           transition-[color,background-color,border-color,transform];
   }
-  .boton-chico:hover { @apply border-tally-conectando; }
+  /* :not(:disabled) no es cosmetico -- "Limpiar segmentos" nace disabled
+     en index.html y pasa la mayor parte del tiempo asi, y hasta ahora se
+     veia identico a un boton vivo Y ADEMAS se encendia de azul al pasarle
+     el mouse. Un control que no hace nada no tiene que contestar. */
+  .boton-chico:hover:not(:disabled) { @apply border-tally-conectando; }
   /* fondo a grafito (el mas oscuro del panel) en vez de panel-alto: el rojo
      de peligro sobre panel-alto da 3.9:1, bajo el piso de 4.5:1 -- oscurecer
      el fondo en el hover ademas lee como "esto se puso serio", consistente
      con el vocabulario de luces tally. */
-  .boton-chico.peligro:hover { @apply border-tally-rec text-tally-rec; background: var(--color-grafito); }
+  .boton-chico.peligro:hover:not(:disabled) { @apply border-tally-rec text-tally-rec; background: var(--color-grafito); }
   .boton-chico.activa { @apply border-tally-conectando text-tally-conectando; }
+  .boton-chico:disabled { @apply cursor-default opacity-45; }
 
   .vacio { @apply py-10 text-center text-atenuado; }
 
@@ -401,19 +514,25 @@
   .conmutador { @apply relative inline-block h-5 w-9 shrink-0; }
   .conmutador input { @apply absolute h-0 w-0 opacity-0; }
   .conmutador .pista {
-    @apply absolute inset-0 cursor-pointer rounded-full border border-borde bg-panel-alto transition-colors duration-200;
+    @apply absolute inset-0 cursor-pointer rounded-full border border-borde bg-panel-alto transition-colors;
   }
   .conmutador .pista::before {
     content: "";
-    @apply absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full bg-apagado transition-transform duration-200;
+    @apply absolute left-0.5 top-0.5 h-3.5 w-3.5 rounded-full bg-apagado
+           transition-[transform,background-color];
   }
   .conmutador input:checked + .pista { background: color-mix(in srgb, var(--color-tally-vivo) 22%, transparent); border-color: var(--color-tally-vivo); }
   .conmutador input:checked + .pista::before { @apply translate-x-4; background: var(--color-tally-vivo); }
+  /* Solo el apagado: el prendido ya lleva el borde verde, y pisarselo en
+     el hover seria perder la senal justo cuando lo estas apuntando. */
+  .conmutador:hover input:not(:checked) + .pista { @apply border-borde-fuerte; }
+  .conmutador:hover input:not(:checked) + .pista::before { background: var(--color-atenuado); }
 
   /* -- buscador / sugerencias ---------------------------------------------- */
 
-  .sugerencia { @apply flex cursor-pointer items-center gap-2.5 px-3 py-2; }
+  .sugerencia { @apply flex cursor-pointer items-center gap-2.5 px-3 py-2 transition-colors; }
   .sugerencia:hover { @apply bg-panel-alto; }
+  .sugerencia:active { background: var(--color-borde); }
   .sugerencia .miniatura { @apply h-8 w-8 text-sm; }
   .nombre-sug { @apply flex-1 truncate; }
   .punto-online { @apply h-2 w-2 shrink-0 rounded-full bg-apagado; }
@@ -433,9 +552,15 @@
   .lista-ajustes {
     @apply flex flex-col overflow-hidden rounded-sm border border-borde bg-panel;
   }
+  /* La fila no es clickeable (el control lo es), asi que el hover no la
+     tine de panel-alto entero como a una .sugerencia: una pista a medio
+     camino alcanza, y lo que de verdad resuelve es asociar un titulo de
+     la izquierda con el conmutador que le toca a 300px a la derecha --
+     la lista ya tiene doce filas y contando. */
   .ajuste-fila {
-    @apply flex items-center justify-between gap-4 px-sm py-sm;
+    @apply flex items-center justify-between gap-4 px-sm py-sm transition-colors;
   }
+  .ajuste-fila:hover { background: color-mix(in srgb, var(--color-panel-alto) 55%, transparent); }
   .ajuste-fila + .ajuste-fila { @apply border-t border-borde; }
   .ajuste-texto { @apply min-w-0 flex-1; }
   .ajuste-texto label { @apply block text-sm font-semibold text-texto; }
@@ -450,8 +575,11 @@
   .directiva label { @apply mb-1 block text-sm font-semibold text-texto; }
   .directiva .ayuda { @apply mb-2 text-xs text-atenuado; }
   .directiva input[type="text"], .directiva input[type="number"], .directiva select {
-    @apply w-full rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1.5 text-texto;
+    @apply w-full rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1.5 text-texto
+           transition-colors;
   }
+  .directiva input[type="text"]:hover, .directiva input[type="number"]:hover,
+  .directiva select:hover { @apply border-borde-fuerte; }
   .directiva input[type="text"]:focus, .directiva input[type="number"]:focus, .directiva select:focus {
     @apply border-tally-conectando outline-none;
   }
@@ -462,7 +590,8 @@
   .barra-filtros { @apply flex flex-wrap items-center gap-1.5; }
   .chip-filtro {
     @apply rounded-[3px] border border-borde bg-panel-alto px-2.5 py-1 text-xs
-           text-atenuado cursor-pointer transition-colors duration-150;
+           text-atenuado cursor-pointer
+           transition-[color,background-color,border-color,transform];
   }
   .chip-filtro:hover { @apply border-tally-conectando text-texto; }
   .chip-filtro.prendido {
@@ -499,10 +628,15 @@
      sin "p. m." (que partia la celda en dos renglones) y el prefijo
      -- <modelo>/<variante>, que se estira tanto como el nombre --
      se corta con elipsis y deja el nombre entero en el title. */
+  /* Las tres columnas son de ancho fijo y el mensaje puede irse en varios
+     renglones: seguir una fila con el ojo desde la hora hasta el final
+     del mensaje es justo lo que esta tabla pide, y un tinte al pasar el
+     mouse lo resuelve sin agregar ni un pixel de cromo. */
   .fila-registro {
-    @apply grid items-baseline gap-3 border-b border-borde/60 px-1 py-0.5;
+    @apply grid items-baseline gap-3 border-b border-borde/60 px-1 py-0.5 transition-colors;
     grid-template-columns: 4.25rem minmax(0, 12rem) minmax(0, 1fr);
   }
+  .fila-registro:hover { background: color-mix(in srgb, var(--color-panel) 75%, transparent); }
   .fila-registro .hora {
     @apply text-atenuado whitespace-nowrap tabular-nums;
   }
@@ -521,7 +655,7 @@
 
   .tarjeta-grabacion {
     @apply relative flex flex-col overflow-hidden rounded-sm border border-borde
-           bg-panel transition-colors duration-150;
+           bg-panel transition-colors;
   }
   .tarjeta-grabacion:hover, .tarjeta-grabacion:focus-within {
     @apply border-tally-conectando;
@@ -540,12 +674,17 @@
   .superficie-play::after {
     content: "▶";
     @apply absolute inset-0 flex items-center justify-center text-[1.6rem]
-           text-texto opacity-0 transition-opacity duration-150;
+           text-texto opacity-0 transition-[opacity,background-color];
     background: rgb(0 0 0 / 0.35);
   }
   .superficie-play:hover::after, .superficie-play:focus-visible::after {
     @apply opacity-100;
   }
+  /* El acuse del click de una portada de 190px no puede ser un scale como
+     el de un boton chico (mover el fotograma entero se lee como un
+     glitch, no como un boton): se oscurece, que es lo que hace un boton
+     de transporte cuando lo apretas. */
+  .superficie-play:active::after { background: rgb(0 0 0 / 0.58); }
 
   .etiqueta-partes-flot {
     @apply absolute right-1.5 top-1.5 z-10 shrink-0 rounded-[3px] border px-1
@@ -577,9 +716,10 @@
     @apply flex max-h-48 flex-col gap-1 overflow-y-auto;
   }
   .fila-parte {
-    @apply flex items-center gap-3 rounded-sm bg-panel-alto/60 px-2.5 py-1.5;
+    @apply flex items-center gap-3 rounded-sm bg-panel-alto/60 px-2.5 py-1.5 transition-colors;
   }
   .fila-parte.activa { @apply bg-panel-alto; }
+  .fila-parte:not(.activa):hover { @apply bg-panel-alto/85; }
   .parte-etiqueta { @apply w-16 shrink-0 font-mono text-xs text-atenuado; }
   .parte-detalle { @apply min-w-0 flex-1 truncate font-mono text-xs text-atenuado; }
   .fila-parte .acciones-tarjeta { @apply mt-0 shrink-0; }
@@ -602,6 +742,59 @@
      nativos del <video> (quedan fuera del overflow-hidden de .modal). */
   .modal-video-cont video { @apply block max-h-[75vh] max-w-full object-contain; }
   .partes-selector { @apply mt-1 flex flex-wrap gap-1.5; }
+
+  /* -- continuidad: lo que aparece ----------------------------------------
+     Las cinco pestanas son cinco layouts sin nada en comun, y el cambio
+     era un corte seco: la ventana entera se reemplazaba en un fotograma y
+     costaba un instante entender que habias llegado a otro lado. 3px y
+     180ms -- lo justo para que el ojo registre "esto es nuevo" sin que
+     nadie espere a que termine.
+     Mismo gancho que el modal: display:none -> renderizado reinicia la
+     animacion, asi que no hace falta tocar iniciarNavegacion(). Y solo
+     opacity/transform: ni una propiedad que mueva el layout. */
+  .vista { animation: entrar-vista var(--dur-estado) var(--ease-llegada) both; }
+
+  /* El desplegable del buscador se despliega hacia abajo, asi que arranca
+     un poco arriba y baja: el movimiento cuenta de donde sale (del campo
+     que esta justo encima), no es un fade por decoracion. */
+  .sugerencias { animation: entrar-flotante var(--dur-estado) var(--ease-llegada) both; }
+
+  /* -- acuse de un click --------------------------------------------------
+     Ningun control de la app reconocia el click: entre apretar y que
+     cambie el estado del otro lado pasan desde 20ms (un toggle local)
+     hasta varios segundos (Arrancar), y en todo ese rato la unica
+     diferencia entre "no lo apreto bien" y "ya esta andando" era mirar
+     otra parte de la pantalla. El control cede 3% bajo el dedo y vuelve:
+     90ms para hundirse (mas lento ya se lee como latencia, no como
+     tacto), la vuelta con el paso de estado.
+     Va al final del bloque a proposito: despues de cada componente que
+     toca, para no pelear especificidad con los :hover de arriba. */
+  button.principal:active:not(:disabled),
+  .boton-chico:active:not(:disabled),
+  .aviso-preflight .boton-arreglo:active:not(:disabled),
+  nav button:active,
+  .chip-filtro:active,
+  .modal-cerrar:active {
+    transform: scale(0.97);
+    filter: brightness(0.94);
+    transition-duration: var(--dur-tap);
+  }
+
+  /* -- acuse de recibo de una escritura invisible (ver js/acuse.js) -------
+     El azul interactivo, no un color tally: "guardado" no es un estado de
+     la emision, es la respuesta al control que la persona acaba de tocar
+     -- el mismo azul del focus ring y de los hovers (DESIGN.md: The Tally
+     Meaning Rule). El fallo si usa el rojo de senal, que ya significa
+     exactamente eso y nada mas.
+     Se tine con background-image y no con background-color: estas dos
+     clases caen tanto en una .ajuste-fila (fondo transparente, hereda el
+     panel de la lista) como en una .directiva (bg-panel propio), y una
+     animacion de background-color tendria que terminar en un valor
+     distinto en cada una -- con un degradado plano encima, el fondo de
+     abajo no se toca y al terminar no queda nada. */
+  .acuse-ok, .acuse-mal { animation: acuse var(--dur-acuse) ease-out; }
+  .acuse-ok { --acuse-tinte: color-mix(in srgb, var(--color-tally-conectando) 20%, transparent); }
+  .acuse-mal { --acuse-tinte: color-mix(in srgb, var(--color-tally-rec) 22%, transparent); }
 }
 
 @keyframes parpadeo {
@@ -609,6 +802,65 @@
   50% { opacity: 0.45; }
 }
 
+/* El unico momento de la app con autoria propia, y el unico que no es
+   acuse ni continuidad: cuando una tarjeta entra en grabando (o en mal),
+   su riel levanta de golpe y se asienta, como el filamento de una lampara
+   tally real -- que tampoco prende instantaneo. Es luz, no un resplandor
+   agregado alrededor del riel (DESIGN.md, The No-Glow Rule: la urgencia
+   es grosor y color, nunca una sombra), y pasa a la vez que el grosor va
+   de 2px a 4px: una sola cosa, no dos efectos apilados.
+   Dispara al empezar a matchear [data-estado="grabando"], o sea en el
+   momento exacto en que arranca una grabacion -- y de nuevo al volver a
+   la pestana, cuando la pared de tally se enciende entera. No hay forma
+   de que se repita en cada tick: actualizarTarjeta() solo escribe
+   data-estado si de verdad cambio.
+   La excepcion es localStorage.nimbo_tarjetas_in_place = "0" -- el
+   "antes" del experimento de specs\congelado_interfaz.md, que recrea las
+   tarjetas una vez por segundo: ahi el riel destella a 1 Hz. Es una
+   bandera de medicion apagada por defecto, no un camino de uso. */
+@keyframes golpe-tally {
+  0%   { filter: brightness(1); }
+  18%  { filter: brightness(1.5); }
+  100% { filter: brightness(1); }
+}
+
+@keyframes entrar-modal {
+  from { opacity: 0; transform: scale(0.985) translateY(4px); }
+}
+
+@keyframes entrar-vista {
+  from { opacity: 0; transform: translateY(3px); }
+}
+
+@keyframes entrar-flotante {
+  from { opacity: 0; transform: translateY(-4px); }
+}
+
+/* Tinte lleno los primeros 155ms y despues decae: un destello que ya se
+   esta yendo cuando lo mirás no se registra como respuesta a nada. */
+@keyframes acuse {
+  0%, 25% { background-image: linear-gradient(var(--acuse-tinte) 0 100%); }
+  100%    { background-image: linear-gradient(transparent 0 100%); }
+}
+
+/* Menos movimiento, no menos informacion. Se van las dos animaciones
+   puramente expresivas (el parpadeo de "esto esta vivo", el golpe de
+   lampara), los desplazamientos de lo que aparece y el hundirse de los
+   botones. Se QUEDAN todos los cambios de color -- las luces tally, el
+   destello de "guardado", el hover -- porque ahi el color no es adorno:
+   es la unica senal de que algo paso. */
 @media (prefers-reduced-motion: reduce) {
   .punto.espera, .estado-badge.grabando .bola { animation: none; }
+  .tarjeta-modelo[data-estado="grabando"] .riel,
+  .modal[data-estado="grabando"] .riel,
+  .tarjeta-modelo[data-estado="mal"] .riel,
+  .modal[data-estado="mal"] .riel { animation: none; }
+  .modal, .vista, .sugerencias { animation: none; }
+  .modal-fondo { transition: none; }
+  button.principal:active:not(:disabled),
+  .boton-chico:active:not(:disabled),
+  .aviso-preflight .boton-arreglo:active:not(:disabled),
+  nav button:active,
+  .chip-filtro:active,
+  .modal-cerrar:active { transform: none; }
 }

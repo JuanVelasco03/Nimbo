@@ -3,6 +3,7 @@
 
 import { obtener, enviar } from "./api.js";
 import { mostrarError } from "./registro.js";
+import { acusarOk, acusarMal } from "./acuse.js";
 import { formatoGB } from "./formato.js";
 
 const DIRECTIVAS = [
@@ -45,7 +46,7 @@ export function renderDirectivas(valores) {
       if (!campo || campo === document.activeElement) continue;
       const actual = valores[d.clave] ?? d.defecto;
       if (d.tipo === "bool") campo.checked = d.invertido ? actual !== "1" : actual === "1";
-      else if (campo.value !== actual) campo.value = actual;
+      else if (campo.value !== actual) { campo.value = actual; campo.dataset.ultimo = actual; }
     }
     return;
   }
@@ -90,6 +91,12 @@ export function renderDirectivas(valores) {
 
     const campo = div.querySelector("#directiva-" + d.clave);
     const evento = d.tipo === "bool" || d.tipo === "select" ? "change" : "blur";
+    // Texto y numero guardan en "blur", que dispara cada vez que el foco
+    // se va del campo -- tambien cuando no se escribio nada. Eso ya
+    // mandaba un POST de mas, y ahora ademas destellaria un "guardado"
+    // por una tecla Tab: un acuse que aparece cuando no paso nada deja de
+    // significar algo. De ahi la ultima copia del valor en el dataset.
+    campo.dataset.ultimo = actual;
     campo.addEventListener(evento, () => {
       let valor;
       if (d.tipo === "bool") {
@@ -97,8 +104,12 @@ export function renderDirectivas(valores) {
         valor = d.invertido ? (marcado ? "0" : "1") : (marcado ? "1" : "0");
       } else {
         valor = campo.value;
+        if (valor === campo.dataset.ultimo) return;
       }
-      enviar("/api/lista/directiva", { clave: d.clave, valor }).catch(mostrarError);
+      campo.dataset.ultimo = valor;
+      enviar("/api/lista/directiva", { clave: d.clave, valor })
+        .then(() => acusarOk(div))
+        .catch((err) => { acusarMal(div); mostrarError(err); });
     });
   }
   if (listaToggles.childElementCount > 0) cont.appendChild(listaToggles);
@@ -140,7 +151,8 @@ export async function cargarPreferencias() {
           } else {
             await enviar("/api/preferencias", { clave: p.clave, valor: ev.target.checked });
           }
-        } catch (err) { mostrarError(err); }
+          acusarOk(div);
+        } catch (err) { acusarMal(div); mostrarError(err); }
       });
     }
   } catch (err) { mostrarError(err); }
@@ -164,25 +176,41 @@ const CAMPOS_CARPETA = [
          + "Vacio = la carpeta de siempre (<raiz>\\datos\\grabaciones)." },
 ];
 
-async function _guardarRuta(clave, valor, mensajeEl) {
+// `tarjetaEl` es la .directiva donde vive el control: el destello se ve
+// ahi, no en el <input>. Guardar una carpeta tampoco mostraba nada al
+// salir bien -- solo limpiaba el mensaje de error de la vuelta anterior,
+// si habia.
+async function _guardarRuta(clave, valor, mensajeEl, tarjetaEl) {
   try {
     await enviar("/api/rutas", { clave, valor });
     mensajeEl.textContent = "";
     mensajeEl.classList.add("oculta");
+    acusarOk(tarjetaEl);
     return true;
   } catch (err) {
     mensajeEl.textContent = (err && err.message) || "no se pudo guardar";
     mensajeEl.classList.remove("oculta");
+    acusarMal(tarjetaEl);
     return false;
   }
 }
 
-async function _examinar(clave, campo, mensajeEl) {
+// Mismo criterio que las directivas de texto: "blur" dispara aunque no se
+// haya tocado nada, y un POST (mas un destello) por cada Tab no es un
+// acuse de nada.
+function _guardarRutaSiCambio(clave, campo, mensajeEl, tarjetaEl) {
+  if (campo.value === campo.dataset.ultimo) return;
+  campo.dataset.ultimo = campo.value;
+  _guardarRuta(clave, campo.value, mensajeEl, tarjetaEl);
+}
+
+async function _examinar(clave, campo, mensajeEl, tarjetaEl) {
   try {
     const r = await enviar("/api/rutas/examinar", { clave });
     if (r.ruta) {
       campo.value = r.ruta;
-      await _guardarRuta(clave, r.ruta, mensajeEl);
+      campo.dataset.ultimo = r.ruta;
+      await _guardarRuta(clave, r.ruta, mensajeEl, tarjetaEl);
     }
   } catch (err) { mostrarError(err); }
 }
@@ -209,9 +237,10 @@ export async function cargarRutas() {
 
       const campo = div.querySelector("#ruta-" + c.clave);
       const mensaje = div.querySelector("#mensaje-" + c.clave);
-      campo.addEventListener("blur", () => _guardarRuta(c.clave, campo.value, mensaje));
+      campo.dataset.ultimo = campo.value;
+      campo.addEventListener("blur", () => _guardarRutaSiCambio(c.clave, campo, mensaje, div));
       div.querySelector("#examinar-" + c.clave)
-        .addEventListener("click", () => _examinar(c.clave, campo, mensaje));
+        .addEventListener("click", () => _examinar(c.clave, campo, mensaje, div));
     }
 
     // Union: select de modo + carpeta, visible solo con modo "carpeta".
@@ -241,13 +270,15 @@ export async function cargarRutas() {
     selectModo.value = datos.union_modo || "auto";
     filaUnion.classList.toggle("oculta", selectModo.value !== "carpeta");
 
+    campoUnion.dataset.ultimo = campoUnion.value;
     selectModo.addEventListener("change", async () => {
       filaUnion.classList.toggle("oculta", selectModo.value !== "carpeta");
-      await _guardarRuta("union_modo", selectModo.value, mensajeUnion);
+      await _guardarRuta("union_modo", selectModo.value, mensajeUnion, divUnion);
     });
-    campoUnion.addEventListener("blur", () => _guardarRuta("dir_union", campoUnion.value, mensajeUnion));
+    campoUnion.addEventListener("blur",
+      () => _guardarRutaSiCambio("dir_union", campoUnion, mensajeUnion, divUnion));
     divUnion.querySelector("#examinar-dir_union")
-      .addEventListener("click", () => _examinar("dir_union", campoUnion, mensajeUnion));
+      .addEventListener("click", () => _examinar("dir_union", campoUnion, mensajeUnion, divUnion));
   } catch (err) { mostrarError(err); }
 }
 
