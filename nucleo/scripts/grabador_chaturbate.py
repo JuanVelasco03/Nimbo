@@ -94,6 +94,7 @@ import chaturbate  # noqa: E402
 # Solo para partir_fragmentos() (protocolo-agnostico, ver su docstring):
 # importarlo no construye ni arranca nada, igual que lo usan mp4.py/vivo.py.
 import mouflon  # noqa: E402
+import cerrojo_union  # noqa: E402  -- turno unico de union (SPEC 19)
 
 BASE = os.environ.get("M3U8_BASE") or _raiz_proyecto()
 STREAMS_DIR = os.environ.get("M3U8_STREAMS") or os.path.join(BASE, "streams")
@@ -343,25 +344,32 @@ def _mezclar_audio(ruta_video: str, ruta_audio: str) -> bool:
     return True
 
 
-def _unir_doble(escritor: "Escritor", pista_video, pista_audio) -> None:
+def _unir_doble(escritor: "Escritor", pista_video, pista_audio, parar=None) -> None:
     """Une video y audio como dos sesiones separadas (cada una, para
     detectar_m3u8.py --unir, es una sesion cualquiera de una sola pista --
     nunca se toca ese codigo) y despues las mezcla. Si no hay pista de
     audio, o su union falla, el video queda solo -- mudo es mejor que
-    nada."""
-    salida_video = _unir_en_fondo(escritor, pista_video)
-    if salida_video is None:
-        return
-    if pista_audio is None or not pista_audio.segmentos:
-        return
-    salida_audio = _unir_en_fondo(escritor, pista_audio)
-    if salida_audio is None:
-        log.warning("[%s] no se pudo unir el audio -- el video queda mudo",
-                   pista_video.ref)
-        return
-    if _mezclar_audio(salida_video, salida_audio):
-        with contextlib.suppress(OSError):
-            os.remove(salida_audio)
+    nada.
+
+    El turno de union (SPEC 19) se toma ACA, una sola vez alrededor de las
+    dos uniones y del mux: _unir_en_fondo() no lo toca, para que el
+    subproceso --unir que lanza (y que lo hereda por _HEREDADO) no se trabe
+    con este mismo proceso."""
+    with cerrojo_union.turno(pista_video.ref, parar=parar, raiz=STREAMS_DIR,
+                              log=log):
+        salida_video = _unir_en_fondo(escritor, pista_video)
+        if salida_video is None:
+            return
+        if pista_audio is None or not pista_audio.segmentos:
+            return
+        salida_audio = _unir_en_fondo(escritor, pista_audio)
+        if salida_audio is None:
+            log.warning("[%s] no se pudo unir el audio -- el video queda mudo",
+                       pista_video.ref)
+            return
+        if _mezclar_audio(salida_video, salida_audio):
+            with contextlib.suppress(OSError):
+                os.remove(salida_audio)
 
 
 def _descargar(url: str) -> bytes:
@@ -1046,7 +1054,7 @@ class Grabador:
                 return
             escritor, pista_video, pista_audio = item
             try:
-                _unir_doble(escritor, pista_video, pista_audio)
+                _unir_doble(escritor, pista_video, pista_audio, parar=self._parar)
             except Exception as e:
                 log.error("[UNIR] %s: %s", pista_video.ref, e)
 

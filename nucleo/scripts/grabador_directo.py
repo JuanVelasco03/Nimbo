@@ -83,6 +83,7 @@ def _al_lado(nombre: str) -> str:
 if AQUI not in sys.path:
     sys.path.insert(0, AQUI)
 import mouflon  # noqa: E402
+import cerrojo_union  # noqa: E402  -- turno unico de union (SPEC 19)
 
 BASE = os.environ.get("M3U8_BASE") or _raiz_proyecto()
 # Nimbo pasa esta segun lo configurado en "Carpetas y discos" (config.json);
@@ -306,7 +307,7 @@ def _resumen_union(proc, tope: int = 3) -> str:
     return " | ".join(utiles[-tope:]) if utiles else "(el hijo no dijo nada)"
 
 
-def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
+def _unir_en_fondo(escritor: "Escritor", sesion, parar=None) -> None:
     """Delega la union a detectar_m3u8.py --unir como SUBPROCESO: correr
     como __main__ no arma un Detector (ver docstring del modulo) y hereda
     el Reencadenador, los 6 intentos de reparacion, _hay_espacio y
@@ -329,51 +330,52 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> None:
         antes = os.path.getmtime(marcador)
     except OSError:
         antes = None
-    try:
-        # stdin=DEVNULL a proposito: sin esto el subproceso hereda el
-        # stdin DE ESTE PROCESO, que es el pipe que motor.py mantiene
-        # abierto para mandar "parar" (ver lanzador_directo.py) -- un
-        # pipe que nadie en esta rama va a cerrar ni escribir. Nada en
-        # --unir lee stdin a proposito, pero no hay motivo para heredar
-        # un handle ajeno en un subproceso que no lo necesita.
-        proc = subprocess.run(cmd, cwd=AQUI, env=dict(os.environ),
-                               capture_output=True, text=True,
-                               timeout=ESPERA_UNION,
-                               stdin=subprocess.DEVNULL, **_SIN_VENTANA)
-        if proc.returncode != 0:
-            log.error("[UNIR] %s: --unir fallo (codigo %s): %s", sesion.ref,
-                      proc.returncode, (proc.stderr or proc.stdout or "")[-400:])
-        elif not os.path.isfile(marcador):
-            # --unir devuelve 0 igual si no encontro ninguna sesion que
-            # coincida con el filtro (p.ej. M3U8_BASE relativo resuelto
-            # distinto en este subproceso) -- "returncode == 0" solo no
-            # prueba que de verdad unio algo.
-            log.error(
-                "[UNIR] %s: --unir termino sin error pero no generó %s -- "
-                "revisa M3U8_BASE (tiene que ser una ruta ABSOLUTA) -- "
-                "salida: %s", sesion.ref, MARCADOR, _resumen_union(proc))
-        else:
-            try:
-                ahora = os.path.getmtime(marcador)
-            except OSError:
-                ahora = None
-            if antes is not None and ahora == antes:
+    with cerrojo_union.turno(sesion.ref, parar=parar, raiz=STREAMS_DIR, log=log):
+        try:
+            # stdin=DEVNULL a proposito: sin esto el subproceso hereda el
+            # stdin DE ESTE PROCESO, que es el pipe que motor.py mantiene
+            # abierto para mandar "parar" (ver lanzador_directo.py) -- un
+            # pipe que nadie en esta rama va a cerrar ni escribir. Nada en
+            # --unir lee stdin a proposito, pero no hay motivo para heredar
+            # un handle ajeno en un subproceso que no lo necesita.
+            proc = subprocess.run(cmd, cwd=AQUI, env=dict(os.environ),
+                                   capture_output=True, text=True,
+                                   timeout=ESPERA_UNION,
+                                   stdin=subprocess.DEVNULL, **_SIN_VENTANA)
+            if proc.returncode != 0:
+                log.error("[UNIR] %s: --unir fallo (codigo %s): %s", sesion.ref,
+                          proc.returncode, (proc.stderr or proc.stdout or "")[-400:])
+            elif not os.path.isfile(marcador):
+                # --unir devuelve 0 igual si no encontro ninguna sesion que
+                # coincida con el filtro (p.ej. M3U8_BASE relativo resuelto
+                # distinto en este subproceso) -- "returncode == 0" solo no
+                # prueba que de verdad unio algo.
                 log.error(
-                    "[UNIR] %s: NO se unio -- ya tenia un %s de antes y "
-                    "--unir la salteo, asi que lo grabado despues de ese "
-                    "marcador quedo sin unir. Rehacela a mano: "
-                    "python %s --unir --forzar \"%s\" -- salida: %s",
-                    sesion.ref, MARCADOR, os.path.basename(DETECTAR_PY),
-                    sesion.ref, _resumen_union(proc))
+                    "[UNIR] %s: --unir termino sin error pero no generó %s -- "
+                    "revisa M3U8_BASE (tiene que ser una ruta ABSOLUTA) -- "
+                    "salida: %s", sesion.ref, MARCADOR, _resumen_union(proc))
             else:
-                log.info("[UNIR] %s: listo | %s", sesion.ref,
-                         _resumen_union(proc))
-    except subprocess.TimeoutExpired:
-        log.error("[UNIR] %s: --unir no termino en ESPERA_UNION (%d s); la "
-                  "sesion queda sin %s y recuperar_pendientes() la puede "
-                  "retomar", sesion.ref, ESPERA_UNION, MARCADOR)
-    except OSError as e:
-        log.error("[UNIR] %s: no se pudo lanzar --unir: %s", sesion.ref, e)
+                try:
+                    ahora = os.path.getmtime(marcador)
+                except OSError:
+                    ahora = None
+                if antes is not None and ahora == antes:
+                    log.error(
+                        "[UNIR] %s: NO se unio -- ya tenia un %s de antes y "
+                        "--unir la salteo, asi que lo grabado despues de ese "
+                        "marcador quedo sin unir. Rehacela a mano: "
+                        "python %s --unir --forzar \"%s\" -- salida: %s",
+                        sesion.ref, MARCADOR, os.path.basename(DETECTAR_PY),
+                        sesion.ref, _resumen_union(proc))
+                else:
+                    log.info("[UNIR] %s: listo | %s", sesion.ref,
+                             _resumen_union(proc))
+        except subprocess.TimeoutExpired:
+            log.error("[UNIR] %s: --unir no termino en ESPERA_UNION (%d s); la "
+                      "sesion queda sin %s y recuperar_pendientes() la puede "
+                      "retomar", sesion.ref, ESPERA_UNION, MARCADOR)
+        except OSError as e:
+            log.error("[UNIR] %s: no se pudo lanzar --unir: %s", sesion.ref, e)
 
 
 def _descargar(url: str, por_tunel: bool) -> bytes:
@@ -1234,7 +1236,7 @@ class Grabador:
                 return
             escritor, sesion = item
             try:
-                _unir_en_fondo(escritor, sesion)
+                _unir_en_fondo(escritor, sesion, parar=self._parar)
             except Exception as e:
                 log.error("[UNIR] %s: %s", sesion.ref, e)
 

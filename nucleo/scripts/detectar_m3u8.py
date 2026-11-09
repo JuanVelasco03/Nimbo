@@ -124,6 +124,8 @@ if AQUI not in sys.path:
 import mouflon  # noqa: E402  -- biblioteca de protocolo, sin efectos al
                 # importar (ver su docstring): leer_master/mejor_rendicion
                 # vivian aca y se movieron ahi (specs\grabador_directo.md S4.1)
+import cerrojo_union  # noqa: E402  -- turno unico de union (SPEC 19), mismo
+                # criterio de import seguro que mouflon.py
 
 
 def _raiz_proyecto() -> str:
@@ -1232,7 +1234,12 @@ def _grabaciones_por_estado():
     """
     ahora = time.time()
     visto = False
-    for nombre in ("directo.json", "detector.json"):
+    # Los tres tienen la misma forma ('generado', streams[].grabando,
+    # streams[].ultimo_segmento): directo.json lo escribe grabador_directo.py,
+    # detector.json lo escribe puente.py y chaturbate.json lo escribe
+    # grabador_chaturbate.py. Sin el tercero, una union de stripchat corria a
+    # fondo aunque chaturbate estuviera grabando (SPEC 19).
+    for nombre in ("directo.json", "detector.json", "chaturbate.json"):
         datos = _leer_estado(nombre)
         if not datos:
             continue
@@ -1786,8 +1793,9 @@ def recuperar_pendientes(remux: bool = True) -> int:
     hecho = 0
     for s in pendientes:
         try:
-            if unir_sesion(s.ruta, s.etiqueta, remux=remux):
-                hecho += 1
+            with cerrojo_union.turno(s.etiqueta, raiz=STREAMS_DIR, log=log):
+                if unir_sesion(s.ruta, s.etiqueta, remux=remux):
+                    hecho += 1
         except Exception as e:
             log.error("[RECUPERAR] %s: %s", s.etiqueta, e)
     return hecho
@@ -2853,7 +2861,9 @@ class Detector:
             })
             etiqueta = "%s_%s_%s_%s" % (modelo, sid, var.variante, var.sesion)
             if cfg.unir:
-                unir_sesion(var.carpeta, etiqueta)
+                with cerrojo_union.turno(etiqueta, parar=self._parar,
+                                          raiz=STREAMS_DIR, log=log):
+                    unir_sesion(var.carpeta, etiqueta)
             else:
                 log.info("[UNIR] @unir=0, queda sin unir: %s", var.carpeta)
 
@@ -3042,8 +3052,9 @@ def main(argv) -> int:
                     "viva) -- no la uno; se une sola cuando cierre",
                     s.etiqueta)
                 continue
-            if unir_sesion(s.ruta, s.etiqueta):
-                hecho += 1
+            with cerrojo_union.turno(s.etiqueta, raiz=STREAMS_DIR, log=log):
+                if unir_sesion(s.ruta, s.etiqueta):
+                    hecho += 1
         if not hecho:
             log.info("nada que unir en %s", STREAMS_DIR)
         return 0

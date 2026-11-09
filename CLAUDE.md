@@ -280,7 +280,11 @@ sesiones perdieron entre 430 y 856 s de video. Desde SPEC 13 `main()`
 engancha `_grabaciones_por_estado` al entrar en `--unir`/`--recuperar`, y
 el addon pasa a `self._grabando_alguna() or _grabaciones_por_estado()`
 porque con toda la lista en `@directo=1` el detector no graba nada y su
-chequeo en memoria ve cero. El criterio es el mismo de
+chequeo en memoria ve cero. `_grabaciones_por_estado()` recorre
+`directo.json`, `detector.json` **y `chaturbate.json`** (SPEC 19: hasta
+entonces faltaba el tercero, así que una unión de stripchat corría a fondo
+aunque chaturbate estuviera grabando — el freno de SPEC 13 tenía un
+agujero del tamaño del sitio nuevo). El criterio es el mismo de
 `_grabando_alguna()` — `grabando` y `ultimo_segmento` a menos de 30s —
 sobre un JSON de menos de 15s (`FRESCURA_ESTADO`, duplicado a mano de
 `estado_captura.FRESCURA_S` porque el núcleo no importa nada de
@@ -296,6 +300,33 @@ de drenar `cola_union`, así que `directo.json` queda con `streams: []` y
 las uniones pendientes corren a fondo, como siempre. El tope del hijo es
 `ESPERA_UNION = 3600` en `grabador_directo.py` (era un `timeout=1200`
 literal: 7 GB frenados no entran en 20 min).
+
+**`_Freno` limita cuánto lee una unión; `nucleo\scripts\cerrojo_union.py`
+(SPEC 19) limita cuántas uniones hay.** Antes de SPEC 19 había cuatro
+productores de uniones (el detector al cerrar sesión, el detector al
+recuperar pendientes al arrancar, el camino directo y chaturbate), cada uno
+serial por su cuenta y ninguno enterado de los otros tres — hasta dos
+corriendo dentro del mismo proceso del detector (`recuperador` y
+`finalizador`, hilos separados). `cerrojo_union.turno()` es un mutex
+nombrado de Windows (`Local\NimboUnion.<hash de STREAMS_DIR>`, por
+`ctypes`) que los tres llamadores de `unir_sesion()` en `detectar_m3u8.py`,
+`grabador_directo.py:_unir_en_fondo` y `grabador_chaturbate.py:_unir_doble`
+toman **antes** de llamar a `unir_sesion()`/correr el subproceso, nunca
+adentro: así cubre también el `_mezclar_audio` de chaturbate y permite que
+el subproceso `--unir` no se trabe con su propio padre. Ese subproceso
+hereda el turno por la variable de entorno `NIMBO_UNION_TURNO` (leída una
+sola vez al importar, `_HEREDADO`) y no vuelve a pedirlo. Windows suelta el
+mutex solo cuando el dueño muere (el que esperaba recibe `WAIT_ABANDONED` y
+se queda con la propiedad igual), así que no hace falta heartbeat ni
+limpieza al arrancar; `ESPERA_TURNO = 10800` (3 h) es solo la red contra un
+turno filtrado, no el caso normal. Durante la **parada** no se espera
+turno (nada está grabando, y esperar haría que la parada excediera
+`ESPERA_CIERRE_DIRECTO`). Si `ctypes`/`CreateMutexW` falla (o no es
+Windows), avisa una vez y degrada a sin turno — el comportamiento de antes
+de este spec, nunca deja una sesión sin unir. Cada transición deja una
+línea de log (`esperando` / `tomado` / `suelto`, con la espera en
+segundos) por el logger de quien la llama, para que termine en el mismo
+`eventos_*.jsonl` que el resto de esa unión.
 
 **La unión intenta leer desde el disco de TEMP, no desde `streams\`
 directo**, si eso de verdad cambia de disco
@@ -313,8 +344,11 @@ mismo disco que la sesión, o no hay margen (`MARGEN_ESCENARIO = 1.15`,
 más chico que `MARGEN_DISCO` porque es solo una copia transitoria, no el
 tamaño del `.mp4` final), no copia nada y lee in situ como antes — el
 escenario se borra siempre al terminar, con `try/finally`, sin acumular
-nada entre uniones (una por vez: la unión ya es serial por diseño).
-Probado en la instalación real (`F:` HDD, `%TEMP%` en `C:` SSD):
+nada entre uniones (una por vez: el turno único de `cerrojo_union.py`
+--ver más abajo-- es lo que hoy garantiza eso; antes de SPEC 19 era falso
+pese al comentario que lo daba por sentado, con cuatro productores de
+uniones corriendo cada uno serial por su cuenta y ninguno enterado de los
+otros tres). Probado en la instalación real (`F:` HDD, `%TEMP%` en `C:` SSD):
 3.966 archivos, 512 MB, copiados y unidos sin tocar `streams\` ni el
 destino final.
 
@@ -331,6 +365,14 @@ sin red (`mouflon.verificar_canario()`) es la señal de que la tabla de
 claves (`KEY_MAP`) sigue vigente; si deja de dar `True`, seguir
 `pruebas\RESULTADOS.md` sección 1 para derivar una nueva sin esperar a
 que alguien la publique.
+
+`nucleo\scripts\cerrojo_union.py` (SPEC 19, ver más arriba) es el mismo
+caso: protocolo puro, sin `addons = [...]` ni estado de módulo mutable
+(solo un `threading.Lock` y un mutex del sistema operativo que se abre y
+se cierra por llamada) — importarlo no toma ningún turno ni construye
+nada. Por eso lo importan por igual `detectar_m3u8.py`,
+`grabador_directo.py` y `grabador_chaturbate.py` sin que ninguno corra el
+riesgo de levantar un `Detector` de más.
 
 ### El núcleo copiado
 
@@ -752,11 +794,13 @@ Lo que hay que saber si se toca algo de ahí:
   paquete abierto a propósito. Cierra `nimbo\` + `grabador_directo.py` +
   `grabador_chaturbate.py` + `chaturbate.py` (SPEC 18: mismo criterio que
   el camino directo — nada fuera del binario los necesita). **No**
-  cierra `detectar_m3u8.py`, `puente.py`, `supervisor.py` ni `mouflon.py`:
-  los dos primeros los carga mitmdump por ruta, y `mouflon.py` lo importa
-  el detector al correr, así que la tabla de claves MOUFLON queda en disco
-  igual (`specs\08-cobertura_codigo.md`, Decisiones: cerrarla es su propio
-  spec).
+  cierra `detectar_m3u8.py`, `puente.py`, `supervisor.py`, `mouflon.py` ni
+  `cerrojo_union.py` (SPEC 19): los dos primeros los carga mitmdump por
+  ruta, `mouflon.py` lo importa el detector al correr (tabla de claves
+  MOUFLON en disco igual — `specs\08-cobertura_codigo.md`, Decisiones:
+  cerrarla es su propio spec), y `cerrojo_union.py` lo importa
+  `detectar_m3u8.py` por el mismo motivo, además de ser quien usan los dos
+  grabadores ya compilados.
 - **Adentro del binario no se puede calcular una ruta desde uno mismo.**
   Nuitka deja `sys.executable` apuntando a un `python.exe` que **no
   existe**, y el `__file__` de cada módulo es nocional: cae en
