@@ -1,6 +1,6 @@
 # SPEC 19 — Unión secuencial entre todos los sitios
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 03 (camino directo), SPEC 12 (rutas de disco), SPEC 13 (freno de la unión), SPEC 18 (segundo sitio chaturbate)
 > **Fecha:** 2026-11-08
 > **Objetivo:** Que no haya nunca más de una unión a la vez en toda la instalación — un turno único que compartan el detector, el camino directo, chaturbate y el `--unir` a mano — para que unir una grabación no le robe disco a las que siguen grabando.
