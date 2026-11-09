@@ -114,6 +114,11 @@ def fusionar(detector: dict | None, directo: dict | None,
     base["streams"] = list(por_clave.values())
     base["generado"] = max([base.get("generado") or 0]
                             + [f.get("generado") or 0 for f in fuentes_directas])
+    # SPEC 20: el detector tambien une, y desde este spec lo publica
+    # (puente.py). Normalizado aca para que quien sume los tres no tenga
+    # que distinguir "no hay detector" de "hay detector sin la clave" --
+    # el caso de un detector.json de antes del spec.
+    base["uniendo"] = int((detector or {}).get("uniendo") or 0)
     if directo:
         base["directo"] = {
             "modo": directo.get("modo"),

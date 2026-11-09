@@ -1288,6 +1288,17 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         a = app.ajustes
         resultado = await app.a_hilo(
             grabaciones_mod.listar, a.grabaciones, a.dir_estado, a.ffmpeg, a.dir_miniaturas)
+        # SPEC 20: el total por unir (la en vuelo + las encoladas de los
+        # tres grabadores) sale de app.estado, la cache de _bucle_estado,
+        # que ya tiene los tres "uniendo" fusionados por
+        # estado_captura.fusionar(). Sin tocar _bucle_estado ni el delta: el
+        # progreso de la union NO va por WebSocket (esta pestana ya se
+        # refresca sola cada 4s y se apaga al salir).
+        det = (app.estado or {}).get("detector") or {}
+        resultado.setdefault("union", {})["por_unir"] = (
+            int(det.get("uniendo") or 0)
+            + int((det.get("directo") or {}).get("uniendo") or 0)
+            + int((det.get("chaturbate") or {}).get("uniendo") or 0))
         await _json(writer, 200, resultado)
     elif ruta == "/api/grabaciones/video":
         ruta_video = await app.a_hilo(
@@ -1493,9 +1504,18 @@ async def _despachar_post(app, ruta, cuerpo):
         if (cuerpo.get("sitio") or "stripchat") == "chaturbate":
             await app.a_hilo(app.lista.marcar_sitio, cuerpo["nombre"], "chaturbate")
         else:
-            await app.a_hilo(app.lista.agregar_modelo, cuerpo["nombre"])
+            # SPEC 20: con "stripchat" explicito, agregar_modelo saca el
+            # nombre de @chaturbate= en la misma escritura -- una marca
+            # huerfana que ya estuviera en el archivo no se hereda.
+            await app.a_hilo(app.lista.agregar_modelo, cuerpo["nombre"], "stripchat")
     elif ruta == "/api/lista/quitar":
-        await app.a_hilo(app.lista.quitar_modelo, cuerpo["nombre"])
+        # `or ""` y NO `or "stripchat"` a proposito (SPEC 20): un cliente
+        # viejo (una pestana sin recargar tras la actualizacion) que no
+        # manda sitio tiene que seguir comportandose como hoy y no tocar
+        # ninguna marca. El otro lado del fix (agregar_modelo) limpia la
+        # huerfana cuando el nombre vuelva.
+        await app.a_hilo(app.lista.quitar_modelo, cuerpo["nombre"],
+                          cuerpo.get("sitio") or "")
     elif ruta == "/api/lista/vpn":
         await app.a_hilo(app.lista.marcar_vpn, cuerpo["nombre"], bool(cuerpo.get("activo")))
     elif ruta == "/api/lista/directiva":

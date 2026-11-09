@@ -1,6 +1,6 @@
 # SPEC 20 — Progreso de la unión, y la marca de sitio al quitar
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 06 (tarjetas de grabaciones), SPEC 12 (rutas de disco),
 > SPEC 13 (freno de la unión), SPEC 18 (segundo sitio chaturbate), SPEC 19
 > (unión secuencial entre todos los sitios)

@@ -60,9 +60,90 @@ function grupoVisible(g) {
 }
 
 function textoDuracionGrupo(g) {
+  // SPEC 20: mientras se une, el .mp4 todavia no tiene moov y el sondeo
+  // de duracion ni se lanza (grabaciones.py) -- "calculando..." seria
+  // mentira, porque nadie esta calculando nada.
+  if (g.uniendo) return "uniendo";
   if (g.duracion_total_seg == null) return "calculando...";
   const texto = formatoHMS(g.duracion_total_seg);
   return g.duracion_parcial ? texto + "+" : texto;
+}
+
+// -- SPEC 20: progreso de la union en curso -----------------------------
+// El dato viene en la clave "union" de /api/grabaciones (ver
+// grabaciones.py:listar + servidor.py), con el refresco de 4s que esta
+// pestana ya tenia. No hay WebSocket ni seccion nueva en el delta de
+// estado: nadie mira esta pestana la mayor parte del tiempo.
+
+const FASES = { copia: "copiando", remux: "armando", mezcla: "mezclando" };
+
+function unionActiva() {
+  const u = ultimoListado && ultimoListado.union;
+  return (u && u.activa) || null;
+}
+
+function fraccion(a) {
+  if (!a || !a.bytes_total) return 0;
+  return Math.max(0, Math.min(1, a.bytes_hechos / a.bytes_total));
+}
+
+// (bytes que faltan) / ritmo medido. Sin ritmo (los primeros segundos de
+// una fase, antes de que haya dos muestras en la ventana) se muestra el %
+// sin ETA en vez de inventar un numero.
+function textoEta(a) {
+  if (!a || !a.ritmo_bps || !a.bytes_total) return "";
+  const faltan = a.bytes_total - a.bytes_hechos;
+  if (faltan <= 0) return "";
+  return "faltan ~" + formatoHMS(faltan / a.ritmo_bps);
+}
+
+function modeloDeEtiqueta(etiqueta) {
+  // "<modelo>_<id>_<calidad>_<codec>_<fecha>" -- el modelo puede tener _
+  // adentro, asi que se cortan los cuatro campos de la derecha y lo que
+  // sobra es el nombre. Si no sigue la convencion, se muestra entero.
+  const partes = (etiqueta || "").split("_");
+  return partes.length > 4 ? partes.slice(0, -4).join("_") : (etiqueta || "?");
+}
+
+function renderBannerUnion() {
+  const banner = document.getElementById("union-banner");
+  if (!banner) return;
+  const a = unionActiva();
+  const porUnir = (ultimoListado && ultimoListado.union
+    && ultimoListado.union.por_unir) || 0;
+
+  // .oculta en vez de sacarlo del DOM: el nodo se crea una sola vez (vive
+  // en index.html) y prenderlo/apagarlo no toca la grilla de al lado.
+  banner.classList.toggle("oculta", !a);
+  if (!a) return;
+
+  const frac = fraccion(a);
+  const partes = [modeloDeEtiqueta(a.etiqueta), "—", FASES[a.fase] || a.fase || "?"];
+  if (a.bytes_total) {
+    partes.push(Math.round(frac * 100) + "%");
+    partes.push("(" + formatoGB(a.bytes_hechos) + " de " + formatoGB(a.bytes_total) + ")");
+  }
+  const eta = textoEta(a);
+  if (eta) partes.push("· " + eta);
+  poner(banner.querySelector(".union-texto"), partes.join(" "));
+
+  // Las dos razones por las que un ETA razonable se vuelve raro: sin
+  // nombrarlas, un ETA que se duplica o un % que vuelve a cero parecen un
+  // bug de la interfaz.
+  const notas = [];
+  if (a.frenado) notas.push("frenado");
+  if (a.intento > 0) notas.push("reintento " + (a.intento + 1) + " de " + ((a.intentos_max || 0) + 1));
+  const nodoNotas = banner.querySelector(".union-notas");
+  nodoNotas.classList.toggle("oculta", notas.length === 0);
+  if (notas.length) poner(nodoNotas, notas.join(" · "));
+
+  const nodoCola = banner.querySelector(".union-cola");
+  nodoCola.classList.toggle("oculta", porUnir <= 1);
+  if (porUnir > 1) poner(nodoCola, porUnir + " por unir");
+
+  const relleno = banner.querySelector(".barra-union .relleno");
+  const ancho = (frac * 100).toFixed(1) + "%";
+  if (relleno.style.width !== ancho) relleno.style.width = ancho;
 }
 
 // -- la portada: fotograma real del .mp4, con el mismo fade de SPEC 05 --
@@ -122,10 +203,12 @@ function crearTarjeta(clave) {
     <button class="superficie-play" data-accion="reproducir-grupo" type="button">
       <div class="miniatura-grande"></div>
       <span class="etiqueta-partes-flot oculta"></span>
+      <span class="badge-uniendo oculta"><span class="bola"></span><span class="texto"></span></span>
       <div class="marca-tiempo">
         <span class="duracion"></span>
         <span class="tamano"></span>
       </div>
+      <div class="barra-uniendo oculta"><div class="relleno"></div></div>
     </button>
     <div class="cuerpo-grabacion">
       <div class="fila-nombre">
@@ -142,6 +225,10 @@ function crearTarjeta(clave) {
     play: div.querySelector(".superficie-play"),
     mini: div.querySelector(".miniatura-grande"),
     partes: div.querySelector(".etiqueta-partes-flot"),
+    uniendo: div.querySelector(".badge-uniendo"),
+    uniendoTexto: div.querySelector(".badge-uniendo .texto"),
+    barra: div.querySelector(".barra-uniendo"),
+    barraRelleno: div.querySelector(".barra-uniendo .relleno"),
     duracion: div.querySelector(".marca-tiempo .duracion"),
     tamano: div.querySelector(".marca-tiempo .tamano"),
     nombre: div.querySelector(".nombre"),
@@ -165,6 +252,22 @@ function actualizarTarjeta(el, g) {
   n.partes.classList.toggle("oculta", !multiple);
   if (multiple) poner(n.partes, g.partes.length + " partes");
   n.play.setAttribute("aria-label", "Reproducir " + g.modelo);
+
+  // SPEC 20: badge + barra del grupo que se esta armando. Los dos nodos
+  // viven siempre en el DOM y se prenden con .oculta -- mismo criterio que
+  // el badge de partes de arriba, por el que la <img> de la portada no se
+  // vuelve a pedir en cada refresco.
+  const a = g.uniendo ? unionActiva() : null;
+  n.uniendo.classList.toggle("oculta", !a);
+  n.barra.classList.toggle("oculta", !a);
+  if (el.dataset.uniendo !== (a ? "1" : "0")) el.dataset.uniendo = a ? "1" : "0";
+  if (a) {
+    const frac = fraccion(a);
+    poner(n.uniendoTexto, (FASES[a.fase] || a.fase || "?")
+      + (a.bytes_total ? " " + Math.round(frac * 100) + "%" : ""));
+    const ancho = (frac * 100).toFixed(1) + "%";
+    if (n.barraRelleno.style.width !== ancho) n.barraRelleno.style.width = ancho;
+  }
 
   poner(n.duracion, textoDuracionGrupo(g));
   poner(n.tamano, formatoMB(g.tamano_total_bytes));
@@ -190,6 +293,10 @@ const tarjetas = new Map();   // clave -> elemento
 export function renderGrabaciones() {
   const cont = document.getElementById("grabaciones-lista");
   if (!ultimoListado) return;
+  // Antes del early-return del caso vacio: una union en curso puede ser
+  // justo la primera grabacion de la instalacion, o caer bajo un filtro
+  // que no la muestra, y el banner tiene que verse igual.
+  renderBannerUnion();
   const grupos = ultimoListado.grupos.filter(grupoVisible).slice().sort(comparar);
 
   const r = ultimoListado.resumen;
@@ -233,6 +340,10 @@ async function cargar() {
     tarjetas.clear();
     document.getElementById("grabaciones-lista").innerHTML =
       '<div class="vacio">no se pudo leer la lista de grabaciones</div>';
+    // Sin servidor no hay forma de saber si la union sigue: dejar el
+    // banner con la ultima foto lo mostraria para siempre.
+    const banner = document.getElementById("union-banner");
+    if (banner) banner.classList.add("oculta");
     return;
   }
   renderGrabaciones();

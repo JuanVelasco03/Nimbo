@@ -756,6 +756,69 @@
 
   .detalle-grabacion { @apply mt-0.5 truncate font-mono text-2xs text-atenuado; }
 
+  /* -- SPEC 20: progreso de la union en curso -----------------------------
+     El banner usa el mismo vocabulario que .aviso-preflight (franja tenida
+     al 10% con el borde al 35%) pero con tally-conectando en vez de
+     tally-privado: esto no es un problema que arreglar, es trabajo en
+     curso -- el mismo color con el que la grilla dice "online". */
+  .banner-union {
+    @apply relative mb-3 overflow-hidden rounded-sm border px-3 py-sm;
+    background: color-mix(in srgb, var(--color-tally-conectando) 10%, transparent);
+    border-color: color-mix(in srgb, var(--color-tally-conectando) 35%, transparent);
+  }
+  .banner-union .linea {
+    @apply flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs;
+  }
+  .banner-union .union-texto { @apply tabular-nums text-texto; }
+  /* "frenado" y "reintento N de 7" son las dos razones por las que un ETA
+     razonable se vuelve raro -- mismo privado con el que la app ya dice
+     "ojo con esto", no el rojo de error: no hay nada roto. */
+  .banner-union .union-notas {
+    @apply font-semibold tracking-wide;
+    color: var(--color-tally-privado);
+  }
+  .banner-union .union-cola { @apply ml-auto text-atenuado tabular-nums; }
+
+  /* Mismo riel de 3px que la tarjeta de Modelos, pero midiendo avance en
+     vez de estado: pegado al borde de abajo del banner, de punta a punta.
+     Sin transicion de width -- el valor llega cada 4s y animar entre dos
+     muestras tan separadas se lee como un retardo, no como progreso. */
+  .barra-union {
+    @apply absolute inset-x-0 bottom-0 h-[3px];
+    background: color-mix(in srgb, var(--color-tally-conectando) 18%, transparent);
+  }
+  .barra-union .relleno {
+    @apply h-full w-0;
+    background: var(--color-tally-conectando);
+  }
+
+  /* En la tarjeta: badge arriba a la izquierda (el de partes ya ocupa la
+     derecha) y la barra en el borde de abajo de la portada, encima del
+     degradado de .marca-tiempo -- z-20 porque .marca-tiempo es z-10. */
+  .tarjeta-grabacion .badge-uniendo {
+    @apply absolute left-1.5 top-1.5 z-10 inline-flex shrink-0 items-center gap-1
+           rounded-[3px] border px-1 font-mono text-2xs tracking-wide;
+    border-color: var(--color-tally-conectando);
+    color: var(--color-tally-conectando);
+    background: rgb(0 0 0 / 0.55);
+  }
+  .tarjeta-grabacion .badge-uniendo .bola {
+    @apply h-[5px] w-[5px] shrink-0 rounded-full;
+    background: var(--color-tally-conectando);
+    animation: parpadeo 1.6s ease-in-out infinite;
+  }
+  .tarjeta-grabacion .barra-uniendo {
+    @apply pointer-events-none absolute inset-x-0 bottom-0 z-20 h-[3px];
+    background: rgb(0 0 0 / 0.45);
+  }
+  .tarjeta-grabacion .barra-uniendo .relleno {
+    @apply h-full w-0;
+    background: var(--color-tally-conectando);
+  }
+  /* mientras se arma, el fotograma de portada es de otra grabacion (o no
+     hay): el borde dice de que tarjeta se esta hablando sin tapar nada. */
+  .tarjeta-grabacion[data-uniendo="1"] { @apply border-tally-conectando; }
+
   .etiqueta-calidad {
     @apply shrink-0 rounded-[3px] border border-borde-fuerte px-1 text-2xs
            font-mono tracking-wide text-atenuado;
@@ -901,6 +964,7 @@
    es la unica senal de que algo paso. */
 @media (prefers-reduced-motion: reduce) {
   .punto.espera, .estado-badge.grabando .bola { animation: none; }
+  .tarjeta-grabacion .badge-uniendo .bola { animation: none; }
   .tarjeta-modelo[data-estado="grabando"] .riel,
   .modal[data-estado="grabando"] .riel,
   .tarjeta-modelo[data-estado="mal"] .riel,

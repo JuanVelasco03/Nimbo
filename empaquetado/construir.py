@@ -122,6 +122,13 @@ _PY_EN_DISCO_COMPILADO = ("puente.py", "lanzador_supervisor.py",
 # que detectar_m3u8.py nunca lo importa -- asi que tambien sale del disco
 # (compilar.py lo agrega a OCULTOS para que su bytecode quede adentro del
 # binario igual, via --include-module).
+#
+# SPEC 19/20: cerrojo_union.py y progreso_union.py NO estan en esta lista
+# a proposito -- son el caso de mouflon.py, no el de chaturbate.py:
+# detectar_m3u8.py los importa al correr bajo el interprete de mitmdump,
+# que no ve nada de lo compilado. Quedan abiertos en disco Y adentro del
+# binario (compilar.py los pone en OCULTOS, porque los dos grabadores
+# compilados tambien los importan).
 _NUCLEO_FUERA_COMPILADO = ("grabador_directo.py", "grabador_chaturbate.py",
                           "chaturbate.py")
 

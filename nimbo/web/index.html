@@ -57,6 +57,21 @@
       </select>
       <input id="grabaciones-buscar" class="control-barra" autocomplete="off" placeholder="buscar por modelo..." aria-label="Buscar por modelo">
     </div>
+    <!-- SPEC 20: unir_sesion() escribe el .mp4 directo al destino, asi que
+         el archivo a medio armar ya esta en la grilla con el tamano
+         subiendo. Este banner es lo que dice cuanto falta. Vive en el HTML
+         (no lo crea JS) para que el camino del refresco de 4s sea solo
+         textContent y clases, nunca innerHTML -- la regla de CLAUDE.md que
+         evita el congelado de SPEC 01. -->
+    <div id="union-banner" class="banner-union oculta" role="status" aria-live="polite">
+      <div class="linea">
+        <span class="estado-badge grabando"><span class="bola"></span><span class="texto">uniendo</span></span>
+        <span class="union-texto"></span>
+        <span class="union-notas oculta"></span>
+        <span class="union-cola oculta"></span>
+      </div>
+      <div class="barra-union"><div class="relleno"></div></div>
+    </div>
     <div id="grabaciones-lista" class="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3"></div>
   </section>
 

@@ -159,30 +159,100 @@ class Lista:
 
     # -- escritura de alto nivel ------------------------------------------
 
-    def agregar_modelo(self, nombre: str) -> bool:
-        """True si lo agrego; False si ya estaba (idempotente)."""
+    def _desmarcar_chaturbate(self, lineas, nombre_lower: str) -> bool:
+        """Saca 'nombre' de @chaturbate= EN LA LISTA QUE SE LE PASA, sin
+        escribir nada. -> True si la linea cambio.
+
+        Existe para que agregar/quitar puedan hacer el pop/insert de la
+        linea suelta y este discard en UNA sola escritura: dos llamadas
+        sueltas (quitar_modelo() y despues marcar_sitio()) son dos
+        reescrituras de un archivo que el detector, el supervisor, el
+        directo y chaturbate releen cada 1-2 s, o sea una ventana real en
+        la que se ve el estado intermedio.
+
+        Si la directiva no existia, NO se crea vacia solo para desmarcar
+        (marcar_sitio() si la crea, porque ahi hay algo que marcar): una
+        @chaturbate= que aparece de la nada en un grabar.txt que nunca la
+        tuvo es ruido en un archivo que el usuario edita a mano.
+        """
+        idx_cb, m = self._indice_de_directiva(lineas, "chaturbate")
+        if idx_cb is None or m is None:
+            return False
+        actuales = {v.strip().lower() for v in m.group(3).split(",") if v.strip()}
+        if nombre_lower not in actuales:
+            return False
+        actuales.discard(nombre_lower)
+        lineas[idx_cb] = "@chaturbate=" + ",".join(sorted(actuales))
+        return True
+
+    def agregar_modelo(self, nombre: str, sitio: str = "") -> bool:
+        """True si lo agrego; False si ya estaba (idempotente).
+
+        sitio == "stripchat" saca el nombre de @chaturbate= en la misma
+        escritura: cierra el otro lado del bug de la marca huerfana -- una
+        que ya este en el archivo (de antes de SPEC 20, o puesta a mano) no
+        se hereda al re-agregar el nombre pensando en stripchat, que es
+        como se grababa contra el sitio equivocado en silencio.
+
+        sitio == "" (el default) no toca NINGUNA directiva, o sea el
+        comportamiento byte a byte de antes de este spec. Eso es lo que
+        deja intacto a vivo_temporal.py, que llama a esto sin ningun
+        concepto de sitio y cuyo invariante es no tocar lo que no es suyo:
+        con el default "stripchat", una previa temporal habria desmarcado
+        @chaturbate= al abrirse.
+        """
         nombre = nombre.strip()
         if not RE_NOMBRE.match(nombre):
             raise ValueError("nombre invalido: %r" % nombre)
+        limpiar_cb = sitio.strip().lower() == "stripchat"
         with self._lock:
             lineas, fin = self._leer_lineas()
-            if self._indice_de_nombre(lineas, nombre.lower()) is not None:
+            ya_estaba = self._indice_de_nombre(lineas, nombre.lower()) is not None
+            cambio = False
+            if limpiar_cb:
+                cambio = self._desmarcar_chaturbate(lineas, nombre.lower())
+            if ya_estaba:
+                # Idempotente para el nombre, pero si habia una marca
+                # huerfana igual hay que escribir: es justo el caso que
+                # este spec arregla.
+                if cambio:
+                    self._escribir(lineas, fin)
                 return False
             lineas.insert(self._indice_primera_directiva(lineas), nombre)
             self._escribir(lineas, fin)
             return True
 
-    def quitar_modelo(self, nombre: str) -> bool:
-        """True si lo quito; False si no estaba. No toca @vpn= -- si
-        estaba marcada y se vuelve a agregar sin querer, el propio
-        detector/supervisor ya avisan solos que la marca no sirve sin la
-        linea suelta, asi que no hace falta duplicar ese aviso aqui."""
+    def quitar_modelo(self, nombre: str, sitio: str = "") -> bool:
+        """True si lo quito; False si no estaba.
+
+        sitio == "chaturbate" saca el nombre de @chaturbate= en la MISMA
+        escritura que el pop de la linea suelta (ver
+        _desmarcar_chaturbate). Sin eso, el nombre quedaba solo en la
+        directiva y era INVISIBLE en toda la interfaz -- leer() arma
+        "sitios" iterando "seleccion" --, pero seguia en el archivo: al
+        re-agregarlo desde Modelos pensando en stripchat reaparecia marcado
+        y se grababa contra el sitio equivocado, en silencio.
+
+        No toca @vpn=, y eso NO es un descuido sino otro criterio: una
+        @vpn= huerfana rutea por el tunel sin que se haya pedido (molesto,
+        pero no es grabacion doble ni es invisible -- el propio
+        detector/supervisor avisan solos que la marca no sirve sin la linea
+        suelta). Cambiarlo es su propia decision, ver SPEC 20 ("No entra").
+
+        sitio == "" (el default) no toca ninguna directiva: el
+        comportamiento de antes de este spec, que es lo que deja intacto a
+        vivo_temporal.py (ver agregar_modelo).
+        """
+        limpiar_cb = sitio.strip().lower() == "chaturbate"
+        nombre_l = nombre.strip().lower()
         with self._lock:
             lineas, fin = self._leer_lineas()
-            i = self._indice_de_nombre(lineas, nombre.strip().lower())
+            i = self._indice_de_nombre(lineas, nombre_l)
             if i is None:
                 return False
             lineas.pop(i)
+            if limpiar_cb:
+                self._desmarcar_chaturbate(lineas, nombre_l)
             self._escribir(lineas, fin)
             return True
 

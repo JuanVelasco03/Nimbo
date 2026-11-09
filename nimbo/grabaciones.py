@@ -45,6 +45,19 @@ RE_NOMBRE = re.compile(
 )
 
 ARCHIVO_DURACIONES = "duraciones.json"
+
+# SPEC 20: el progreso de la union en curso, lo escribe quien esta uniendo
+# (nucleo\scripts\progreso_union.py -- varios procesos posibles, nunca dos
+# a la vez por el turno de SPEC 19). Se lee el JSON por cuenta propia en vez
+# de importar progreso_union: mismo criterio que nimbo\mp4.py/vivo.py, el
+# lado de Nimbo no importa nada del nucleo.
+ARCHIVO_UNION = "union.json"
+# Duplicada a mano de estado_captura.FRESCURA_S por el mismo motivo que
+# detectar_m3u8.FRESCURA_ESTADO: que el lector no dependa de nada del otro
+# lado. Un poco mas larga que INTERVALO_UNION * 2 para tolerar un hipo de
+# disco sin declarar muerta una union viva. Es la red contra un proceso que
+# murio a mitad y dejo el archivo con una union fantasma para siempre.
+FRESCURA_UNION = 15.0
 _lock_cache = threading.Lock()
 _sondeos_en_curso = set()   # nombres de archivo con un hilo de ffmpeg ya lanzado
 # Como mucho 2 ffmpeg -i a la vez: un listado con muchos archivos sin
@@ -126,16 +139,55 @@ def _duracion_de(dir_estado, ffmpeg_exe, nombre, ruta, mtime, tam, cache):
     return None
 
 
+def _union_activa(dir_estado):
+    """El bloque "activa" de estado\\union.json si esta fresco, o None.
+
+    Calco de progreso_union.leer() del lado de Nimbo (sin importarlo, ver
+    ARCHIVO_UNION). Se traga OSError/ValueError igual que el resto de los
+    lectores de JSON de Nimbo: el archivo se reescribe cada 2s y leerlo a
+    medias no puede romper el listado.
+    """
+    try:
+        with open(os.path.join(dir_estado, ARCHIVO_UNION), encoding="utf-8") as f:
+            datos = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(datos, dict):
+        return None
+    generado = datos.get("generado")
+    if not isinstance(generado, (int, float)):
+        return None
+    if time.time() - generado > FRESCURA_UNION:
+        return None
+    activa = datos.get("activa")
+    return activa if isinstance(activa, dict) else None
+
+
 def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
-    """-> {"grupos": [...], "resumen": {...}}
+    """-> {"grupos": [...], "resumen": {...}, "union": {...}}
 
     Agrupa por sesion (modelo+id+fecha de arranque): un recorte que el
     detector tuvo que partir en varias partes (-seg1, -seg2...) aparece
     como UN grupo con varias "partes", no como archivos sueltos sin
-    relacion entre si."""
+    relacion entre si.
+
+    SPEC 20: unir_sesion() escribe el .mp4 DIRECTO al destino (no hay
+    .part), asi que el archivo a medio armar ya aparece aca con el tamano
+    subiendo y sin duracion. La parte y el grupo que se estan uniendo se
+    marcan "uniendo": true, y esa parte se saltea el sondeo de duracion --
+    un ffmpeg -i cada 4s contra un .mp4 todavia sin moov, en el mismo disco
+    del que la union esta leyendo frenada (ver detectar_m3u8._Freno)."""
     ruta_cache = os.path.join(dir_estado, ARCHIVO_DURACIONES)
     with _lock_cache:
         cache = _leer_cache(ruta_cache)
+
+    activa = _union_activa(dir_estado)
+    # "" durante la fase "copia", que corre antes de que el .mp4 exista:
+    # ahi no matchea ninguna parte y eso es LO ESPERADO (para ese tramo
+    # esta el banner). Casefold porque los nombres de archivo en Windows no
+    # distinguen mayusculas y el listado no tiene por que venir con la
+    # misma caja que el string con el que ffmpeg escribio.
+    archivo_uniendo = ((activa or {}).get("archivo") or "").lower()
 
     grupos_por_clave = {}
     orden_claves = []
@@ -145,7 +197,8 @@ def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
     try:
         nombres = os.listdir(dir_grabaciones)
     except OSError:
-        return {"grupos": [], "resumen": {"archivos": 0, "bytes": 0}}
+        return {"grupos": [], "resumen": {"archivos": 0, "bytes": 0},
+                "union": {"activa": activa}}
 
     for nombre in nombres:
         if not nombre.lower().endswith(".mp4"):
@@ -172,8 +225,16 @@ def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
             modelo, id_, calidad, codec, fecha = nombre, "", "", "", ""
             seg, rango_ini, rango_fin = None, None, None
 
+        uniendo = bool(archivo_uniendo) and nombre.lower() == archivo_uniendo
+
         if rango_ini is not None and rango_fin is not None:
             duracion = rango_fin - rango_ini
+        elif uniendo:
+            # Sin correr ffmpeg: el moov no esta escrito todavia
+            # (-movflags +faststart lo pone al final), asi que el sondeo
+            # nunca puede dar un resultado -- solo competirle el disco a la
+            # union. Al terminar, la marca se cae y se calcula una vez.
+            duracion = None
         else:
             duracion = _duracion_de(dir_estado, ffmpeg_exe, nombre, ruta,
                                      st.st_mtime, st.st_size, cache)
@@ -182,6 +243,7 @@ def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
             "archivo": nombre, "seg": seg,
             "tamano_bytes": st.st_size, "mtime": st.st_mtime,
             "duracion_seg": duracion,
+            "uniendo": uniendo,
         }
 
         clave = ("%s|%s|%s" % (modelo.lower(), id_, fecha)) if m else ("sin-convencion|" + nombre)
@@ -202,6 +264,7 @@ def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
         g["duracion_total_seg"] = sum(duraciones) if all(d is not None for d in duraciones) else (
             sum(d for d in duraciones if d is not None) or None)
         g["duracion_parcial"] = any(d is None for d in duraciones) and any(d is not None for d in duraciones)
+        g["uniendo"] = any(p["uniendo"] for p in g["partes"])
         g["tamano_total_bytes"] = sum(p["tamano_bytes"] for p in g["partes"])
         g["inicio_mtime"] = min(p["mtime"] for p in g["partes"])
         g["fin_mtime"] = max(p["mtime"] for p in g["partes"])
@@ -217,6 +280,10 @@ def listar(dir_grabaciones, dir_estado, ffmpeg_exe="", dir_miniaturas=""):
     return {
         "grupos": grupos,
         "resumen": {"archivos": archivos_totales, "bytes": tamano_total},
+        # "por_unir" lo suma servidor.py desde app.estado (la cache de
+        # _bucle_estado, que ya tiene los tres "uniendo" fusionados): aca
+        # no hay forma de saberlo sin leer tres JSON mas.
+        "union": {"activa": activa},
     }
 
 

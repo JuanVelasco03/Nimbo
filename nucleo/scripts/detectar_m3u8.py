@@ -126,6 +126,8 @@ import mouflon  # noqa: E402  -- biblioteca de protocolo, sin efectos al
                 # vivian aca y se movieron ahi (specs\grabador_directo.md S4.1)
 import cerrojo_union  # noqa: E402  -- turno unico de union (SPEC 19), mismo
                 # criterio de import seguro que mouflon.py
+import progreso_union  # noqa: E402  -- progreso de la union (SPEC 20), mismo
+                # criterio de import seguro que los dos de arriba
 
 
 def _raiz_proyecto() -> str:
@@ -812,8 +814,30 @@ def modelo_desde_referer(referer: str):
     return nombre
 
 
-def limpiar(nombre: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.\-]+", "_", nombre)[:60] or "x"
+# El tope de 60 es para los nombres de CARPETA (<modelo>_<id>, Stream.carpeta
+# y los _carpeta_stream() de los dos grabadores): ahi no sobra nada que cortar
+# y el mismo nombre se recalcula en cada llamada para dar con la carpeta que
+# YA existe en disco, asi que cambiarlo mudaria de lugar las sesiones en curso
+# de un nombre largo. No se toca.
+TOPE_NOMBRE = 60
+
+# Para el .mp4 final la etiqueta es mucho mas larga -- <modelo>_<id>_
+# <variante>_<sello>, mas "_audio" cuando es la pista separada de chaturbate
+# (grabador_chaturbate.py:_unir_doble une video y audio como dos sesiones
+# independientes y las mezcla despues) -- y 60 cortaba justo ese sufijo:
+# "welcome2pleasureland_MMMAVNC_1080p_h264_20261108-172655_audio" (61) salia
+# como "..._audi.mp4" (visto el 2026-11-08). Con un usuario un poco mas largo
+# el sufijo desaparece entero y el .mp4 de audio queda indistinguible del de
+# video: los dos chocan contra el mismo nombre y solo los separa el "_N" que
+# agrega el "while os.path.exists" de abajo. 120 deja entrar entera cualquier
+# etiqueta real y sigue siendo el tope contra MAX_PATH: 120 + "_10.raw.mp4" +
+# el ".conaudio.mp4" de la mezcla entra con holgura debajo de 260 incluso con
+# un dir_grabaciones hondo (SPEC 12).
+TOPE_NOMBRE_MP4 = 120
+
+
+def limpiar(nombre: str, tope: int = TOPE_NOMBRE) -> str:
+    return re.sub(r"[^A-Za-z0-9_.\-]+", "_", nombre)[:tope] or "x"
 
 
 def sello() -> str:
@@ -1268,7 +1292,8 @@ class _Freno:
     y 30 segundos cada una. Frenada, la union tarda el doble y no quita nada.
     """
 
-    def __init__(self, etiqueta: str = "", ritmo: float = RITMO_UNION):
+    def __init__(self, etiqueta: str = "", ritmo: float = RITMO_UNION,
+                 informe=None):
         self.etiqueta = etiqueta or "?"   # la fase: "copia" o "remux"
         self.ritmo = ritmo
         self.reloj = time.monotonic()
@@ -1276,9 +1301,20 @@ class _Freno:
         self.mirado = 0.0
         self.frenar = False
         self.frenado_alguna_vez = False
+        # SPEC 20: progreso_union.Informe opcional. El acumulado va aparte
+        # de self.enviado, que se RESETEA cuando el freno se suelta (es la
+        # cuota del ritmo, no un total) y por eso no sirve para informar.
+        self.informe = informe
+        self.hechos = 0
+        if informe is not None:
+            # Cada _Freno nuevo es una pasada nueva sobre la sesion entera
+            # (_alimentar se llama una vez por intento de remux): sin esto
+            # el `%` de la segunda pasada arrancaria donde quedo la primera.
+            informe.reiniciar_medicion()
 
     def paso(self, n: int) -> None:
         ahora = time.monotonic()
+        self.hechos += n
         if ahora - self.mirado > 2.0:   # preguntarlo por cada trozo seria caro
             self.mirado = ahora
             try:
@@ -1303,6 +1339,12 @@ class _Freno:
                 self.frenado_alguna_vez = True
             if not self.frenar:
                 self.reloj, self.enviado = ahora, 0
+            # Adentro del bloque acelerado a proposito (SPEC 20): el
+            # informe viaja gratis dentro de una comprobacion que ya se
+            # hacia cada 2s, que es el mismo INTERVALO_UNION con el que
+            # late el resto del estado.
+            if self.informe is not None:
+                self.informe.avance(self.hechos, self.frenar)
         if not self.frenar:
             return
         self.enviado += n
@@ -1311,7 +1353,7 @@ class _Freno:
             time.sleep(min(de_mas, 0.5))
 
 
-def _alimentar(rutas, escribir, cadena=None):
+def _alimentar(rutas, escribir, cadena=None, informe=None):
     """Manda init + segmentos a 'escribir' en orden. -> el reencadenador.
 
     El reencadenador puede reescribir los sellos de tiempo, pero nunca cambia
@@ -1321,7 +1363,7 @@ def _alimentar(rutas, escribir, cadena=None):
     """
     if cadena is None:
         cadena = Reencadenador(_escalas_de(rutas))
-    freno = _Freno("remux")
+    freno = _Freno("remux", informe=informe)
     for ruta, es_segmento in rutas:
         with open(ruta, "rb") as f:
             datos = f.read()
@@ -1347,11 +1389,11 @@ def _hay_espacio(total, etiqueta, veces=MARGEN_DISCO):
     return False
 
 
-def _escribir_crudo(rutas, crudo):
+def _escribir_crudo(rutas, crudo, informe=None):
     """Pega el plan en un archivo. -> reencadenador, o None si falla el disco."""
     try:
         with open(crudo, "wb") as salida:
-            return _alimentar(rutas, salida.write)
+            return _alimentar(rutas, salida.write, informe=informe)
     except OSError as e:
         log.error("[UNIR] %s", e)
         return None
@@ -1373,7 +1415,8 @@ def _secuencia_atascada(cortes, bytes_salida):
 MARGEN_ESCENARIO = 1.15
 
 
-def _preparar_escenario(inits, segmentos, carpeta_sesion, etiqueta, total):
+def _preparar_escenario(inits, segmentos, carpeta_sesion, etiqueta, total,
+                        informe=None):
     """Si TEMP vive en otro disco que carpeta_sesion, copia ahi init +
     segmentos antes de unir. -> (inits, segmentos, carpeta_tmp).
 
@@ -1426,7 +1469,7 @@ def _preparar_escenario(inits, segmentos, carpeta_sesion, etiqueta, total):
         # grabaciones en curso: tiene que respetar el mismo freno que
         # _alimentar, o se vuelve a competirles el disco justo en la parte
         # que esto queria evitar.
-        freno = _Freno("copia")
+        freno = _Freno("copia", informe=informe)
         nuevos_inits = []
         for ruta in inits:
             destino = os.path.join(carpeta_tmp, os.path.basename(ruta))
@@ -1507,7 +1550,7 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
             log.warning("[UNIR] %s SIN INIT: el video puede no abrirse", etiqueta)
 
     os.makedirs(GRABACIONES_DIR, exist_ok=True)
-    base = os.path.join(GRABACIONES_DIR, limpiar(etiqueta))
+    base = os.path.join(GRABACIONES_DIR, limpiar(etiqueta, TOPE_NOMBRE_MP4))
     crudo = base + ".raw.mp4"
     final = base + ".mp4"
     n = 1
@@ -1521,18 +1564,39 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
     saltar = set()
     salida = None
 
-    total_origen = sum(os.path.getsize(p) for p in inits[:1]) + \
-        sum(os.path.getsize(p) for p in segmentos)
-    inits, segmentos, carpeta_tmp = _preparar_escenario(
-        inits, segmentos, carpeta_sesion, etiqueta, total_origen)
-    if carpeta_tmp:
-        log.info("[UNIR] %s: %d archivos copiados a %s para leerlos de ahi",
-                  etiqueta, len(inits) + len(segmentos),
-                  os.path.splitdrive(carpeta_tmp)[0] or carpeta_tmp)
+    # SPEC 20: desde aca se publica el progreso en estado\union.json. Este
+    # es el UNICO punto por el que pasan los tres caminos de union (el
+    # detector en proceso, y el subproceso --unir del directo y de
+    # chaturbate), asi que instrumentarlo una vez los cubre a los tres. El
+    # sitio sale de NIMBO_UNION_SITIO; el nombre de archivo, del mismo
+    # string con el que ffmpeg va a escribir.
+    informe = progreso_union.Informe(DIR_ESTADO, etiqueta,
+                                      archivo=os.path.basename(final))
+    carpeta_tmp = None
 
     try:
+        total_origen = sum(os.path.getsize(p) for p in inits[:1]) + \
+            sum(os.path.getsize(p) for p in segmentos)
+        # La copia al escenario (SPEC 12) es el tramo mas invisible de la
+        # union: miles de archivos copiados antes de que el .mp4 exista. Se
+        # publica como fase propia, con "archivo" todavia sin matchear
+        # ninguna parte del listado -- para eso esta el banner.
+        informe.fase("copia", total_origen)
+        inits, segmentos, carpeta_tmp = _preparar_escenario(
+            inits, segmentos, carpeta_sesion, etiqueta, total_origen,
+            informe=informe)
+        if carpeta_tmp:
+            log.info("[UNIR] %s: %d archivos copiados a %s para leerlos de ahi",
+                      etiqueta, len(inits) + len(segmentos),
+                      os.path.splitdrive(carpeta_tmp)[0] or carpeta_tmp)
+
         for intento in range(MAX_REPARACIONES + 1):
             rutas, cortes, total = _plan(inits, segmentos, saltar)
+            # Tambien en cada reintento, que es donde el .mp4 se borra y
+            # vuelve a crecer desde cero: el `%` vuelve a empezar y el
+            # banner lo explica con "reintento N de 7" en vez de parecer un
+            # bug de la interfaz.
+            informe.fase("remux", total, intento, MAX_REPARACIONES)
             if not intento:
                 if not _hay_espacio(total, etiqueta):
                     return None
@@ -1544,7 +1608,7 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
                 # reproductor no abre pero conserva todo el contenido
                 if not _hay_espacio(total, etiqueta, MARGEN_DISCO + 1):
                     return None
-                if _escribir_crudo(rutas, crudo) is None:
+                if _escribir_crudo(rutas, crudo, informe=informe) is None:
                     return None
                 if remux:
                     log.warning("[UNIR] ffmpeg no encontrado, queda %s", crudo)
@@ -1554,10 +1618,12 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
             # Por tuberia: ffmpeg lee los fragmentos directamente y no se escribe
             # el pegote intermedio. Ahorra una copia entera de la grabacion en
             # disco por intento (el pico baja de 3x a 2x su tamano).
-            hecho = _remuxear_tubo(ffmpeg, rutas, final, etiqueta)
+            hecho = _remuxear_tubo(ffmpeg, rutas, final, etiqueta,
+                                    informe=informe)
             if hecho is None:
                 # red de seguridad: si por tuberia no sale, se hace como antes
-                hecho = _remuxear_disco(ffmpeg, rutas, crudo, final, etiqueta, total)
+                hecho = _remuxear_disco(ffmpeg, rutas, crudo, final, etiqueta,
+                                         total, informe=informe)
             if hecho is None:
                 salida = crudo if os.path.exists(crudo) else None
                 break
@@ -1601,6 +1667,10 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
     finally:
         if carpeta_tmp:
             shutil.rmtree(carpeta_tmp, ignore_errors=True)
+        # Salga bien o mal (incluidos los `return None` de _hay_espacio):
+        # un union.json con una union que ya termino dejaria el banner
+        # pegado hasta que el lector lo descartara por FRESCURA_UNION.
+        informe.cerrar()
 
     if not salida:
         return None
@@ -1636,7 +1706,7 @@ INTENTOS_REMUX = [
 ]
 
 
-def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str):
+def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str, informe=None):
     """Remuxea alimentando a ffmpeg por tuberia, sin pegote intermedio.
 
     Ahorra escribir (y luego borrar) una copia entera de la grabacion en cada
@@ -1657,7 +1727,7 @@ def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str):
             # la tuberia se corte a mitad
             cadena = Reencadenador(_escalas_de(rutas))
             try:
-                _alimentar(rutas, proc.stdin.write, cadena)
+                _alimentar(rutas, proc.stdin.write, cadena, informe=informe)
             except BrokenPipeError:
                 # ffmpeg dejo de leer: se planto en algun trozo. No es fatal,
                 # el tamano del mp4 lo delata y arriba se repara saltandolo.
@@ -1681,7 +1751,7 @@ def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str):
 
 
 def _remuxear_disco(ffmpeg: str, rutas, crudo: str, final: str, etiqueta: str,
-                    total: int):
+                    total: int, informe=None):
     """Como antes: escribe el pegote entero y luego lo remuxea.
 
     Solo se usa si la tuberia no funciono. Necesita el doble de disco, asi que
@@ -1689,7 +1759,7 @@ def _remuxear_disco(ffmpeg: str, rutas, crudo: str, final: str, etiqueta: str,
     """
     if not _hay_espacio(total, etiqueta, MARGEN_DISCO + 1):
         return None
-    cadena = _escribir_crudo(rutas, crudo)
+    cadena = _escribir_crudo(rutas, crudo, informe=informe)
     if cadena is None:
         return None
     ultimo = ""
@@ -1792,6 +1862,20 @@ def recuperar_pendientes(remux: bool = True) -> int:
              len(pendientes))
     hecho = 0
     for s in pendientes:
+        # Misma red de seguridad que el --unir de main(): una sesion a la que
+        # le estan escribiendo AHORA MISMO no es "a medio unir de la vez
+        # anterior", es una grabacion en curso de otro proceso (el camino
+        # directo, chaturbate) o de otro detector. Unirla le deja un
+        # unido.json encima y el --unir del cierre la saltea, asi que todo lo
+        # grabado despues del marcador queda sin unir -- medido el 2026-11-08,
+        # 15 sesiones con hasta 2.156 segmentos sueltos cada una: mitmdump
+        # recarga el script solo cuando cambia en disco, y cada recarga
+        # construye un Detector nuevo que llamaba aca sin mirar nada.
+        if _sigue_escribiendose(s.ruta):
+            log.warning(
+                "[RECUPERAR] %s: le estan escribiendo ahora mismo (sesion "
+                "viva) -- no la uno; se une sola cuando cierre", s.etiqueta)
+            continue
         try:
             with cerrojo_union.turno(s.etiqueta, raiz=STREAMS_DIR, log=log):
                 if unir_sesion(s.ruta, s.etiqueta, remux=remux):
@@ -2035,6 +2119,11 @@ class Detector:
         self.seleccion = Seleccion(SELECCION)
         self.escritor = Escritor()
         self.trabajos: queue.Queue = queue.Queue()
+        # SPEC 20: lo lee nimbo\puente.py con getattr (mismo patron con el
+        # que ya lee self.tunel) para publicar "uniendo" en detector.json.
+        # trabajos.qsize() solo no alcanza: no cuenta la que ya salio de la
+        # cola y esta corriendo, que es justo la que hay que mostrar.
+        self.uniendo_ahora = False
         self._parar = threading.Event()
         self._activos_txt = ""
         self._ultima_tabla = 0.0
@@ -2826,6 +2915,7 @@ class Detector:
     def _bucle_finalizador(self) -> None:
         while True:
             trabajo = self.trabajos.get()
+            self.uniendo_ahora = trabajo is not None
             try:
                 if trabajo is None:
                     return
@@ -2833,6 +2923,7 @@ class Detector:
             except Exception as e:
                 log.error("[UNIR] %s", e)
             finally:
+                self.uniendo_ahora = False
                 self.trabajos.task_done()
 
     def _finalizar(self, sid: str, modelo: str, motivo: str, variantes: dict) -> None:

@@ -144,6 +144,9 @@ function crearTarjeta(nombre) {
     sitio: div.querySelector(".etiqueta-sitio"),
     vpn: div.querySelector(".etiqueta-vpn"),
     verVivo: div.querySelector("[data-accion='ver-vivo']"),
+    // Resuelto una vez por tarjeta, como el resto: actualizarTarjeta solo
+    // recorre esta lista ya hecha para poner el sitio al dia.
+    acciones: Array.from(div.querySelectorAll("[data-accion]")),
   };
   return div;
 }
@@ -182,6 +185,16 @@ function actualizarTarjeta(el, nombre, det, sup, enVpn, generado, sitio) {
   // vista_previa.js necesita el sitio para pedir la miniatura/el video
   // correctos -- ver main.js:iniciarAcciones, boton "ver-vivo".
   n.verVivo.dataset.sitio = sitio;
+  // SPEC 20: el sitio no era solo cosa de "ver en vivo" -- "Parar /
+  // quitar" lo necesita para que el servidor sepa que ademas hay que
+  // sacar el nombre de @chaturbate=. Se setea en todos los [data-accion]
+  // (calco de vista_modelos.js:crearTarjetaModelo) pero ACA y no en
+  // crearTarjeta: la tarjeta se reutiliza por nombre en el Map de la
+  // grilla, asi que el sitio puede cambiar bajo una tarjeta ya creada si
+  // el usuario reedita @chaturbate= a mano.
+  for (const b of n.acciones) {
+    if (b.dataset.sitio !== sitio) b.dataset.sitio = sitio;
+  }
 }
 
 // -- la grilla ----------------------------------------------------------

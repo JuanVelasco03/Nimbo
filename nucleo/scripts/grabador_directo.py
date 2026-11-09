@@ -184,6 +184,10 @@ def configurar_log() -> None:
     log.propagate = False
 
 
+# Solo para nombres de CARPETA (_carpeta_stream): el tope de 60 se queda
+# como esta. El de 120 de detectar_m3u8.py:836 (TOPE_NOMBRE_MP4) es para
+# el .mp4 final, cuya etiqueta completa lleva "_audio" al final y no
+# pasa por aca.
 def _limpiar(nombre: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.\-]+", "_", nombre)[:60] or "x"
 
@@ -1197,6 +1201,11 @@ class Grabador:
                                           thread_name_prefix="directo-dl")
         self.ids_cache = _leer_ids_cache()
         self.cola_union: queue.Queue = queue.Queue()
+        # SPEC 20: qsize() NO cuenta la union en vuelo (ya se le hizo
+        # get()), asi que con una sola union corriendo y nada encolado el
+        # contador "uniendo" decia 0 -- peor que no tenerlo. Este flag es
+        # lo que falta para que signifique "trabajo pendiente total".
+        self._uniendo_ahora = False
         self._modelos = {}       # nombre_lower -> _ModeloDirecto
         self._lock = threading.RLock()
         self._parar = threading.Event()   # deja de grabar
@@ -1235,10 +1244,13 @@ class Grabador:
             if item is None:
                 return
             escritor, sesion = item
+            self._uniendo_ahora = True
             try:
                 _unir_en_fondo(escritor, sesion, parar=self._parar)
             except Exception as e:
                 log.error("[UNIR] %s: %s", sesion.ref, e)
+            finally:
+                self._uniendo_ahora = False
 
     def correr(self) -> None:
         os.makedirs(STREAMS_DIR, exist_ok=True)
@@ -1386,7 +1398,9 @@ class Grabador:
             # midieron 20 minutos para 10 sesiones) -- sin esto Nimbo
             # parecia colgado con "streams": [] y nada que lo explique.
             "parando": self._parar.is_set(),
-            "uniendo": self.cola_union.qsize(),
+            # La en vuelo MAS las encoladas (SPEC 20): "trabajo pendiente
+            # total de este proceso", no "cuantas esperan en la cola".
+            "uniendo": self.cola_union.qsize() + (1 if self._uniendo_ahora else 0),
         }
         _escribir_atomico(ARCHIVO_ESTADO, json.dumps(datos, ensure_ascii=False))
 

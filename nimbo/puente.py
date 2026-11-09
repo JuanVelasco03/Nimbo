@@ -325,11 +325,28 @@ class Puente:
                 })
             tunel = getattr(det, "tunel", None)
             pedidos_tunel = getattr(det, "_por_tunel", 0)
+            # SPEC 20: el detector tambien une (al cerrar una sesion y al
+            # recuperar pendientes al arrancar) y nadie lo publicaba. Mismo
+            # patron getattr que la linea de arriba: si el addon es de una
+            # version sin estos atributos, queda en 0 y no revienta nada.
+            # Las uniones de recuperar_pendientes() NO pasan por `trabajos`
+            # (ver detectar_m3u8.py:recuperar_pendientes), asi que no entran
+            # en este conteo -- aparecen igual en estado\union.json mientras
+            # estan en vuelo, que es de donde sale el banner.
+            cola_union = getattr(det, "trabajos", None)
+            uniendo = 0
+            try:
+                uniendo = cola_union.qsize() if cola_union is not None else 0
+            except Exception:
+                uniendo = 0
+            if getattr(det, "uniendo_ahora", False):
+                uniendo += 1
 
         datos = {
             "generado": ahora,
             "tunel_activo": tunel is not None,
             "pedidos_tunel": pedidos_tunel,
+            "uniendo": uniendo,
             "streams": filas,
         }
         # A diferencia de activos.txt (que el detector solo reescribe si

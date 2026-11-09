@@ -199,7 +199,12 @@ async function manejarAccionFavorita(ev) {
   try {
     if (ev.target.dataset.accion === "toggle-grabar") {
       if (ev.target.checked) await enviar("/api/lista/agregar", { nombre, sitio });
-      else await enviar("/api/lista/quitar", { nombre });
+      // SPEC 20: el sitio tambien al quitar. SPEC 18 cubrio el lado
+      // "agregar" y dejo este sin cubrir (coherente con que el backend
+      // todavia no lo aceptaba), asi que destildar "grabar" en una tarjeta
+      // de chaturbate dejaba el nombre en @chaturbate= -- invisible, y
+      // marcado para la proxima vez que se agregara como stripchat.
+      else await enviar("/api/lista/quitar", { nombre, sitio });
       // en las dos direcciones: tildar sube hacia "Grabando", destildar
       // baja hacia "Show publico" (o la saca de la grilla), y las dos
       // tardan lo mismo en confirmarse del lado del detector.
@@ -242,7 +247,12 @@ function iniciarAcciones() {
     const boton = ev.target.closest("[data-accion='quitar']");
     if (!boton) return;
     try {
-      await enviar("/api/lista/quitar", { nombre: boton.dataset.nombre });
+      // El mismo `|| "stripchat"` que usa ver-vivo seis lineas arriba: el
+      // dataset.sitio lo escribe vista_grabando.js:actualizarTarjeta.
+      await enviar("/api/lista/quitar", {
+        nombre: boton.dataset.nombre,
+        sitio: boton.dataset.sitio || "stripchat",
+      });
     } catch (err) { mostrarError(err); }
     refrescar();
   });

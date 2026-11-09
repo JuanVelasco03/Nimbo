@@ -50,9 +50,13 @@ DIR_SCRIPTS = os.path.join(RAIZ, "nucleo", "scripts")
 #   cerrojo_union    SPEC 19: lo importan grabador_directo y
 #                    grabador_chaturbate, los dos detras del mismo
 #                    sys.path.insert en tiempo de ejecucion que mouflon
+#   progreso_union   SPEC 20: el mismo caso exacto que cerrojo_union --
+#                    lo importan los dos grabadores detras del mismo
+#                    sys.path.insert, y queda ademas abierto en disco
+#                    porque detectar_m3u8.py (que no se compila) lo importa
 OCULTOS = ("modos", "lanzador_directo", "grabador_directo", "mouflon",
            "lanzador_chaturbate", "grabador_chaturbate", "chaturbate",
-           "cerrojo_union")
+           "cerrojo_union", "progreso_union")
 
 # Lo que queda en disco igual (y por que). Solo informativo: lo copia
 # construir.py, no esto.
@@ -61,6 +65,7 @@ ABIERTOS = {
     "nimbo\\puente.py": "addon hermano, mismo motivo",
     "nucleo\\scripts\\mouflon.py": "detectar_m3u8.py hace import mouflon",
     "nucleo\\scripts\\cerrojo_union.py": "detectar_m3u8.py hace import cerrojo_union (SPEC 19)",
+    "nucleo\\scripts\\progreso_union.py": "detectar_m3u8.py hace import progreso_union (SPEC 20)",
     "nucleo\\scripts\\supervisor.py": "lo carga el lanzador; lo importa sitio.py",
     "nimbo\\lanzador_supervisor.py": "corre bajo el Python embebido, no compilado",
     "nimbo\\__init__.py": "inofensivo; construir.py lo deja igual",

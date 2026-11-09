@@ -95,6 +95,7 @@ import chaturbate  # noqa: E402
 # importarlo no construye ni arranca nada, igual que lo usan mp4.py/vivo.py.
 import mouflon  # noqa: E402
 import cerrojo_union  # noqa: E402  -- turno unico de union (SPEC 19)
+import progreso_union  # noqa: E402  -- progreso de la union (SPEC 20)
 
 BASE = os.environ.get("M3U8_BASE") or _raiz_proyecto()
 STREAMS_DIR = os.environ.get("M3U8_STREAMS") or os.path.join(BASE, "streams")
@@ -160,6 +161,10 @@ def configurar_log() -> None:
     log.propagate = False
 
 
+# Solo para nombres de CARPETA (_carpeta_stream): el tope de 60 se queda
+# como esta. El de 120 de detectar_m3u8.py:836 (TOPE_NOMBRE_MP4) es para
+# el .mp4 final, cuya etiqueta completa lleva "_audio" al final y no
+# pasa por aca.
 def _limpiar(nombre: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.\-]+", "_", nombre)[:60] or "x"
 
@@ -258,8 +263,14 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> str | None:
         antes = os.path.getmtime(marcador)
     except OSError:
         antes = None
+    # SPEC 20: el hijo publica el progreso en estado\union.json desde
+    # unir_sesion(), y sin esto no tendria forma de saber que la sesion es
+    # de chaturbate (la pondria como "stripchat", el default). Calco de
+    # como SPEC 19 le pasa NIMBO_UNION_TURNO por el mismo env.
+    entorno = dict(os.environ)
+    entorno[progreso_union.NOMBRE_ENTORNO_SITIO] = "chaturbate"
     try:
-        proc = subprocess.run(cmd, cwd=AQUI, env=dict(os.environ),
+        proc = subprocess.run(cmd, cwd=AQUI, env=entorno,
                                capture_output=True, text=True,
                                timeout=ESPERA_UNION,
                                stdin=subprocess.DEVNULL, **_SIN_VENTANA)
@@ -302,7 +313,26 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> str | None:
         return None
 
 
-def _mezclar_audio(ruta_video: str, ruta_audio: str) -> bool:
+def _vigilar_mezcla(informe, tmp: str, fin: "threading.Event") -> None:
+    """Late el progreso de la mezcla mirando crecer el .mp4 que escribe
+    ffmpeg (SPEC 20).
+
+    Un hilo que hace getsize cada INTERVALO_UNION es lo contrario de lo que
+    se decidio para el remux (ahi el informe se cuelga de _Freno.paso, que
+    ya corria), pero aca no hay ningun bucle del que colgarse:
+    _mezclar_audio() es un subprocess.run que bloquea hasta el final. Sin
+    latido el lector descartaria la fase por FRESCURA_UNION a los 15s y el
+    banner desapareceria en medio de la mezcla. Un getsize no lee el
+    archivo, solo su entrada de directorio: no le compite el disco a nadie.
+    """
+    while not fin.wait(progreso_union.INTERVALO_UNION):
+        try:
+            informe.avance(os.path.getsize(tmp))
+        except OSError:
+            pass          # todavia no existe, o ya se reemplazo: sin ruido
+
+
+def _mezclar_audio(ruta_video: str, ruta_audio: str, informe=None) -> bool:
     """Mezcla el .mp4 de audio (una pista sola, ya unido por separado)
     adentro del .mp4 de video -- dos sesiones completas e independientes
     para detectar_m3u8.py (que nunca sabe que hay un audio aparte), un
@@ -319,6 +349,18 @@ def _mezclar_audio(ruta_video: str, ruta_audio: str) -> bool:
            "-i", ruta_video, "-i", ruta_audio,
            "-c", "copy", "-map", "0:v:0", "-map", "1:a:0",
            "-movflags", "+faststart", tmp]
+    fin_vigilante = threading.Event()
+    vigilante = None
+    if informe is not None:
+        total = 0
+        for p in (ruta_video, ruta_audio):
+            with contextlib.suppress(OSError):
+                total += os.path.getsize(p)
+        informe.fase("mezcla", total)
+        vigilante = threading.Thread(
+            target=_vigilar_mezcla, args=(informe, tmp, fin_vigilante),
+            daemon=True, name="chaturbate-mezcla-progreso")
+        vigilante.start()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
                                timeout=ESPERA_MEZCLA,
@@ -328,6 +370,10 @@ def _mezclar_audio(ruta_video: str, ruta_audio: str) -> bool:
         with contextlib.suppress(OSError):
             os.remove(tmp)
         return False
+    finally:
+        fin_vigilante.set()
+        if vigilante is not None:
+            vigilante.join(timeout=progreso_union.INTERVALO_UNION * 2)
     if proc.returncode != 0 or not os.path.isfile(tmp):
         log.error("[MUX] %s: ffmpeg no pudo mezclar el audio: %s",
                   ruta_video, (proc.stderr or "")[-500:])
@@ -367,7 +413,21 @@ def _unir_doble(escritor: "Escritor", pista_video, pista_audio, parar=None) -> N
             log.warning("[%s] no se pudo unir el audio -- el video queda mudo",
                        pista_video.ref)
             return
-        if _mezclar_audio(salida_video, salida_audio):
+        # SPEC 20: las dos uniones de arriba publicaron su progreso solas
+        # (lo hace unir_sesion() adentro del subproceso --unir y lo cierra
+        # al terminar), pero la mezcla no pasa por detectar_m3u8.py: es la
+        # UNICA fase que hay que publicar desde aca. Informe propio, con el
+        # mismo .mp4 de destino que ya tenia la fase "remux" del video --
+        # asi la tarjeta marcada en la grilla no cambia de una fase a otra.
+        informe = progreso_union.Informe(
+            DIR_ESTADO, pista_video.ref, sitio="chaturbate",
+            archivo=os.path.basename(salida_video))
+        try:
+            mezclado = _mezclar_audio(salida_video, salida_audio,
+                                       informe=informe)
+        finally:
+            informe.cerrar()
+        if mezclado:
             with contextlib.suppress(OSError):
                 os.remove(salida_audio)
 
@@ -1032,6 +1092,10 @@ class Grabador:
                                           thread_name_prefix="chaturbate-dl")
         self.ids_cache = _leer_ids_cache()
         self.cola_union: queue.Queue = queue.Queue()
+        # SPEC 20, mismo motivo que grabador_directo.py: qsize() no cuenta
+        # la union en vuelo, asi que sin este flag "uniendo" valia 0 con una
+        # union corriendo.
+        self._uniendo_ahora = False
         self._modelos = {}
         self._lock = threading.RLock()
         self._parar = threading.Event()
@@ -1053,10 +1117,13 @@ class Grabador:
             if item is None:
                 return
             escritor, pista_video, pista_audio = item
+            self._uniendo_ahora = True
             try:
                 _unir_doble(escritor, pista_video, pista_audio, parar=self._parar)
             except Exception as e:
                 log.error("[UNIR] %s: %s", pista_video.ref, e)
+            finally:
+                self._uniendo_ahora = False
 
     def correr(self) -> None:
         os.makedirs(STREAMS_DIR, exist_ok=True)
@@ -1158,7 +1225,8 @@ class Grabador:
             "ids": ids,
             "streams": filas,
             "parando": self._parar.is_set(),
-            "uniendo": self.cola_union.qsize(),
+            # La en vuelo MAS las encoladas (SPEC 20), igual que el directo.
+            "uniendo": self.cola_union.qsize() + (1 if self._uniendo_ahora else 0),
         }
         _escribir_atomico(ARCHIVO_ESTADO, json.dumps(datos, ensure_ascii=False))
 

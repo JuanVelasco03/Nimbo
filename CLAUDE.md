@@ -374,6 +374,17 @@ nada. Por eso lo importan por igual `detectar_m3u8.py`,
 `grabador_directo.py` y `grabador_chaturbate.py` sin que ninguno corra el
 riesgo de levantar un `Detector` de más.
 
+`nucleo\scripts\progreso_union.py` (SPEC 20) es el mismo caso otra vez:
+protocolo puro, sin `addons = [...]` ni estado de módulo mutable que
+importe (un `threading.Lock` por `Informe`, nada a nivel módulo) —
+importarlo no escribe nada ni arranca nada. Publica el progreso de la
+unión en curso (fase, bytes hechos de totales, ritmo, estado del freno) en
+`estado\union.json` desde `unir_sesion()` en `detectar_m3u8.py`, el único
+punto por el que pasan los tres caminos de unión, más una fase `mezcla`
+publicada aparte desde `grabador_chaturbate.py` (la única que no pasa por
+ahí). Es telemetría, no parte de la unión: todos los `OSError` al escribir
+se tragan, y sin `union.json` la interfaz se ve como antes de este spec.
+
 ### El núcleo copiado
 
 `nucleo\` es el motor de captura copiado dentro de Nimbo: el proyecto no
@@ -414,6 +425,7 @@ otra máquina").
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
 | `estado\directo.json` | `grabador_directo.py` | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json` + `chaturbate.json`) |
 | `estado\chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | Nimbo (`estado_captura.fusionar()`) |
+| `estado\union.json` (SPEC 20) | varios escritores posibles (el detector en proceso, el subproceso `--unir` del directo, el de chaturbate, y `grabador_chaturbate.py` para la fase `mezcla`), pero **nunca dos a la vez**: el turno de `cerrojo_union.py` (SPEC 19) lo garantiza | `nimbo\grabaciones.py` (cruza el listado con la unión en curso) |
 | `estado\ids.json` | `grabador_directo.py` | `grabador_directo.py` (cache propia id↔nombre, valores `int`) |
 | `estado\ids_chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | `grabador_chaturbate.py` (cache propia nombre↔uid, valores `str` — aparte de `ids.json` porque el uid de chaturbate no es numérico) |
 | `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
@@ -435,6 +447,26 @@ puede editar a mano, así que `lista.py` **edita in-place línea por línea** y
 conserva byte a byte comentarios, orden y notas al final; nunca regenera el
 archivo desde una plantilla, y ninguna clase cachea su contenido entre
 llamadas.
+
+`lista.quitar_modelo(nombre, sitio="")` **sí** toca `@chaturbate=` cuando
+se le pasa `sitio="chaturbate"` (la saca, en la misma escritura que el
+`pop` de la línea suelta) — a propósito distinto del criterio con
+`@vpn=`, que `quitar_modelo` nunca toca: una `@vpn=` huérfana solo rutea
+por el túnel sin que se haya pedido (molesto, pero el propio
+detector/supervisor avisan solos que la marca no sirve sin la línea
+suelta), mientras que una `@chaturbate=` huérfana es invisible en toda la
+interfaz y, al re-agregar el nombre pensando en stripchat, lo deja
+grabando contra el sitio equivocado en silencio (SPEC 20). Con
+`sitio=""` (el default) ninguna de las dos directivas se toca — es lo que
+mantiene intacto a `vivo_temporal.py`, que llama `quitar_modelo`/
+`agregar_modelo` sin ningún concepto de sitio.
+
+El `uniendo` que publican `estado\directo.json`, `estado\chaturbate.json`
+y (desde SPEC 20) `estado\detector.json` ya no es `cola_union.qsize()` a
+secas (eso no contaba la unión en vuelo, ya sacada de la cola con `get()`,
+así que con una sola unión corriendo el contador decía `0`): ahora es la
+en vuelo **más** las encoladas, mismo nombre de clave para no romper al
+consumidor que ya existía.
 
 Todo lo que Nimbo escribe va **atómico**: `.part` + `os.replace`. Los
 lectores (`_leer_json`) tragan `OSError`/`ValueError` y devuelven `None`.
