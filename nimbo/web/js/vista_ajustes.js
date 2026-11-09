@@ -71,7 +71,7 @@ export function renderDirectivas(valores) {
         <input type="checkbox" id="directiva-${d.clave}" ${marcado ? "checked" : ""}>
         <span class="pista"></span>
       </label>`;
-      div.innerHTML = `<div class="ajuste-texto"><label>${d.etiqueta}</label>
+      div.innerHTML = `<div class="ajuste-texto"><label for="directiva-${d.clave}">${d.etiqueta}</label>
         <p class="ayuda">${d.ayuda}</p></div>${control}`;
       listaToggles.appendChild(div);
     } else {
@@ -85,7 +85,7 @@ export function renderDirectivas(valores) {
       } else {
         control = `<input type="text" id="directiva-${d.clave}" value="${actual}">`;
       }
-      div.innerHTML = `<label>${d.etiqueta}</label><div class="ayuda">${d.ayuda}</div>${control}`;
+      div.innerHTML = `<label for="directiva-${d.clave}">${d.etiqueta}</label><div class="ayuda">${d.ayuda}</div>${control}`;
       grillaCuerpo.appendChild(div);
     }
 
@@ -139,7 +139,7 @@ const PREFERENCIAS = [
 function _filaConmutador(cont, clave, etiqueta, ayuda, activo, alCambiar) {
   const div = document.createElement("div");
   div.className = "ajuste-fila";
-  div.innerHTML = `<div class="ajuste-texto"><label>${etiqueta}</label>
+  div.innerHTML = `<div class="ajuste-texto"><label for="pref-${clave}">${etiqueta}</label>
       <p class="ayuda">${ayuda}</p></div>
     <label class="conmutador">
       <input type="checkbox" id="pref-${clave}" ${activo ? "checked" : ""}>
@@ -291,7 +291,7 @@ export async function cargarRutas() {
     for (const c of CAMPOS_CARPETA) {
       const div = document.createElement("div");
       div.className = "directiva";
-      div.innerHTML = `<label>${c.etiqueta}</label><div class="ayuda">${c.ayuda}</div>
+      div.innerHTML = `<label for="ruta-${c.clave}">${c.etiqueta}</label><div class="ayuda">${c.ayuda}</div>
         <div class="fila-check">
           <input type="text" id="ruta-${c.clave}" style="flex:1"
             value="${_escAtributo(datos[c.clave])}" placeholder="auto">
@@ -313,7 +313,7 @@ export async function cargarRutas() {
     // Union: select de modo + carpeta, visible solo con modo "carpeta".
     const divUnion = document.createElement("div");
     divUnion.className = "directiva";
-    divUnion.innerHTML = `<label>Union (escenario temporal)</label>
+    divUnion.innerHTML = `<label for="ruta-union_modo">Union (escenario temporal)</label>
       <div class="ayuda">Donde se copian los segmentos antes de unirlos, si eso
         ayuda. "Automatico" es el %TEMP% del sistema, igual que siempre.</div>
       <select id="ruta-union_modo">

@@ -12,10 +12,10 @@
 </head>
 <body>
 
-<header class="flex shrink-0 items-center gap-7 border-b border-borde bg-panel px-5 py-3">
+<header class="flex flex-wrap shrink-0 items-center gap-x-7 gap-y-2 border-b border-borde bg-panel px-5 py-3">
   <div class="flex items-center gap-2.5">
     <span class="punto" id="punto-estado"></span>
-    <strong class="wordmark">Nimbo</strong>
+    <h1 class="wordmark">Nimbo</h1>
   </div>
   <nav class="flex gap-1">
     <button data-vista="grabando" class="activa">Grabando</button>
@@ -48,14 +48,14 @@
       <span id="grabaciones-resumen">-</span>
       <span id="streams-resumen"></span>
       <button class="boton-chico" id="streams-limpiar" disabled>Limpiar segmentos</button>
-      <select id="grabaciones-orden" class="control-barra ml-auto">
+      <select id="grabaciones-orden" class="control-barra ml-auto" aria-label="Ordenar grabaciones">
         <option value="recientes">mas recientes primero</option>
         <option value="viejas">mas viejas primero</option>
         <option value="tamano">mayor tamano</option>
         <option value="duracion">mayor duracion</option>
         <option value="nombre">por nombre</option>
       </select>
-      <input id="grabaciones-buscar" class="control-barra" autocomplete="off" placeholder="buscar por modelo...">
+      <input id="grabaciones-buscar" class="control-barra" autocomplete="off" placeholder="buscar por modelo..." aria-label="Buscar por modelo">
     </div>
     <div id="grabaciones-lista" class="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3"></div>
   </section>
@@ -67,7 +67,8 @@
         <div class="flex gap-2">
           <input id="nombre-nuevo" autocomplete="off"
             class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
-            placeholder="nombre de la modelo (como aparece en la URL)">
+            placeholder="nombre de la modelo (como aparece en la URL)"
+            aria-label="Nombre de la modelo en Stripchat">
           <button class="boton-chico" id="boton-agregar-favorita">+ favoritas</button>
           <button class="principal" id="boton-grabar-directo">Grabar ahora</button>
         </div>
@@ -110,7 +111,8 @@
         <div class="flex gap-2">
           <input id="nombre-nuevo-cb" autocomplete="off"
             class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
-            placeholder="nombre de la modelo (como aparece en la URL) -- sin autocompletado">
+            placeholder="nombre de la modelo (como aparece en la URL) -- sin autocompletado"
+            aria-label="Nombre de la modelo en Chaturbate">
           <button class="boton-chico" id="boton-agregar-favorita-cb">+ favoritas</button>
           <button class="principal" id="boton-grabar-directo-cb">Grabar ahora</button>
         </div>
@@ -123,18 +125,18 @@
   </section>
 
   <section id="vista-ajustes" class="vista oculta min-h-0 flex-1 overflow-y-auto p-4">
-    <h3 class="titulo-seccion">Nimbo</h3>
+    <h2 class="titulo-seccion">Nimbo</h2>
     <div id="preferencias" class="lista-ajustes"></div>
-    <h3 class="titulo-seccion">Grabacion</h3>
+    <h2 class="titulo-seccion">Grabacion</h2>
     <div id="directivas" class="flex flex-col gap-3"></div>
     <div id="parar-por-disco" class="lista-ajustes mt-3"></div>
     <div id="canario-mouflon" class="ajuste-fila mt-3"></div>
-    <h3 class="titulo-seccion">Carpetas y discos</h3>
+    <h2 class="titulo-seccion">Carpetas y discos</h2>
     <div id="rutas" class="grid grid-cols-[repeat(auto-fill,minmax(360px,1fr))] gap-3"></div>
-    <h3 class="titulo-seccion">Notificaciones</h3>
+    <h2 class="titulo-seccion">Notificaciones</h2>
     <div id="notificaciones" class="lista-ajustes"></div>
 
-    <h3 class="titulo-seccion">Acceso remoto</h3>
+    <h2 class="titulo-seccion">Acceso remoto</h2>
     <div id="acceso-lan-toggle" class="lista-ajustes"></div>
     <div id="acceso-lan-panel" class="directiva oculta">
       <label>Contrasena y puerto</label>
@@ -144,8 +146,8 @@
         (icono de la bandeja &rarr; Salir) y volver a abrirlo -- cerrar la ventana no alcanza,
         Nimbo sigue corriendo en la bandeja.</div>
       <div class="fila-check">
-        <input type="number" id="lan-puerto" min="1" max="65535" placeholder="8787" style="width:100px">
-        <input type="password" id="lan-pw" placeholder="contrasena nueva" autocomplete="new-password" style="flex:1">
+        <input type="number" id="lan-puerto" min="1" max="65535" placeholder="8787" style="width:100px" aria-label="Puerto de acceso LAN">
+        <input type="password" id="lan-pw" placeholder="contrasena nueva" autocomplete="new-password" style="flex:1" aria-label="Contrasena nueva de acceso LAN">
         <button type="button" class="boton-chico" id="lan-guardar">Guardar</button>
       </div>
       <div class="alerta oculta" id="lan-mensaje"></div>
@@ -158,27 +160,27 @@
       </div>
     </div>
 
-    <h3 class="titulo-seccion">Actualizaciones</h3>
+    <h2 class="titulo-seccion">Actualizaciones</h2>
     <div id="actualizaciones" class="lista-ajustes"></div>
     <div id="actualizaciones-info" class="directiva"></div>
   </section>
 
   <section id="vista-registro" class="vista oculta flex min-h-0 flex-1 flex-col overflow-hidden p-4">
     <div class="barra-registro mb-3">
-      <select id="registro-fuente">
+      <select id="registro-fuente" aria-label="Fuente del registro">
         <option value="detector">detector</option>
         <option value="supervisor">supervisor</option>
         <option value="directo">directo</option>
         <option value="chaturbate">chaturbate</option>
         <option value="motor">motor</option>
       </select>
-      <select id="registro-nivel">
+      <select id="registro-nivel" aria-label="Nivel del registro">
         <option value="">todos los niveles</option>
         <option value="INFO">INFO</option>
         <option value="WARNING">WARNING</option>
         <option value="ERROR">ERROR</option>
       </select>
-      <input id="registro-buscar" autocomplete="off" placeholder="buscar en el mensaje...">
+      <input id="registro-buscar" autocomplete="off" placeholder="buscar en el mensaje..." aria-label="Buscar en el mensaje">
       <label class="fila-check" title="repreguntar cada 3s mientras esta pestana esta abierta">
         <input type="checkbox" id="registro-seguir" checked> seguir
       </label>
@@ -267,7 +269,7 @@
   <div class="modal" id="modal-ayuda-panel">
     <button class="modal-cerrar" id="modal-ayuda-cerrar" title="Cerrar" aria-label="Cerrar">&times;</button>
     <div class="modal-cuerpo">
-      <h3 class="titulo-seccion">Atajos de teclado</h3>
+      <h2 class="titulo-seccion">Atajos de teclado</h2>
       <div id="ayuda-lista" class="flex flex-col gap-2"></div>
     </div>
   </div>

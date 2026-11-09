@@ -849,6 +849,18 @@ export function crearReproductor(video, { alErrar, alCambiarEstado } = {}) {
     try {
       if (mediaSource && mediaSource.readyState === "open") mediaSource.endOfStream();
     } catch (e) { /* ya cerrado, no importa */ }
+    // _tick()/_appendear siguen una referencia a ESTE objeto pv/pa, no a la
+    // variable del modulo: reasignarla mas abajo no las avisa. Un fetch que
+    // ya estaba en vuelo (otro tick, u otra parte del mismo _appendearGrupos)
+    // retoma despues del remove de arriba y, sin esto, llama appendBuffer
+    // sobre un SourceBuffer ya removido del MediaSource -- "This SourceBuffer
+    // has been removed from the parent media source", reportado como error
+    // en vez de ser la carrera benigna que es. Con sourceBuffer=null, la
+    // guarda que ya tiene _bombear() (`if (!p.sourceBuffer ...) return;`)
+    // lo descarta en silencio, igual que el SourceBuffer-ya-removido de
+    // _medir() un poco mas arriba.
+    pv.sourceBuffer = null;
+    if (pa) pa.sourceBuffer = null;
     video.pause();
     if (video.src) { URL.revokeObjectURL(video.src); }
     video.removeAttribute("src");

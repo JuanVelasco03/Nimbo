@@ -235,7 +235,10 @@
   .aviso-salud .item { @apply [text-wrap:pretty]; }
   .aviso-salud .item .titulo { @apply font-semibold; }
   .aviso-salud .item.nivel-aviso { color: var(--color-tally-privado); }
-  .aviso-salud .item.nivel-error { color: var(--color-tally-rec); }
+  /* mismo piso de contraste que .estado-badge.grabando: aca el fondo es
+     panel-alto (mas claro que panel), asi que el rojo puro queda incluso
+     peor (3.9:1) -- la mezcla al 85% lo deja en 4.65:1. */
+  .aviso-salud .item.nivel-error { color: color-mix(in srgb, var(--color-tally-rec) 85%, white); }
 
   /* -- grilla de monitoreo ---------------------------------------------- */
 
@@ -500,7 +503,11 @@
            transition-colors;
   }
   .estado-badge .bola { @apply h-[6px] w-[6px] shrink-0 rounded-full transition-colors; }
-  .estado-badge.grabando { color: var(--color-tally-rec); }
+  /* tally-rec puro da 4.3:1 sobre el panel de la tarjeta, bajo el piso de
+     4.5:1 -- misma Contrast-Safe Mix Rule que .estado-transporte.mal (:189).
+     El .bola de abajo se queda con el valor exacto: la regla nombrada solo
+     pisa el uso como texto. */
+  .estado-badge.grabando { color: color-mix(in srgb, var(--color-tally-rec) 85%, white); }
   .estado-badge.grabando .bola { background: var(--color-tally-rec); animation: parpadeo 1.6s ease-in-out infinite; }
   .estado-badge.privado { color: var(--color-tally-privado); }
   .estado-badge.privado .bola { background: var(--color-tally-privado); }
@@ -688,8 +695,9 @@
   .fila-registro .mensaje { @apply min-w-0 break-words text-texto; }
   .fila-registro.nivel-info .prefijo { color: var(--color-atenuado); }
   .fila-registro.nivel-warning .prefijo { color: var(--color-tally-privado); }
-  .fila-registro.nivel-error .prefijo { color: var(--color-tally-rec); }
-  .fila-registro.nivel-error .mensaje { color: var(--color-tally-rec); }
+  /* mismo piso de contraste que .estado-badge.grabando (panel de fondo). */
+  .fila-registro.nivel-error .prefijo { color: color-mix(in srgb, var(--color-tally-rec) 85%, white); }
+  .fila-registro.nivel-error .mensaje { color: color-mix(in srgb, var(--color-tally-rec) 85%, white); }
 
   /* -- pestana Grabaciones (ver vista_grabaciones.js) ----------------------
      Grilla de tarjetas, mismo cuerpo que .tarjeta-modelo (Modelos/Grabando)

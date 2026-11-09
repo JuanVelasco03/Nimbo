@@ -526,6 +526,13 @@ class Seleccion:
                     # opt-out de @directo=1: se suman, igual que @vpn=.
                     cfg.navegador |= frozenset(
                         v.strip() for v in valor.split(",") if v.strip())
+                elif clave == "chaturbate":
+                    # el trafico de chaturbate no pasa por este proxy (SPEC
+                    # 18): lo graba grabador_chaturbate.py por su cuenta, con
+                    # su propio _ConfigChaturbate._parsear. Igual que
+                    # @directo arriba, solo se reconoce para no loguear
+                    # "desconocida" en cada poll de grabar.txt.
+                    pass
                 elif clave in {"todo", "all"}:
                     cfg.todo = valor not in {"0", "no", "false", "off"}
                 else:
