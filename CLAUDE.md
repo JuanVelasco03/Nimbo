@@ -138,7 +138,32 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
    hace de "id" en el nombre de carpeta/archivo es el token alfanumérico
    de 7 caracteres que da `/api/chatvideocontext/` (por eso
    `grabaciones.RE_NOMBRE` acepta `[A-Za-z0-9]+` en ese campo, no solo
-   dígitos).
+   dígitos). En chaturbate **video y audio son dos streams HLS separados**
+   (el origen está demuxado; no hay variante muxada que pedir, medido), así
+   que cada modelo baja **dos** carpetas de sesión: la de video con el
+   nombre de siempre y la de audio con `_audio` pegado al final. La
+   descarga es doble y se queda así (es lo que mantiene la previa en vivo y
+   el `Escritor` sin cambios), pero **la unión es una sola** desde SPEC 22:
+   un único `--unir` saca un solo `.mp4` con las dos pistas adentro, porque
+   `unir_sesion()` encuentra la carpeta hermana por esa convención de
+   nombre (`_hermana_audio`) y la mete en el mismo ffmpeg. Tres cosas
+   cuelgan de eso y no se pueden tocar por separado: con audio acompañante
+   el reencadenado **no cierra huecos** (`Reencadenador(cerrar_huecos=False)`
+   — cerrarlos en una pista y no en la otra es lo que adelantaba el sonido
+   exactamente los segundos que le faltaban al video), la salida lleva
+   `-copyts` (sin él ffmpeg normaliza cada input a su propio `start_time` y
+   pierde el offset relativo, que es toda la sincronía) y **las dos
+   carpetas reciben `unido.json` apuntando al mismo `.mp4`** (el marcador
+   es la primera compuerta de `cosecha_streams._borrables()`: sin él los
+   segmentos de audio no se barren nunca). Una carpeta `_audio` **no es una
+   sesión unible por sí sola** mientras exista su hermana de video: ni
+   `--unir` ni `recuperar_pendientes()` la toman (`SesionDisco.acompanante`).
+   Y el orden de los segmentos de chaturbate sale de `(secuencia, parte)`,
+   **no** del epoch del nombre como en stripchat
+   (`_ordena_por_secuencia`): ese epoch es la hora de descarga local y las
+   partes de LL-HLS se piden en paralelo, así que una reintentada queda
+   detrás de una más nueva — medido, 32 "reinicios/huecos" inexistentes en
+   una sesión de 368 fragmentos, y 0 ordenando por secuencia.
 
 Las rutas de segmentos, grabaciones y el escenario de unión salen de la
 sección "Carpetas y discos" de `config.json` (`dir_segmentos`,
@@ -312,8 +337,9 @@ nombrado de Windows (`Local\NimboUnion.<hash de STREAMS_DIR>`, por
 `ctypes`) que los tres llamadores de `unir_sesion()` en `detectar_m3u8.py`,
 `grabador_directo.py:_unir_en_fondo` y `grabador_chaturbate.py:_unir_doble`
 toman **antes** de llamar a `unir_sesion()`/correr el subproceso, nunca
-adentro: así cubre también el `_mezclar_audio` de chaturbate y permite que
-el subproceso `--unir` no se trabe con su propio padre. Ese subproceso
+adentro: así el subproceso `--unir` no se traba con su propio padre. (Hasta
+SPEC 22 tomarlo afuera cubría además el `_mezclar_audio` de chaturbate, que
+era un ffmpeg aparte del de `--unir`; ese paso ya no existe.) Ese subproceso
 hereda el turno por la variable de entorno `NIMBO_UNION_TURNO` (leída una
 sola vez al importar, `_HEREDADO`) y no vuelve a pedirlo. Windows suelta el
 mutex solo cuando el dueño muere (el que esperaba recibe `WAIT_ABANDONED` y
@@ -380,9 +406,11 @@ importe (un `threading.Lock` por `Informe`, nada a nivel módulo) —
 importarlo no escribe nada ni arranca nada. Publica el progreso de la
 unión en curso (fase, bytes hechos de totales, ritmo, estado del freno) en
 `estado\union.json` desde `unir_sesion()` en `detectar_m3u8.py`, el único
-punto por el que pasan los tres caminos de unión, más una fase `mezcla`
-publicada aparte desde `grabador_chaturbate.py` (la única que no pasa por
-ahí). Es telemetría, no parte de la unión: todos los `OSError` al escribir
+punto por el que pasan los tres caminos de unión. Las fases son `copia` y
+`remux`: SPEC 22 retiró la tercera, `mezcla`, que publicaba aparte
+`grabador_chaturbate.py` porque su ffmpeg de mezcla era el único que no
+pasaba por `unir_sesion()` — ahora no hay mezcla, así que cada unión tiene
+**un solo escritor**. Es telemetría, no parte de la unión: todos los `OSError` al escribir
 se tragan, y sin `union.json` la interfaz se ve como antes de este spec.
 
 ### El núcleo copiado
@@ -425,7 +453,7 @@ otra máquina").
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
 | `estado\directo.json` | `grabador_directo.py` | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json` + `chaturbate.json`) |
 | `estado\chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | Nimbo (`estado_captura.fusionar()`) |
-| `estado\union.json` (SPEC 20) | varios escritores posibles (el detector en proceso, el subproceso `--unir` del directo, el de chaturbate, y `grabador_chaturbate.py` para la fase `mezcla`), pero **nunca dos a la vez**: el turno de `cerrojo_union.py` (SPEC 19) lo garantiza | `nimbo\grabaciones.py` (cruza el listado con la unión en curso) |
+| `estado\union.json` (SPEC 20) | quien corre `unir_sesion()`: el detector en proceso, o el subproceso `--unir` del directo o de chaturbate. **Un solo escritor por unión** desde SPEC 22 (antes el de chaturbate eran dos: el subproceso para los remux y el grabador para la fase `mezcla`), y **nunca dos a la vez**: el turno de `cerrojo_union.py` (SPEC 19) lo garantiza | `nimbo\grabaciones.py` (cruza el listado con la unión en curso) |
 | `estado\ids.json` | `grabador_directo.py` | `grabador_directo.py` (cache propia id↔nombre, valores `int`) |
 | `estado\ids_chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | `grabador_chaturbate.py` (cache propia nombre↔uid, valores `str` — aparte de `ids.json` porque el uid de chaturbate no es numérico) |
 | `estado\eventos_motor.jsonl` | `motor.py` | Nimbo (`registro.py`) |
