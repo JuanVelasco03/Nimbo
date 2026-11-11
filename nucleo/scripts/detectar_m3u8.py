@@ -211,6 +211,13 @@ CABECERA_TUNEL = "x-grab-tunel"
 MARCADOR = "unido.json"
 CARPETA_SEGS = "segmentos"
 CARPETA_PLAYLISTS = "playlists"
+# SPEC 22: en chaturbate el CDN manda video y audio como dos streams HLS
+# separados, asi que grabador_chaturbate.py escribe DOS carpetas de sesion
+# hermanas: la de video con el nombre de siempre y la de audio con este
+# sufijo pegado al final. La union las junta en un solo .mp4 (ver
+# _hermana_audio / unir_sesion). Para stripchat, donde cada fragmento ya
+# trae las dos pistas muxadas, esta carpeta no existe nunca.
+SUFIJO_AUDIO = "_audio"
 
 INTERVALO_VIGILANTE = 2.0      # cada cuanto se revisa grabar.txt / inactividad
 INTERVALO_TABLA = 60.0         # cada cuanto se reimprime la tabla de activos
@@ -822,17 +829,16 @@ def modelo_desde_referer(referer: str):
 TOPE_NOMBRE = 60
 
 # Para el .mp4 final la etiqueta es mucho mas larga -- <modelo>_<id>_
-# <variante>_<sello>, mas "_audio" cuando es la pista separada de chaturbate
-# (grabador_chaturbate.py:_unir_doble une video y audio como dos sesiones
-# independientes y las mezcla despues) -- y 60 cortaba justo ese sufijo:
-# "welcome2pleasureland_MMMAVNC_1080p_h264_20261108-172655_audio" (61) salia
-# como "..._audi.mp4" (visto el 2026-11-08). Con un usuario un poco mas largo
-# el sufijo desaparece entero y el .mp4 de audio queda indistinguible del de
-# video: los dos chocan contra el mismo nombre y solo los separa el "_N" que
-# agrega el "while os.path.exists" de abajo. 120 deja entrar entera cualquier
-# etiqueta real y sigue siendo el tope contra MAX_PATH: 120 + "_10.raw.mp4" +
-# el ".conaudio.mp4" de la mezcla entra con holgura debajo de 260 incluso con
-# un dir_grabaciones hondo (SPEC 12).
+# <variante>_<sello> -- y 60 cortaba nombres reales: hasta SPEC 22 la pista
+# de audio de chaturbate se unia aparte y su etiqueta llevaba "_audio" al
+# final, asi que "welcome2pleasureland_MMMAVNC_1080p_h264_20261108-172655_audio"
+# (61) salia como "..._audi.mp4" (visto el 2026-11-08) y con un usuario un
+# poco mas largo el sufijo desaparecia entero, dejando el .mp4 de audio
+# indistinguible del de video. Desde SPEC 22 esa etiqueta ya no existe (hay
+# un solo .mp4 por sesion), pero el tope se queda: 120 deja entrar entera
+# cualquier etiqueta real y sigue siendo el tope contra MAX_PATH -- 120 +
+# "_10.raw.mp4" entra con holgura debajo de 260 incluso con un
+# dir_grabaciones hondo (SPEC 12).
 TOPE_NOMBRE_MP4 = 120
 
 
@@ -920,11 +926,15 @@ def clave_segmento(nombre: str):
             int(parte) if parte is not None else PARTE_ENTERA)
 
 
-def _orden_segmentos(carpeta: str):
+def _orden_segmentos(carpeta: str, por_secuencia: bool = False):
     """Los segmentos en el orden en que se emitieron.
 
     El orden lo da la secuencia del nombre, no la fecha del archivo: con
     varias descargas en paralelo las fechas se pisan y no son fiables.
+
+    'por_secuencia' (SPEC 22) ordena por (secuencia, parte) e IGNORA el
+    epoch del nombre. Es para chaturbate y nada mas -- ver
+    _ordena_por_secuencia() para el porque y para como se decide.
     """
     archivos = [
         os.path.join(carpeta, n)
@@ -946,9 +956,63 @@ def _orden_segmentos(carpeta: str):
         archivos.sort(key=lambda r: (os.path.getmtime(r), r))
         return archivos
 
-    ordenados = sorted(claves, key=lambda r: claves[r])
+    if por_secuencia:
+        ordenados = sorted(claves, key=lambda r: (claves[r][1], claves[r][2]))
+    else:
+        ordenados = sorted(claves, key=lambda r: claves[r])
     sin_clave.sort(key=lambda r: (os.path.getmtime(r), r))
     return ordenados + sin_clave
+
+
+# Lo que grabador_chaturbate.py deja en info.json ("modo"). Es la senal
+# explicita de que la sesion es del segundo sitio; stripchat escribe
+# "directo" (camino directo) o nada (el detector).
+MODO_CHATURBATE = "chaturbate"
+
+
+def _ordena_por_secuencia(carpeta_sesion: str) -> bool:
+    """¿Esta sesion se ordena por secuencia en vez de por el epoch del
+    nombre? Solo chaturbate (SPEC 22).
+
+    El epoch del nombre lo pone el grabador con time.time() en el momento
+    en que GUARDA el trozo, no el CDN. En stripchat eso es justo lo que se
+    quiere (ver clave_segmento: cuando la modelo reinicia la emision el
+    contador de secuencia vuelve a cero, y ordenar por el metia el trozo
+    nuevo en medio del viejo -- medido, solapes 5292 -> 6).
+
+    En chaturbate es al revés y rompe: las partes de LL-HLS se piden en
+    paralelo, asi que una parte reintentada se guarda DESPUES de una mas
+    nueva y queda detras de ella en el orden. Medido sobre una sesion real
+    de 368 fragmentos: ordenando por epoch, 11 "reinicios" y 21 "huecos"
+    (35 s) que no existen; ordenando por (secuencia, parte), 0 y 0 -- con
+    el mismo span de 201,667 s. Y el contador de secuencia de chaturbate NO
+    se reinicia dentro de una carpeta: un init nuevo (reconexion del
+    encoder) cierra la sesion entera y abre otra
+    (grabador_chaturbate._procesar_chunklist), que es el unico momento en
+    que ese contador vuelve a empezar.
+
+    Esto no se notaba antes de SPEC 22 porque el Reencadenador cerraba los
+    huecos y, de rebote, deshacia el desorden: los 35 s fantasma se
+    cerraban y el .mp4 salia con su duracion real. Sin cerrar huecos --que
+    es lo que hace falta para que las dos pistas conserven su tiempo-- esos
+    35 s se quedan dentro del archivo.
+
+    Se identifica chaturbate SOLO en positivo, y por dos caminos para que
+    un info.json que no se llego a escribir (cierre a lo bruto) no deje la
+    sesion con el orden equivocado. Stripchat no puede dar True por
+    ninguno de los dos: no escribe ese "modo" ni tiene carpeta "_audio".
+    """
+    if _es_pista_audio(carpeta_sesion):
+        return True
+    if os.path.isdir(carpeta_sesion + SUFIJO_AUDIO):
+        return True
+    try:
+        with open(os.path.join(carpeta_sesion, "info.json"),
+                  encoding="utf-8") as f:
+            datos = json.load(f)
+        return isinstance(datos, dict) and datos.get("modo") == MODO_CHATURBATE
+    except (OSError, ValueError):
+        return False
 
 
 # --------------------------------------------------------------------------
@@ -1097,15 +1161,33 @@ def _escalas_de(rutas):
 
 
 class Reencadenador:
-    """Deja el reloj corriendo seguido: ni hacia atras ni con huecos."""
+    """Deja el reloj corriendo seguido: ni hacia atras ni con huecos.
 
-    def __init__(self, escalas=None):
+    'cerrar_huecos' es lo unico opcional (SPEC 22). Con True -- el camino de
+    stripchat, que no cambia -- un trozo que no llego a bajarse se cierra:
+    el fragmento siguiente se reancla donde acabo el anterior y el video
+    corre seguido, durando el hueco menos. Eso vale cuando cada fragmento
+    trae TODAS las pistas, que es lo que hace el CDN de stripchat (ver el
+    comentario de arreglar()).
+
+    Con False -- chaturbate, donde video y audio son dos streams separados y
+    por lo tanto dos pasadas distintas -- el hueco se cuenta pero NO se
+    cierra: cada pista conserva su tiempo absoluto. Si se cerraran, un hueco
+    de 10 s que le toco solo al video lo acortaria 10 s y el audio seguiria
+    entero, asi que de ahi en adelante el sonido iria 10 s adelantado -- el
+    bug estructural que SPEC 22 vino a cerrar. Un reloj que vuelve ATRAS
+    (reinicio de emision) se corrige siempre, con o sin la bandera: si no,
+    el .mp4 queda roto.
+    """
+
+    def __init__(self, escalas=None, cerrar_huecos: bool = True):
         self.escalas = escalas or {}
         self.desfase = {}        # pista -> cuanto hay que sumarle
         self.fin = {}            # pista -> donde acabo el fragmento anterior
         self.reinicios = 0
-        self.huecos = 0          # trozos que no se bajaron y se han cerrado
+        self.huecos = 0          # trozos que no se bajaron
         self.segundos_huecos = 0.0
+        self.cerrar_huecos = cerrar_huecos
 
     def escala(self, pista):
         return self.escalas.get(pista) or ESCALA_POR_DEFECTO
@@ -1142,9 +1224,13 @@ class Reencadenador:
             # Cada pista se reancla donde acabo la anterior. El desfase entre
             # audio y video se mantiene en su banda normal (medido: -20 a 0 ms,
             # sin deriva), asi que esto no descuadra el sonido.
-            for _, _, pista, tiempo, _ in pistas:
-                if pista in self.fin:
-                    self.desfase[pista] = self.fin[pista] - tiempo
+            # SPEC 22: un hueco solo se cierra si se pidio cerrarlos. Un
+            # retroceso se corrige siempre -- el reloj no puede ir hacia
+            # atras ni con las pistas en pasadas separadas.
+            if retroceso or self.cerrar_huecos:
+                for _, _, pista, tiempo, _ in pistas:
+                    if pista in self.fin:
+                        self.desfase[pista] = self.fin[pista] - tiempo
 
         editable = None
         for pos_tfdt, version, pista, tiempo, duracion in pistas:
@@ -1389,11 +1475,11 @@ def _hay_espacio(total, etiqueta, veces=MARGEN_DISCO):
     return False
 
 
-def _escribir_crudo(rutas, crudo, informe=None):
+def _escribir_crudo(rutas, crudo, informe=None, cadena=None):
     """Pega el plan en un archivo. -> reencadenador, o None si falla el disco."""
     try:
         with open(crudo, "wb") as salida:
-            return _alimentar(rutas, salida.write, informe=informe)
+            return _alimentar(rutas, salida.write, cadena, informe=informe)
     except OSError as e:
         log.error("[UNIR] %s", e)
         return None
@@ -1523,21 +1609,159 @@ def _init_de_hermana(carpeta_sesion: str) -> str:
     return max(candidatos)[1] if candidatos else ""
 
 
-def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
-    """Concatena init + segmentos de UNA sesion y remuxea. Devuelve la ruta final."""
+def _tiene_segmentos(carpeta_sesion: str) -> bool:
+    """¿Esa carpeta de sesion tiene al menos un segmento bajado?"""
+    try:
+        with os.scandir(os.path.join(carpeta_sesion, CARPETA_SEGS)) as it:
+            for e in it:
+                if e.name.lower().endswith(EXT_SEGMENTO):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def _es_pista_audio(nombre_sesion: str) -> bool:
+    """¿El nombre de carpeta es el de una pista de audio (SPEC 22)?"""
+    return os.path.basename(nombre_sesion).endswith(SUFIJO_AUDIO)
+
+
+def _hermana_audio(ruta_sesion: str):
+    """La carpeta de la pista de audio que acompana a esta sesion, o None.
+
+    SPEC 22: el emparejado es por CONVENCION de carpeta
+    (<sesion> <-> <sesion>_audio) y se resuelve adentro de unir_sesion(), no
+    con un flag de CLI. Asi los cuatro caminos de union -- el detector al
+    cerrar, recuperar_pendientes(), el --unir del grabador y el --unir a
+    mano -- quedan cubiertos por el mismo cambio y ninguno puede olvidarse
+    el audio y dejar un .mp4 mudo marcado como unido.
+
+    Devuelve None para stripchat (no hay carpeta hermana) y tambien si a la
+    de chaturbate no le llego ningun segmento: sin segmentos no hay pista
+    que meter y el video tiene que salir igual.
+    """
+    if _es_pista_audio(ruta_sesion):
+        return None                      # esta YA es la de audio
+    otra = ruta_sesion + SUFIJO_AUDIO
+    return otra if _tiene_segmentos(otra) else None
+
+
+def _hermana_video(ruta_sesion: str):
+    """La carpeta de video de la que esta pista de audio es acompanante.
+
+    None si no es una pista de audio, o si su hermana de video no existe o
+    se quedo sin segmentos: en ese caso la pista de audio esta HUERFANA y no
+    la va a unir nadie (ver _marcar_sin_video)."""
+    if not _es_pista_audio(ruta_sesion):
+        return None
+    otra = ruta_sesion[:-len(SUFIJO_AUDIO)]
+    return otra if _tiene_segmentos(otra) else None
+
+
+def _inits_de(carpeta_sesion: str):
+    """Los init que hay en esa carpeta de sesion, ordenados."""
+    try:
+        return sorted(
+            os.path.join(carpeta_sesion, n)
+            for n in os.listdir(carpeta_sesion)
+            if n.lower().startswith("init")
+        )
+    except OSError:
+        return []
+
+
+# Nombre del pegote de la pista de audio adentro del escenario. Es
+# transitorio y se borra en el finally de unir_sesion; no vive nunca en
+# GRABACIONES_DIR a proposito, para que no aparezca ni un segundo en la
+# grilla de Grabaciones como un .mp4 fuera de convencion.
+PEGOTE_AUDIO = "pista_audio.m4s"
+
+
+def _pegar_pista_audio(carpeta_audio: str, carpeta_tmp, etiqueta: str,
+                       informe=None):
+    """Materializa la pista de audio como UN archivo, para pasarsela a
+    ffmpeg como segundo input (SPEC 22).
+
+    -> (ruta, carpeta_propia, cadena, bytes) o (None, None, None, 0).
+
+    Un pegote y no una tuberia porque ffmpeg ya tiene la de video ocupada
+    (pipe:0) y solo hay una. Es barato: el AAC de 96-128 kbps de chaturbate
+    son ~115 MB en 2 h contra ~4,5 GB de video, medido ~2,5-4 % del total.
+
+    Va adentro del escenario de SPEC 12 si lo hubo -- o sea, en el disco
+    rapido -- y si no, en una carpeta temporal propia: lo que NO puede es
+    vivir al lado del .mp4 final. 'carpeta_propia' es la que hay que borrar
+    despues (None si se escribio en el escenario compartido, que ya lo borra
+    unir_sesion).
+
+    El reencadenador es propio de esta pasada y va con cerrar_huecos=False:
+    esta pista tiene que conservar su tiempo absoluto para que la sincronia
+    con el video salga por construccion.
+    """
+    inits_audio = _inits_de(carpeta_audio)
+    # por_secuencia=True sin preguntar: una carpeta "_audio" es de
+    # chaturbate por definicion (ver _ordena_por_secuencia).
+    segmentos_audio = _orden_segmentos(
+        os.path.join(carpeta_audio, CARPETA_SEGS), por_secuencia=True)
+    if not segmentos_audio:
+        return None, None, None, 0
+    if not inits_audio:
+        # Sin init no hay forma de que ffmpeg sepa que codec es: ese input
+        # le haria fallar la pasada entera y se perderia tambien el video.
+        # Mejor video mudo que ninguna grabacion -- y aca si es el criterio
+        # correcto, porque la alternativa no es "mezclar despues", es nada.
+        log.warning("[UNIR] %s: la pista de audio no tiene init; el video "
+                    "sale sin audio", etiqueta)
+        return None, None, None, 0
+
+    propia = None
+    base_tmp = carpeta_tmp
+    if base_tmp is None:
+        try:
+            propia = base_tmp = tempfile.mkdtemp(prefix="nimbo_audio_")
+        except OSError as e:
+            log.warning("[UNIR] %s: no se pudo preparar el pegote de audio "
+                        "(%s); el video sale sin audio", etiqueta, e)
+            return None, None, None, 0
+
+    destino = os.path.join(base_tmp, PEGOTE_AUDIO)
+    rutas, _, total = _plan(inits_audio, segmentos_audio, set())
+    cadena = Reencadenador(_escalas_de(rutas), cerrar_huecos=False)
+    if _escribir_crudo(rutas, destino, informe=informe, cadena=cadena) is None:
+        if propia:
+            shutil.rmtree(propia, ignore_errors=True)
+        return None, None, None, 0
+    log.info("[UNIR] %s: pista de audio pegada | %d segmentos | %.1f MB",
+             etiqueta, len(segmentos_audio), total / 1048576)
+    return destino, propia, cadena, total
+
+
+def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True,
+                carpeta_audio=None):
+    """Concatena init + segmentos de UNA sesion y remuxea. Devuelve la ruta final.
+
+    SPEC 22: si la sesion tiene una pista de audio acompanante (chaturbate,
+    donde el CDN manda video y audio como dos streams HLS separados), sale
+    UN solo .mp4 con las dos pistas adentro, en UN solo ffmpeg. El
+    emparejado es por convencion de carpeta y se resuelve aca con
+    _hermana_audio(), asi que los cuatro llamadores -- el detector al
+    cerrar, recuperar_pendientes(), el --unir del grabador y el --unir a
+    mano -- lo ganan sin tocarse. 'carpeta_audio' esta solo para poder
+    pasarla a mano o apagarla con "" en una prueba.
+    """
     carpeta_segs = os.path.join(carpeta_sesion, CARPETA_SEGS)
     if not os.path.isdir(carpeta_segs):
         return None
 
-    segmentos = _orden_segmentos(carpeta_segs)
+    por_secuencia = _ordena_por_secuencia(carpeta_sesion)
+    segmentos = _orden_segmentos(carpeta_segs, por_secuencia=por_secuencia)
     if not segmentos:
         return None
 
-    inits = sorted(
-        os.path.join(carpeta_sesion, n)
-        for n in os.listdir(carpeta_sesion)
-        if n.lower().startswith("init")
-    )
+    if carpeta_audio is None:
+        carpeta_audio = _hermana_audio(carpeta_sesion)
+
+    inits = _inits_de(carpeta_sesion)
     if not inits:
         prestado = _init_de_hermana(carpeta_sesion)
         if prestado:
@@ -1573,22 +1797,44 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
     informe = progreso_union.Informe(DIR_ESTADO, etiqueta,
                                       archivo=os.path.basename(final))
     carpeta_tmp = None
+    carpeta_tmp_audio = None
+    pegote_audio = None
+    cadena_audio = None
+    audio_adentro = False     # ¿el audio quedo DENTRO del archivo final?
 
     try:
         total_origen = sum(os.path.getsize(p) for p in inits[:1]) + \
             sum(os.path.getsize(p) for p in segmentos)
+        # SPEC 22: la pista de audio entra en el total desde el principio,
+        # sin ninguna excepcion -- asi cuenta en el margen del escenario y
+        # en _hay_espacio() igual que el video.
+        bytes_audio = 0
+        if carpeta_audio:
+            for p in (_inits_de(carpeta_audio)[:1] +
+                      _orden_segmentos(os.path.join(carpeta_audio,
+                                                    CARPETA_SEGS),
+                                       por_secuencia=True)):
+                try:
+                    bytes_audio += os.path.getsize(p)
+                except OSError:
+                    pass
         # La copia al escenario (SPEC 12) es el tramo mas invisible de la
         # union: miles de archivos copiados antes de que el .mp4 exista. Se
         # publica como fase propia, con "archivo" todavia sin matchear
         # ninguna parte del listado -- para eso esta el banner.
-        informe.fase("copia", total_origen)
+        informe.fase("copia", total_origen + bytes_audio)
         inits, segmentos, carpeta_tmp = _preparar_escenario(
-            inits, segmentos, carpeta_sesion, etiqueta, total_origen,
-            informe=informe)
+            inits, segmentos, carpeta_sesion, etiqueta,
+            total_origen + bytes_audio, informe=informe)
         if carpeta_tmp:
             log.info("[UNIR] %s: %d archivos copiados a %s para leerlos de ahi",
                       etiqueta, len(inits) + len(segmentos),
                       os.path.splitdrive(carpeta_tmp)[0] or carpeta_tmp)
+
+        if carpeta_audio:
+            pegote_audio, carpeta_tmp_audio, cadena_audio, bytes_audio = \
+                _pegar_pista_audio(carpeta_audio, carpeta_tmp, etiqueta,
+                                    informe=informe)
 
         for intento in range(MAX_REPARACIONES + 1):
             rutas, cortes, total = _plan(inits, segmentos, saltar)
@@ -1596,12 +1842,17 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
             # vuelve a crecer desde cero: el `%` vuelve a empezar y el
             # banner lo explica con "reintento N de 7" en vez de parecer un
             # bug de la interfaz.
-            informe.fase("remux", total, intento, MAX_REPARACIONES)
+            informe.fase("remux", total + bytes_audio, intento, MAX_REPARACIONES)
+            # Lo que va a pesar el .mp4: el video mas la pista de audio que
+            # ffmpeg le mete adentro en la misma pasada.
+            esperado = total + bytes_audio
             if not intento:
-                if not _hay_espacio(total, etiqueta):
+                if not _hay_espacio(esperado, etiqueta):
                     return None
-                log.info("[UNIR] %s | %d segmentos | %.1f MB -> remuxeando...",
-                         etiqueta, len(segmentos), total / 1048576)
+                log.info("[UNIR] %s | %d segmentos%s | %.1f MB -> remuxeando...",
+                         etiqueta, len(segmentos),
+                         " + audio" if pegote_audio else "",
+                         esperado / 1048576)
 
             if not ffmpeg:
                 # sin ffmpeg no hay mp4 posible: queda el pegote en crudo, que el
@@ -1619,30 +1870,56 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
             # el pegote intermedio. Ahorra una copia entera de la grabacion en
             # disco por intento (el pico baja de 3x a 2x su tamano).
             hecho = _remuxear_tubo(ffmpeg, rutas, final, etiqueta,
-                                    informe=informe)
+                                    informe=informe, audio=pegote_audio)
             if hecho is None:
                 # red de seguridad: si por tuberia no sale, se hace como antes
                 hecho = _remuxear_disco(ffmpeg, rutas, crudo, final, etiqueta,
-                                         total, informe=informe)
+                                         total, informe=informe,
+                                         audio=pegote_audio)
             if hecho is None:
                 salida = crudo if os.path.exists(crudo) else None
                 break
             salida, cadena = hecho
+            # Solo aca se sabe que la pista de audio entro DE VERDAD en el
+            # archivo: los dos caminos de arriba que no llegan hasta aqui
+            # (sin ffmpeg, o ffmpeg sin poder con ninguna pasada) dejan el
+            # pegote crudo del video y nada mas. Marcar la carpeta de audio
+            # como unida en esos casos la dejaria lista para que
+            # cosecha_streams la barriera, y ese audio no esta en ningun
+            # archivo: se perderia.
+            audio_adentro = bool(pegote_audio)
             if not intento and cadena.reinicios:
                 log.info("[UNIR] %s: %d reinicio(s) de emision; los tiempos se "
                          "reencadenaron para que el video no se corte",
                          etiqueta, cadena.reinicios)
             if not intento and cadena.huecos:
-                log.info("[UNIR] %s: %d corte(s) que no llegaron a bajarse "
-                         "(%.0f s en total); cerrados, el video corre seguido y "
-                         "dura eso menos", etiqueta, cadena.huecos,
-                         cadena.segundos_huecos)
+                if pegote_audio:
+                    # SPEC 22: con audio acompanante los huecos NO se cierran
+                    # (Reencadenador(cerrar_huecos=False)), justo para que el
+                    # sonido no se adelante los segundos que le falten al
+                    # video. El .mp4 dura lo mismo y tiene el agujero donde
+                    # de verdad estuvo.
+                    log.info("[UNIR] %s: %d corte(s) que no llegaron a bajarse "
+                             "(%.0f s en total); quedan como hueco, las dos "
+                             "pistas conservan su tiempo", etiqueta,
+                             cadena.huecos, cadena.segundos_huecos)
+                else:
+                    log.info("[UNIR] %s: %d corte(s) que no llegaron a bajarse "
+                             "(%.0f s en total); cerrados, el video corre seguido y "
+                             "dura eso menos", etiqueta, cadena.huecos,
+                             cadena.segundos_huecos)
+            if not intento and cadena_audio is not None and (
+                    cadena_audio.reinicios or cadena_audio.huecos):
+                log.info("[UNIR] %s: la pista de audio traia %d reinicio(s) y "
+                         "%d corte(s) (%.0f s)", etiqueta,
+                         cadena_audio.reinicios, cadena_audio.huecos,
+                         cadena_audio.segundos_huecos)
 
             # Si el mp4 sale mucho mas chico que el pegote, ffmpeg dejo de leer a
             # mitad: hay un segmento que no le gusta. Se busca cual, se deja fuera
             # y se vuelve a intentar; perder 2 segundos es mejor que perder horas.
             hechos = os.path.getsize(salida)
-            if hechos >= total * FRACCION_MINIMA or intento == MAX_REPARACIONES:
+            if hechos >= esperado * FRACCION_MINIMA or intento == MAX_REPARACIONES:
                 if saltar:
                     log.warning("[UNIR] %s: se dejaron fuera %d segmento(s) que "
                                 "atascaban a ffmpeg (%s); son unos pocos segundos",
@@ -1650,15 +1927,20 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
                                 ", ".join(str(x) for x in sorted(saltar)))
                 break
 
+            # Con audio acompanante el mapeo bytes_de_salida -> secuencia de
+            # video se desplaza lo que ocupa el audio intercalado (~2,5-4 %
+            # del total, medido). Ya era aproximado antes de SPEC 22 y sigue
+            # sirviendo para lo unico que hace: elegir a que segmento
+            # saltearle el turno en el reintento siguiente.
             atascada = _secuencia_atascada(cortes, hechos)
             if atascada is None or atascada in saltar:
                 log.warning("[UNIR] %s: el remux sale corto (%.0f%%) y no logro "
                             "localizar el segmento culpable", etiqueta,
-                            100.0 * hechos / total)
+                            100.0 * hechos / esperado)
                 break
             log.warning("[UNIR] %s: ffmpeg se paro en el %.0f%%; salto la "
                         "secuencia %s y reintento", etiqueta,
-                        100.0 * hechos / total, atascada)
+                        100.0 * hechos / esperado, atascada)
             saltar.add(atascada)
             try:
                 os.remove(salida)
@@ -1667,6 +1949,12 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
     finally:
         if carpeta_tmp:
             shutil.rmtree(carpeta_tmp, ignore_errors=True)
+        # El pegote de audio solo tiene carpeta propia que borrar si NO hubo
+        # escenario compartido (si lo hubo, vivia adentro y ya se fue con el
+        # rmtree de arriba). Siempre, salga bien o mal: no se acumula nada
+        # entre uniones.
+        if carpeta_tmp_audio:
+            shutil.rmtree(carpeta_tmp_audio, ignore_errors=True)
         # Salga bien o mal (incluidos los `return None` de _hay_espacio):
         # un union.json con una union que ya termino dejaria el banner
         # pegado hasta que el lector lo descartara por FRESCURA_UNION.
@@ -1674,7 +1962,39 @@ def unir_sesion(carpeta_sesion: str, etiqueta: str, remux: bool = True):
 
     if not salida:
         return None
-    _marcar_unida(carpeta_sesion, salida, len(segmentos))
+    _marcar_unida(carpeta_sesion, salida, len(segmentos),
+                  {"pista": "video"} if carpeta_audio else None)
+    # SPEC 22: las DOS carpetas reciben marcador, apuntando al MISMO .mp4.
+    # Hace falta porque el marcador es la primera de las tres compuertas de
+    # cosecha_streams._borrables(): sin el, los segmentos de la pista de
+    # audio no se barren nunca y ocupan disco para siempre. El [LISTO] sale
+    # una sola vez, que es lo que de verdad paso -- un solo archivo.
+    if carpeta_audio:
+        if audio_adentro:
+            _marcar_unida(carpeta_audio, salida,
+                          len(_orden_segmentos(os.path.join(carpeta_audio,
+                                                             CARPETA_SEGS),
+                                               por_secuencia=True)),
+                          {"pista": "audio"})
+        elif not pegote_audio:
+            # La hermana existia pero no se pudo ni armar el pegote (sin
+            # init, sin disco): esos segmentos no van a entrar en ningun
+            # .mp4 nunca, asi que se marcan para que se barran en vez de
+            # quedar pendientes para siempre.
+            _marcar_unida(carpeta_audio, "", 0,
+                          {"pista": "audio",
+                           "motivo": "no se pudo unir con el video"})
+        else:
+            # El pegote estaba, pero la salida es el crudo de solo video
+            # (no habia ffmpeg, o no pudo con ninguna pasada). A la carpeta
+            # de audio NO se le pone marcador: sin el, cosecha_streams no
+            # la toca y el audio sobrevive hasta que se pueda rehacer la
+            # union con ffmpeg. Perder disco es reversible; perder la
+            # unica copia del sonido, no.
+            log.warning("[UNIR] %s: el audio quedo fuera del archivo (no se "
+                        "pudo remuxear). Los segmentos de audio se conservan "
+                        "sin marcador; rehacela con python %s --unir --forzar",
+                        etiqueta, os.path.basename(__file__))
     log.info("[LISTO] %s (%.1f MB)", salida, os.path.getsize(salida) / 1048576)
     return salida
 
@@ -1696,36 +2016,89 @@ PRIORIDAD_FONDO = (
 ARGS_SALIDA = ["-c", "copy", "-avoid_negative_ts", "make_zero",
                "-movflags", "+faststart"]
 
+# SPEC 22: salida con la pista de audio acompanante adentro, en la MISMA
+# pasada que el video. Las piezas, por que esta cada una:
+#
+#   -map 0:v:0 -map 1:a:0   el video del input 0 (la tuberia) y el audio del
+#                           input 1 (el pegote). Cada input trae una sola
+#                           pista, pero explicito es mejor que el mapeo
+#                           automatico, que podria elegir otra cosa si
+#                           alguna vez un init trajera dos.
+#   -copyts                 OBLIGATORIO. Sin el, ffmpeg le resta a cada
+#                           input su propio start_time y los normaliza a
+#                           cero por separado -- perdiendo justo el offset
+#                           RELATIVO entre las dos pistas, que es toda la
+#                           sincronia. Con el, los sellos de tiempo llegan
+#                           al muxer tal como los dejo el reencadenador.
+#   -avoid_negative_ts
+#   make_zero               se queda, y es lo que baja el arranque a 0
+#                           (un video puede empezar en el minuto 116). La
+#                           documentacion de ffmpeg es explicita en que
+#                           sigue aplicando con -copyts y en que "all output
+#                           timestamps are shifted by the same amount [...]
+#                           relative timestamp differences are preserved":
+#                           o sea, mueve las dos pistas por igual y no
+#                           descuadra nada.
+#   -muxdelay 0
+#   -muxpreload 0           sin preroll: que el muxer no se invente un
+#                           retardo inicial encima de los tiempos que ya
+#                           vienen puestos a mano.
+ARGS_SALIDA_AUDIO = ["-map", "0:v:0", "-map", "1:a:0", "-copyts",
+                     "-muxdelay", "0", "-muxpreload", "0"] + ARGS_SALIDA
 
-# Dos pasadas: la normal y, si esa falla, una tolerante para el caso de que
-# algun trozo haya llegado a medias.
-INTENTOS_REMUX = [
-    (ARGS_REMUX, ARGS_SALIDA, ""),
-    (ARGS_REMUX + ["-err_detect", "ignore_err"],
-     ARGS_SALIDA + ["-max_muxing_queue_size", "4096"], " (tolerante)"),
-]
+
+def _intentos_remux(con_audio: bool):
+    """Dos pasadas: la normal y, si esa falla, una tolerante para el caso de
+    que algun trozo haya llegado a medias.
+
+    'args_in' se le aplica a TODOS los inputs (el +ignidx hace falta igual
+    en el pegote de audio: tambien es una concatenacion de fragmentos con
+    sus propias cajas sidx apuntando a cualquier sitio)."""
+    salida = ARGS_SALIDA_AUDIO if con_audio else ARGS_SALIDA
+    return [
+        (ARGS_REMUX, salida, ""),
+        (ARGS_REMUX + ["-err_detect", "ignore_err"],
+         salida + ["-max_muxing_queue_size", "4096"], " (tolerante)"),
+    ]
 
 
-def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str, informe=None):
+INTENTOS_REMUX = _intentos_remux(False)
+
+
+def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str, informe=None,
+                   audio=None):
     """Remuxea alimentando a ffmpeg por tuberia, sin pegote intermedio.
 
     Ahorra escribir (y luego borrar) una copia entera de la grabacion en cada
     intento. Comprobado contra la version con archivo: sale el mismo mp4 byte
     a byte, y un trozo malo en medio se detecta igual (el mp4 sale corto).
     -> (ruta, reencadenador) o None si ffmpeg no pudo con ninguna pasada.
+
+    'audio' (SPEC 22) es el pegote de la pista de audio acompanante, que
+    entra como SEGUNDO input. Por tuberia va el video y nada mas: ffmpeg
+    tiene una sola pipe:0, y el audio pesa tan poco que materializarlo no
+    mueve el pico de disco (~2,5-4 % del total).
     """
     ultimo = ""
-    for args_in, args_out, nota in INTENTOS_REMUX:
+    for args_in, args_out, nota in _intentos_remux(bool(audio)):
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+               *args_in, "-i", "pipe:0"]
+        if audio:
+            cmd += [*args_in, "-i", audio]
+        cmd += [*args_out, final]
         with tempfile.TemporaryFile() as err:
             proc = subprocess.Popen(
-                [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                 *args_in, "-i", "pipe:0", *args_out, final],
+                cmd,
                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=err,
                 **PRIORIDAD_FONDO,
             )
             # el reencadenador se crea aqui para conservar el recuento aunque
-            # la tuberia se corte a mitad
-            cadena = Reencadenador(_escalas_de(rutas))
+            # la tuberia se corte a mitad. Con audio acompanante va con
+            # cerrar_huecos=False: esta pasada es solo la del video, y
+            # cerrarle los huecos a una sola pista es lo que adelantaba el
+            # sonido (ver Reencadenador y SPEC 22).
+            cadena = Reencadenador(_escalas_de(rutas),
+                                    cerrar_huecos=not audio)
             try:
                 _alimentar(rutas, proc.stdin.write, cadena, informe=informe)
             except BrokenPipeError:
@@ -1751,23 +2124,31 @@ def _remuxear_tubo(ffmpeg: str, rutas, final: str, etiqueta: str, informe=None):
 
 
 def _remuxear_disco(ffmpeg: str, rutas, crudo: str, final: str, etiqueta: str,
-                    total: int, informe=None):
+                    total: int, informe=None, audio=None):
     """Como antes: escribe el pegote entero y luego lo remuxea.
 
     Solo se usa si la tuberia no funciono. Necesita el doble de disco, asi que
     se comprueba antes. -> (ruta, reencadenador) o None.
+
+    'audio' (SPEC 22) es el pegote de la pista acompanante, igual que en
+    _remuxear_tubo: entra como segundo input y ya esta materializado.
     """
     if not _hay_espacio(total, etiqueta, MARGEN_DISCO + 1):
         return None
-    cadena = _escribir_crudo(rutas, crudo, informe=informe)
+    cadena = _escribir_crudo(rutas, crudo, informe=informe,
+                              cadena=Reencadenador(_escalas_de(rutas),
+                                                   cerrar_huecos=not audio))
     if cadena is None:
         return None
     ultimo = ""
-    for args_in, args_out, nota in INTENTOS_REMUX:
+    for args_in, args_out, nota in _intentos_remux(bool(audio)):
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+               *args_in, "-i", crudo]
+        if audio:
+            cmd += [*args_in, "-i", audio]
+        cmd += [*args_out, final]
         proc = subprocess.run(
-            [ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-             *args_in, "-i", crudo, *args_out, final],
-            capture_output=True, text=True, **PRIORIDAD_FONDO,
+            cmd, capture_output=True, text=True, **PRIORIDAD_FONDO,
         )
         if proc.returncode == 0 and os.path.exists(final):
             if nota:
@@ -1782,19 +2163,46 @@ def _remuxear_disco(ffmpeg: str, rutas, crudo: str, final: str, etiqueta: str,
     return None
 
 
-def _marcar_unida(carpeta_sesion: str, salida: str, n_segmentos: int) -> None:
+def _marcar_unida(carpeta_sesion: str, salida: str, n_segmentos: int,
+                  extra=None) -> None:
+    """Deja unido.json en la carpeta de sesion.
+
+    'extra' agrega campos informativos (SPEC 22: "pista" para distinguir el
+    marcador de la pista de audio del de su hermana de video, y "motivo"
+    cuando no hubo .mp4). Nadie los lee hoy: lo que importa es que el
+    marcador EXISTA, porque es la primera de las tres compuertas de
+    cosecha_streams._borrables() y sin el esos segmentos no se barren nunca.
+    """
+    datos = {
+        "salida": salida,
+        "segmentos": n_segmentos,
+        "fecha": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if extra:
+        datos.update(extra)
     try:
         with open(os.path.join(carpeta_sesion, MARCADOR), "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "salida": salida,
-                    "segmentos": n_segmentos,
-                    "fecha": time.strftime("%Y-%m-%d %H:%M:%S"),
-                },
-                f, indent=2, ensure_ascii=False,
-            )
+            json.dump(datos, f, indent=2, ensure_ascii=False)
     except OSError as e:
         log.warning("[UNIR] no se pudo marcar %s: %s", carpeta_sesion, e)
+
+
+def _marcar_sin_video(carpeta_sesion: str, etiqueta: str) -> None:
+    """Cierra el caso de la pista de audio HUERFANA (SPEC 22).
+
+    Una carpeta "_audio" sin hermana de video (la barrio cosecha_streams, o
+    la de video nunca llego a bajar un segmento) no se puede unir con nada,
+    y unirla sola es justo el bug que este spec vino a cerrar: dejaba un
+    *_audio.mp4 mudo de una sola pista, fuera de la convencion de nombres de
+    grabaciones.py, marcado como "unido". Se le deja marcador con salida
+    vacia para que cosecha_streams la pueda barrer en vez de que ocupe disco
+    para siempre.
+    """
+    log.warning("[SALTO] %s: pista de audio sin hermana de video; no hay nada "
+                "con lo que unirla. La marco para que se pueda barrer",
+                etiqueta)
+    _marcar_unida(carpeta_sesion, "", 0,
+                  {"pista": "audio", "motivo": "pista de audio sin video"})
 
 
 def escribir_info(carpeta_sesion: str, datos: dict) -> None:
@@ -1818,6 +2226,12 @@ class SesionDisco:
     ruta: str
     archivos: int
     unida: bool
+    # SPEC 22: pista de audio de chaturbate CON su hermana de video presente.
+    # No es una sesion unible por si sola: la une la misma pasada que el
+    # video (unir_sesion la encuentra con _hermana_audio). Una carpeta
+    # "_audio" SIN hermana de video no es acompanante -- esta huerfana, y no
+    # tiene sentido unirla sola tampoco.
+    acompanante: bool = False
 
     @property
     def etiqueta(self) -> str:
@@ -1850,12 +2264,21 @@ def sesiones_en_disco():
                 ruta=ruta,
                 archivos=archivos,
                 unida=os.path.exists(os.path.join(ruta, MARCADOR)),
+                acompanante=_hermana_video(ruta) is not None,
             )
 
 
 def recuperar_pendientes(remux: bool = True) -> int:
     """Une las sesiones que quedaron a medias (caida, kill, cierre forzado)."""
-    pendientes = [s for s in sesiones_en_disco() if s.archivos and not s.unida]
+    # SPEC 22: las acompanantes quedan fuera de la cuenta, no solo del bucle.
+    # Hasta este spec esto era el camino mas silencioso del bug: un cierre a
+    # lo bruto dejaba las dos carpetas sin marcador, y al arrancar se unian
+    # las dos POR SEPARADO -- un .mp4 mudo y un *_audio.mp4 que nadie iba a
+    # mezclar nunca (la mezcla solo existia adentro de _unir_doble), los dos
+    # con unido.json encima. La de audio la une ahora la pasada de su
+    # hermana de video, en el mismo ffmpeg.
+    pendientes = [s for s in sesiones_en_disco()
+                  if s.archivos and not s.unida and not s.acompanante]
     if not pendientes:
         return 0
     log.info("[RECUPERAR] %d sesion(es) a medio unir de la vez anterior",
@@ -1875,6 +2298,11 @@ def recuperar_pendientes(remux: bool = True) -> int:
             log.warning(
                 "[RECUPERAR] %s: le estan escribiendo ahora mismo (sesion "
                 "viva) -- no la uno; se une sola cuando cierre", s.etiqueta)
+            continue
+        if _es_pista_audio(s.sesion):
+            # No es acompanante (eso ya quedo fuera de 'pendientes'): es una
+            # pista de audio huerfana, sin hermana de video con la que unirse.
+            _marcar_sin_video(s.ruta, s.etiqueta)
             continue
         try:
             with cerrojo_union.turno(s.etiqueta, raiz=STREAMS_DIR, log=log):
@@ -3137,11 +3565,23 @@ def main(argv) -> int:
             if s.unida and not forzar:
                 log.info("[SALTO] %s ya unida (--forzar para rehacer)", s.etiqueta)
                 continue
+            # SPEC 22: una pista de audio con su hermana de video presente la
+            # une la pasada de ESA hermana, en el mismo ffmpeg (ver
+            # unir_sesion/_hermana_audio). Unirla sola es lo que dejaba un
+            # *_audio.mp4 mudo y un video mudo, los dos marcados como
+            # "unidos" -- aunque se la pida con un filtro exacto.
+            if s.acompanante:
+                log.info("[SALTO] %s: pista de audio; se une junto a su "
+                         "hermana de video", s.etiqueta)
+                continue
             if como != "exacto" and _sigue_escribiendose(s.ruta):
                 log.warning(
                     "[SALTO] %s: le estan escribiendo ahora mismo (sesion "
                     "viva) -- no la uno; se une sola cuando cierre",
                     s.etiqueta)
+                continue
+            if _es_pista_audio(s.sesion):
+                _marcar_sin_video(s.ruta, s.etiqueta)
                 continue
             with cerrojo_union.turno(s.etiqueta, raiz=STREAMS_DIR, log=log):
                 if unir_sesion(s.ruta, s.etiqueta):
@@ -3153,9 +3593,14 @@ def main(argv) -> int:
     total = 0
     for s in sesiones_en_disco():
         total += 1
+        # SPEC 22: una acompanante no es "PENDIENTE" aunque le falte el
+        # marcador -- no la une nadie por si sola, la une la pasada de su
+        # hermana de video.
+        estado = ("acompanante (audio)" if s.acompanante
+                  else "unida" if s.unida else "PENDIENTE")
         log.info(
             "%-34s %-30s %5d segmentos  %s",
-            s.stream, s.sesion, s.archivos, "unida" if s.unida else "PENDIENTE",
+            s.stream, s.sesion, s.archivos, estado,
         )
     if not total:
         log.info("sin descargas en %s", STREAMS_DIR)

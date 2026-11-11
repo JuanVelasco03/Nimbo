@@ -1,6 +1,6 @@
 # SPEC 22 — Unión con audio en chaturbate: una sola pasada, un solo mp4
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 18 (segundo sitio chaturbate, que trajo el audio como pista
 > separada), SPEC 19 (el turno único de unión), SPEC 20 (el progreso de la unión, cuya
 > fase `mezcla` este spec retira)
@@ -250,47 +250,109 @@ grabador, el 7 el progreso, y el 8 la medición.
 
 **La unión**
 
-- [ ] Una sesión de chaturbate produce **un** `.mp4` con dos streams (`ffprobe`: `h264` +
+- [x] Una sesión de chaturbate produce **un** `.mp4` con dos streams (`ffprobe`: `h264` +
       `aac`). Antes producía dos `.mp4` y después reemplazaba uno.
-- [ ] El log de esa unión tiene **una** invocación de ffmpeg. Antes tenía tres (remux
+- [x] El log de esa unión tiene **una** invocación de ffmpeg. Antes tenía tres (remux
       video, remux audio, mezcla).
-- [ ] No queda ningún `*_audio.mp4` en `datos\grabaciones\`, ni cuando la unión sale bien
+- [x] No queda ningún `*_audio.mp4` en `datos\grabaciones\`, ni cuando la unión sale bien
       ni cuando falla.
-- [ ] El pico de disco durante la unión es ~2x el tamaño final, no ~3x.
-- [ ] Las dos carpetas de la sesión terminan con `unido.json` apuntando al mismo `.mp4`.
+- [x] El pico de disco durante la unión es ~2x el tamaño final, no ~3x.
+- [x] Las dos carpetas de la sesión terminan con `unido.json` apuntando al mismo `.mp4`.
 
 **La sincronía**
 
-- [ ] `pruebas\sincronia_chaturbate.py` sobre una grabación de al menos 30 minutos: |Δ
-      audio-video| < 100 ms al principio **y** al final, y la diferencia entre los dos
-      extremos < 100 ms (no deriva).
-- [ ] Sobre una sesión que perdió segmentos de video (buscar una con
+- [~] `pruebas\sincronia_chaturbate.py`: la **deriva** (el desfase al final menos el
+      desfase al principio) da −0,001 s sobre una grabación en vivo de 5 min, y la misma
+      −0,001 s sobre esa grabación con 9,6 s de video borrados a mano. Eso es lo que este
+      criterio quería decir y se cumple. La otra mitad, *"|Δ| < 100 ms al principio y al
+      final"*, **está mal planteada y no es alcanzable**: la chunklist de audio arranca y
+      termina en instantes distintos de la de video (medido, +0,700 s de cabeza y +0,699 s
+      de cola en esa grabación), así que ese Δ no es desincronización sino material que no
+      se capturó — lo que importa es que sea **el mismo** en los dos extremos. Pendiente:
+      reescribir el criterio, y medirlo sobre una grabación de 30 min o más (solo se probó
+      con 5 min).
+- [x] Sobre una sesión que perdió segmentos de video (buscar una con
       `[UNIR] ... corte(s) que no llegaron a bajarse` en el log): el desfase sigue dentro
       de esa banda. Antes el audio quedaba adelantado exactamente los segundos del hueco.
-- [ ] Una sesión con reinicio de emisión (`reinicios > 0`) abre bien y el tiempo corre
+- [x] Una sesión con reinicio de emisión (`reinicios > 0`) abre bien y el tiempo corre
       hacia adelante de punta a punta.
 
 **Que nadie una una pista sola**
 
-- [ ] Con las dos carpetas de una sesión sin `unido.json`,
+- [x] Con las dos carpetas de una sesión sin `unido.json`,
       `python nucleo\scripts\detectar_m3u8.py --unir` produce un `.mp4` con audio. Antes
       producía uno mudo más un `*_audio.mp4`, los dos marcados como unidos.
-- [ ] `recuperar_pendientes()` tras un cierre a lo bruto hace lo mismo.
-- [ ] `--listar` marca las carpetas `_audio` como acompañantes.
-- [ ] Una carpeta `_audio` sin hermana de video no genera ningún `.mp4` y queda marcada
+- [x] `recuperar_pendientes()` tras un cierre a lo bruto hace lo mismo.
+- [x] `--listar` marca las carpetas `_audio` como acompañantes.
+- [x] Una carpeta `_audio` sin hermana de video no genera ningún `.mp4` y queda marcada
       para que `cosecha_streams` la barra.
 
 **Compatibilidad**
 
-- [ ] Una unión de stripchat (camino sin audio acompañante) da el **mismo** `.mp4` byte a
+- [x] Una unión de stripchat (camino sin audio acompañante) da el **mismo** `.mp4` byte a
       byte que antes del spec sobre la misma carpeta de segmentos, y los mismos
       `reinicios`/`huecos` en el log.
-- [ ] La previa en vivo de chaturbate sigue andando con audio, sin cambios en el frontend.
-- [ ] La grilla de Grabaciones no tiene ningún grupo `sin-convencion` nuevo.
-- [ ] **Queda anulado** el criterio de SPEC 20 que exige *"una unión de chaturbate pasa por
+- [~] La previa en vivo de chaturbate: **cero** archivos de `nimbo\` o de
+      `nimbo\web\` modificados (confirmado con `git diff --stat`), y `vivo.py` sigue
+      encontrando las dos pistas sobre una sesión real (`sesiones_vivas` devuelve
+      `sesion_audio`, y `vivo.listar` entrega init + segmentos de las dos). Pendiente:
+      abrirla en la ventana con el motor corriendo.
+- [x] La grilla de Grabaciones no tiene ningún grupo `sin-convencion` nuevo.
+- [x] **Queda anulado** el criterio de SPEC 20 que exige *"una unión de chaturbate pasa por
       `remux` (video), `remux` (audio) y `mezcla`"*
       (`specs\20-progreso_union_y_marca_sitio.md:494-495`): a partir de este spec pasa por
       `copia` y `remux`, una sola vez.
+
+---
+
+## Al implementar
+
+Dos cosas que el spec no tenía bien y se resolvieron contra la medición.
+
+### El `Reencadenador` compartido del paso 4 no era posible como estaba escrito
+
+El paso 4 pedía *"un solo `Reencadenador` **compartido** por las dos pasadas (sus
+`desfase`/`fin` están indexados por id de pista, así que no se pisan)"*. **Esa premisa es
+falsa**: medidos los dos init de una sesión real, los dos declaran **`track_id = 1`** (el
+de video con timescale 90000, el de audio con 48000). Compartir el objeto haría que
+`fin[1]`/`desfase[1]` se pisaran y que la pasada de audio viera un retroceso enorme contra
+el reloj del video, reanclando la pista entera.
+
+Se implementó con **una cadena por pasada**, las dos con `cerrar_huecos=False`. Es
+equivalente a la intención del spec: cada pista se reancla donde acabó *su* fragmento
+anterior, y como las dos estaban en sincronía antes del reinicio, lo siguen estando
+después. Verificado sintetizando un reinicio de emisión (−150 s de `tfdt` en las dos
+pistas desde la mitad de la sesión): 1 reinicio corregido por pista, deriva −0,001 s, y
+`ffmpeg -f null` lee el archivo entero sin un solo error.
+
+### Sin arreglar el ORDEN de los segmentos, el paso 3 no funciona
+
+El `epoch` del nombre de un segmento es la hora de descarga **local**
+(`int(time.time())` en `grabador_chaturbate._guardar_descarga`), y `clave_segmento` ordena
+por él a propósito, porque en stripchat el contador de secuencia se reinicia con la emisión
+(medido en su momento: solapes 5292 → 6). En chaturbate es al revés y rompe: las partes de
+LL-HLS se piden en paralelo, así que una reintentada se guarda **después** de una más nueva
+y queda detrás de ella.
+
+Medido sobre una sesión real de 368 fragmentos: ordenando por epoch, **11 "reinicios" y 21
+"huecos" (35 s) que no existen**; ordenando por `(secuencia, parte)`, **0 y 0**, con el
+mismo span de 201,667 s. Antes de este spec no se notaba porque el `Reencadenador` cerraba
+esos huecos y de rebote deshacía el desorden. Al dejar de cerrarlos —que es justo lo que
+pide el paso 3— esos 35 s se quedaban dentro del archivo: el video salía de 236,7 s en vez
+de 201,7 s.
+
+Por eso se agregó `_orden_segmentos(..., por_secuencia=True)`, que vale **solo** para
+chaturbate y se decide en positivo (`info.json` con `"modo": "chaturbate"`, o la convención
+`_audio`): stripchat no puede dar `True` por ninguno de los dos caminos y conserva su orden
+por epoch byte a byte.
+
+### Un camino degradado que había que cerrar
+
+Sin ffmpeg (o si ffmpeg no puede con ninguna pasada) la salida es el pegote en crudo de
+**solo video**. Marcar igual la carpeta de audio la habría dejado lista para que
+`cosecha_streams` barriera un audio que no está en ningún archivo. Con `audio_adentro`, en
+ese caso la carpeta de audio **no** recibe marcador y se loguea cómo rehacer la unión:
+perder disco es reversible, perder la única copia del sonido no.
 
 ---
 

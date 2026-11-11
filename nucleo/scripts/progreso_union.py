@@ -13,11 +13,21 @@ estado de modulo mutable, solo libreria estandar -- lo importan por igual
 detectar_m3u8.py (que no se compila) y los dos grabadores (que si van al
 binario).
 
+Las fases son "copia" (la copia al escenario rapido de SPEC 12) y "remux"
+(el ffmpeg, una vez por pasada de reparacion). SPEC 22 retiro la tercera,
+"mezcla": existia porque una grabacion de chaturbate se unia dos veces y
+despues se mezclaba con un ffmpeg propio, y ese ffmpeg era el unico que no
+pasaba por unir_sesion(). Ahora las dos pistas entran en la misma pasada,
+asi que esa fase no tiene publicador -- y una fase que nadie publica es
+una mentira en el docstring.
+
 UN solo registro en el archivo, no una lista: SPEC 19 ya garantiza una
-union a la vez en toda la instalacion (el turno de cerrojo_union.py), asi
-que varios procesos pueden ser el escritor en distintos momentos -- el
-detector, el subproceso `--unir` del directo, el de chaturbate, y
-grabador_chaturbate.py para la fase de mezcla -- pero nunca dos a la vez.
+union a la vez en toda la instalacion (el turno de cerrojo_union.py). Y
+desde SPEC 22 cada union tiene **un solo escritor**: el proceso que corre
+unir_sesion() y nadie mas -- el detector en proceso, o el subproceso
+`--unir` del directo o de chaturbate. Antes el de chaturbate eran dos (el
+subproceso para los remux y el grabador para la mezcla), y el argumento de
+"nunca dos a la vez" habia que sostenerlo con eso en contra.
 Este modulo se apoya en esa garantia y no agrega ninguna propia.
 
 Esto es TELEMETRIA, no parte de la union: si escribir falla (disco lleno,

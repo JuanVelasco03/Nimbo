@@ -39,10 +39,13 @@ specs\\18-segundo-sitio-chaturbate.md, Scope/Decisiones):
     DOS "pistas" (`_Pista`, mas abajo) con su propio init/segmentos/
     carpeta -- la de video en la carpeta de sesion de siempre (compatible
     con vivo.py, que sigue viendo solo video ahi) y la de audio en una
-    carpeta hermana con "_audio" al final del nombre. Cada una se une por
-    separado con "detectar_m3u8.py --unir" (dos sesiones validas de una
-    sola pista, ninguna sorpresa para el nucleo) y recien despues se
-    mezclan con un ffmpeg propio -- ver _unir_doble()/_mezclar_audio().
+    carpeta hermana con "_audio" al final del nombre. **La descarga sigue
+    siendo doble; la union, desde SPEC 22, es una sola**: un unico
+    "detectar_m3u8.py --unir" saca un solo .mp4 con las dos pistas
+    adentro, porque unir_sesion() encuentra la carpeta hermana por la
+    convencion de nombre (_hermana_audio) y las mete en el mismo ffmpeg
+    sobre el mismo reloj. Este modulo ya no tiene ffmpeg propio ni mezcla
+    posterior -- ver _unir_doble().
 
 Arrancado por nimbo\\lanzador_chaturbate.py (igual que
 nimbo\\lanzador_directo.py arranca esto... digo, arranca
@@ -57,7 +60,6 @@ otros cuatro procesos (ver CLAUDE.md).
 
 import argparse
 import concurrent.futures as cf
-import contextlib
 import json
 import logging
 import os
@@ -109,12 +111,10 @@ DETECTAR_PY = os.path.join(AQUI, "detectar_m3u8.py")
 _SIN_VENTANA = ({"creationflags": subprocess.CREATE_NO_WINDOW}
                 if hasattr(subprocess, "CREATE_NO_WINDOW") else {})
 # Mismo valor y mismo motivo que grabador_directo.py:104-110 (SPEC 13).
+# SPEC 22: este modulo ya no tiene ningun ffmpeg propio (FFMPEG/
+# ESPERA_MEZCLA se retiraron con _mezclar_audio) -- el unico ffmpeg de una
+# grabacion de chaturbate es el que corre adentro de --unir.
 ESPERA_UNION = 3600
-# Para _mezclar_audio(): mismo patron de busqueda que detectar_m3u8.py:164
-# (M3U8_FFMPEG / _al_lado). No se le pide nada a detectar_m3u8.py para
-# esto -- es un ffmpeg propio, aparte del que corre --unir.
-FFMPEG = os.environ.get("M3U8_FFMPEG") or _al_lado("ffmpeg.exe")
-ESPERA_MEZCLA = 600
 
 DIR_ESTADO = os.environ.get("NIMBO_ESTADO") or os.path.join(
     os.path.dirname(_raiz_proyecto()), "estado")
@@ -251,9 +251,10 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> str | None:
     # exito: codigo de retorno, unido.json presente, y su mtime distinto
     # al de antes de correr el hijo). A diferencia del original, devuelve
     # la ruta del .mp4 final (leida del propio marcador -- "salida" en
-    # unido.json, ver detectar_m3u8._marcar_unida) para que _unir_doble()
-    # pueda encontrar los dos archivos (video y audio) y mezclarlos; None
-    # si no se pudo unir.
+    # unido.json, ver detectar_m3u8._marcar_unida) en vez de un bool.
+    # Desde SPEC 22 el llamador no la necesita (ya no hay mezcla que
+    # buscar los dos archivos), pero se deja: no cuesta nada y es lo que
+    # hace util el log de un fallo.
     if not escritor.barrera().wait(180):
         log.warning("[UNIR] %s: escrituras pendientes, sigo igual", sesion.ref)
     filtro = sesion.ref.lower()
@@ -313,123 +314,30 @@ def _unir_en_fondo(escritor: "Escritor", sesion) -> str | None:
         return None
 
 
-def _vigilar_mezcla(informe, tmp: str, fin: "threading.Event") -> None:
-    """Late el progreso de la mezcla mirando crecer el .mp4 que escribe
-    ffmpeg (SPEC 20).
-
-    Un hilo que hace getsize cada INTERVALO_UNION es lo contrario de lo que
-    se decidio para el remux (ahi el informe se cuelga de _Freno.paso, que
-    ya corria), pero aca no hay ningun bucle del que colgarse:
-    _mezclar_audio() es un subprocess.run que bloquea hasta el final. Sin
-    latido el lector descartaria la fase por FRESCURA_UNION a los 15s y el
-    banner desapareceria en medio de la mezcla. Un getsize no lee el
-    archivo, solo su entrada de directorio: no le compite el disco a nadie.
-    """
-    while not fin.wait(progreso_union.INTERVALO_UNION):
-        try:
-            informe.avance(os.path.getsize(tmp))
-        except OSError:
-            pass          # todavia no existe, o ya se reemplazo: sin ruido
-
-
-def _mezclar_audio(ruta_video: str, ruta_audio: str, informe=None) -> bool:
-    """Mezcla el .mp4 de audio (una pista sola, ya unido por separado)
-    adentro del .mp4 de video -- dos sesiones completas e independientes
-    para detectar_m3u8.py (que nunca sabe que hay un audio aparte), un
-    ffmpeg propio al final. -c copy: no se reencodea nada, solo se
-    multiplexan los dos streams ya terminados. -> True si quedo mezclado
-    (ruta_video termina con audio adentro); False si algo fallo (ruta_video
-    queda como estaba, mudo -- mejor eso que nada)."""
-    if not os.path.isfile(FFMPEG):
-        log.error("[MUX] %s: no esta %s, el video queda mudo",
-                  ruta_video, FFMPEG)
-        return False
-    tmp = ruta_video + ".conaudio.mp4"
-    cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
-           "-i", ruta_video, "-i", ruta_audio,
-           "-c", "copy", "-map", "0:v:0", "-map", "1:a:0",
-           "-movflags", "+faststart", tmp]
-    fin_vigilante = threading.Event()
-    vigilante = None
-    if informe is not None:
-        total = 0
-        for p in (ruta_video, ruta_audio):
-            with contextlib.suppress(OSError):
-                total += os.path.getsize(p)
-        informe.fase("mezcla", total)
-        vigilante = threading.Thread(
-            target=_vigilar_mezcla, args=(informe, tmp, fin_vigilante),
-            daemon=True, name="chaturbate-mezcla-progreso")
-        vigilante.start()
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=ESPERA_MEZCLA,
-                               stdin=subprocess.DEVNULL, **_SIN_VENTANA)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        log.error("[MUX] %s: no se pudo mezclar el audio: %s", ruta_video, e)
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        return False
-    finally:
-        fin_vigilante.set()
-        if vigilante is not None:
-            vigilante.join(timeout=progreso_union.INTERVALO_UNION * 2)
-    if proc.returncode != 0 or not os.path.isfile(tmp):
-        log.error("[MUX] %s: ffmpeg no pudo mezclar el audio: %s",
-                  ruta_video, (proc.stderr or "")[-500:])
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        return False
-    try:
-        os.replace(tmp, ruta_video)
-    except OSError as e:
-        log.error("[MUX] %s: no se pudo reemplazar por la version con "
-                  "audio: %s", ruta_video, e)
-        return False
-    log.info("[MUX] %s: audio mezclado", ruta_video)
-    return True
-
-
 def _unir_doble(escritor: "Escritor", pista_video, pista_audio, parar=None) -> None:
-    """Une video y audio como dos sesiones separadas (cada una, para
-    detectar_m3u8.py --unir, es una sesion cualquiera de una sola pista --
-    nunca se toca ese codigo) y despues las mezcla. Si no hay pista de
-    audio, o su union falla, el video queda solo -- mudo es mejor que
-    nada.
+    """Une la sesion -- las DOS pistas en un solo .mp4, en una sola pasada.
 
-    El turno de union (SPEC 19) se toma ACA, una sola vez alrededor de las
-    dos uniones y del mux: _unir_en_fondo() no lo toca, para que el
-    subproceso --unir que lanza (y que lo hereda por _HEREDADO) no se trabe
-    con este mismo proceso."""
+    SPEC 22: antes de este spec esto eran tres cosas (un --unir del video,
+    un --unir del audio y un ffmpeg propio que metia el segundo adentro del
+    primero), y de ahi salian los cuatro bugs que el spec enumera: audio
+    desincronizado, video mudo, *_audio.mp4 suelto en la grilla y
+    "unido pero mudo". Ahora es UNA llamada: unir_sesion() encuentra la
+    carpeta de audio sola, por la convencion <sesion> <-> <sesion>_audio
+    (detectar_m3u8._hermana_audio), y mete las dos pistas en el mismo
+    ffmpeg sobre el mismo reloj.
+
+    El nombre se queda igual porque sigue describiendo lo que hace: unir
+    una sesion que tiene dos pistas. La de audio viaja en la entrada de
+    cola_union solo para decidir si hay que escribirle info.json (ver
+    _cerrar_sesion) -- quien la encuentra para unirla es --unir, no esto.
+
+    El turno de union (SPEC 19) se toma ACA y no adentro de
+    _unir_en_fondo(), para que el subproceso --unir que lanza (y que lo
+    hereda por _HEREDADO) no se trabe con este mismo proceso.
+    """
     with cerrojo_union.turno(pista_video.ref, parar=parar, raiz=STREAMS_DIR,
                               log=log):
-        salida_video = _unir_en_fondo(escritor, pista_video)
-        if salida_video is None:
-            return
-        if pista_audio is None or not pista_audio.segmentos:
-            return
-        salida_audio = _unir_en_fondo(escritor, pista_audio)
-        if salida_audio is None:
-            log.warning("[%s] no se pudo unir el audio -- el video queda mudo",
-                       pista_video.ref)
-            return
-        # SPEC 20: las dos uniones de arriba publicaron su progreso solas
-        # (lo hace unir_sesion() adentro del subproceso --unir y lo cierra
-        # al terminar), pero la mezcla no pasa por detectar_m3u8.py: es la
-        # UNICA fase que hay que publicar desde aca. Informe propio, con el
-        # mismo .mp4 de destino que ya tenia la fase "remux" del video --
-        # asi la tarjeta marcada en la grilla no cambia de una fase a otra.
-        informe = progreso_union.Informe(
-            DIR_ESTADO, pista_video.ref, sitio="chaturbate",
-            archivo=os.path.basename(salida_video))
-        try:
-            mezclado = _mezclar_audio(salida_video, salida_audio,
-                                       informe=informe)
-        finally:
-            informe.cerrar()
-        if mezclado:
-            with contextlib.suppress(OSError):
-                os.remove(salida_audio)
+        _unir_en_fondo(escritor, pista_video)
 
 
 def _descargar(url: str) -> bytes:
@@ -991,8 +899,9 @@ class _ModeloChaturbate(threading.Thread):
         # Puerto de grabador_directo.py:1095-1123 (_cerrar_variante +
         # _cerrar_todas, aplanados a una sola sesion), mas el agregado de
         # SPEC 18: la pista de audio (si existe) viaja junto a la de video
-        # en la misma entrada de cola_union -- _unir_doble() une las dos
-        # por separado y recien despues las mezcla (ver su docstring).
+        # en la misma entrada de cola_union. SPEC 22: ya no es para unirla
+        # aparte (la une la misma pasada que el video) sino solo para
+        # decidir si hay que escribirle su info.json -- ver _unir_doble().
         pista_video = self.pista_video
         pista_audio = self.pista_audio
         self.pista_video = None
@@ -1111,7 +1020,7 @@ class Grabador:
         # Puerto de grabador_directo.py:1230-1239, con la entrada de cola
         # llevando las DOS pistas (video + audio, la segunda puede ser
         # None) en vez de una sola sesion -- ver _cerrar_sesion() y
-        # _unir_doble().
+        # _unir_doble(). Desde SPEC 22 eso es UNA union, no dos.
         while True:
             item = self.cola_union.get()
             if item is None:
