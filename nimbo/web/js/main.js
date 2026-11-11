@@ -76,8 +76,8 @@ const DEPENDE = [
   [renderMotor, ["motor"]],
   [renderBarraGlobal, ["disco", "detector"]],
   [renderTarjetas, ["lista", "detector", "supervisor"]],
-  [renderSesion, ["sesion", "siguiendo", "login"]],
-  [renderFavoritas, ["lista", "favoritas", "siguiendo", "detector", "supervisor"]],
+  [renderSesion, ["sesion", "siguiendo", "login", "sesion_chaturbate", "siguiendo_chaturbate"]],
+  [renderFavoritas, ["lista", "favoritas", "siguiendo", "siguiendo_chaturbate", "detector", "supervisor"]],
   [renderPrevia, ["detector", "lista", "favoritas", "siguiendo", "supervisor"]],
   [(estado) => renderDirectivas(estado.lista.directivas || {}), ["lista"]],
   [renderRutas, ["motor", "disco"]],
@@ -315,21 +315,33 @@ function iniciarAcciones() {
   });
 
   // Click en una sugerencia del buscador (vista_modelos.js:iniciarBuscador
-  // ya oculta la lista y fija el campo): un cuarto listener sobre
-  // #sugerencias, aparte, porque iniciarBuscador() no importa enviar()/
-  // refrescar() a proposito -- mismo patron que manejarAccionFavorita.
+  // ya oculta la lista y fija el campo): un listener aparte por sitio
+  // sobre #sugerencias/#sugerencias-cb, porque iniciarBuscador() no
+  // importa enviar()/refrescar() a proposito -- mismo patron que
+  // manejarAccionFavorita.
   document.getElementById("sugerencias").addEventListener("click", async (ev) => {
     const fila = ev.target.closest(".sugerencia");
     if (!fila || !fila.dataset.nombre) return;
     try {
-      await enviar("/api/favoritas/agregar", { nombre: fila.dataset.nombre });
+      await enviar("/api/favoritas/agregar", { nombre: fila.dataset.nombre, sitio: "stripchat" });
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  // SPEC 21: chaturbate con cuenta tambien tiene buscador (ver
+  // sitio_chaturbate.py), con el mismo patron que stripchat arriba.
+  document.getElementById("sugerencias-cb").addEventListener("click", async (ev) => {
+    const fila = ev.target.closest(".sugerencia");
+    if (!fila || !fila.dataset.nombre) return;
+    try {
+      await enviar("/api/favoritas/agregar", { nombre: fila.dataset.nombre, sitio: "chaturbate" });
     } catch (err) { mostrarError(err); }
     refrescar();
   });
 
   document.getElementById("boton-login").addEventListener("click", async () => {
     try {
-      await enviar("/api/sesion/login/iniciar", {});
+      await enviar("/api/sesion/login/iniciar", { sitio: "stripchat" });
     } catch (err) { mostrarError(err); }
     refrescar();
   });
@@ -345,7 +357,7 @@ function iniciarAcciones() {
     const campo = document.getElementById("campo-curl");
     if (!campo.value.trim()) return;
     try {
-      await enviar("/api/sesion/guardar", { curl: campo.value });
+      await enviar("/api/sesion/guardar", { curl: campo.value, sitio: "stripchat" });
       campo.value = "";
       document.getElementById("panel-sesion").classList.add("oculta");
     } catch (err) { mostrarError(err); }
@@ -354,44 +366,91 @@ function iniciarAcciones() {
 
   document.getElementById("boton-olvidar-sesion").addEventListener("click", async () => {
     try {
-      await enviar("/api/sesion/olvidar", {});
+      await enviar("/api/sesion/olvidar", { sitio: "stripchat" });
     } catch (err) { mostrarError(err); }
     refrescar();
   });
 
   document.getElementById("boton-actualizar-siguiendo").addEventListener("click", async (ev) => {
-    const boton = ev.currentTarget;
+    await iniciarActualizarSiguiendo(ev.currentTarget, "stripchat");
+  });
+
+  // SPEC 21: la misma barra de sesion, para la cuenta de chaturbate --
+  // sufijo "-cb" en los ids (ver index.html) y "sitio: chaturbate" en el
+  // cuerpo de cada POST (las rutas /api/sesion/* ya lo aceptan, default
+  // "stripchat" para no romper a un cliente viejo).
+  document.getElementById("boton-login-cb").addEventListener("click", async () => {
     try {
-      // 202 {"ya_corriendo": true} = el dedupe de servidor.py:_lanzar_tarea
-      // descarto este click porque la vuelta anterior todavia corre (hasta
-      // sesion.TOPE_TOTAL_S, o el watchdog de TOPE_TAREA si quedo colgada).
-      // Antes se descartaba igual pero sin decirlo, y se veia como un
-      // boton roto.
-      const r = await enviar("/api/sesion/actualizar", {});
-      if (r && r.ya_corriendo) {
-        agregarLog("linea-aviso", "ya hay una actualizacion en curso -- espera a que termine");
-      } else {
-        // El timestamp queda en el dataset para que renderSesion()
-        // (vista_modelos.js) sepa cuando la vuelta de verdad termino --
-        // ver siguiendo.generado alla. boton.disabled se cae solo desde
-        // ahi, o a los 90s por el watchdog del servidor en el peor caso.
-        boton.dataset.actualizando = String(Date.now() / 1000);
-        boton.disabled = true;
-        // Red de seguridad del lado del cliente: si siguiendo.json nunca
-        // llega a actualizarse (la tarea murio sin escribir nada, o esta
-        // pestana se quedo sola sin otro click que dispare el watchdog
-        // del servidor), el boton no tiene que quedar deshabilitado para
-        // siempre. Mismo tope que sesion.TOPE_TOTAL_S + margen.
-        setTimeout(() => {
-          if (boton.dataset.actualizando) {
-            delete boton.dataset.actualizando;
-            boton.disabled = false;
-          }
-        }, 60000);
-      }
+      await enviar("/api/sesion/login/iniciar", { sitio: "chaturbate" });
     } catch (err) { mostrarError(err); }
     refrescar();
   });
+
+  document.getElementById("boton-cancelar-login-cb").addEventListener("click", async () => {
+    try {
+      await enviar("/api/sesion/login/cancelar", {});
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  document.getElementById("boton-guardar-sesion-cb").addEventListener("click", async () => {
+    const campo = document.getElementById("campo-curl-cb");
+    if (!campo.value.trim()) return;
+    try {
+      await enviar("/api/sesion/guardar", { curl: campo.value, sitio: "chaturbate" });
+      campo.value = "";
+      document.getElementById("panel-sesion-cb").classList.add("oculta");
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  document.getElementById("boton-olvidar-sesion-cb").addEventListener("click", async () => {
+    try {
+      await enviar("/api/sesion/olvidar", { sitio: "chaturbate" });
+    } catch (err) { mostrarError(err); }
+    refrescar();
+  });
+
+  document.getElementById("boton-actualizar-siguiendo-cb").addEventListener("click", async (ev) => {
+    await iniciarActualizarSiguiendo(ev.currentTarget, "chaturbate");
+  });
+}
+
+// Extraido para que lo compartan el boton de Stripchat y el de
+// Chaturbate (SPEC 21) -- unico cambio real entre los dos es el "sitio"
+// que se manda y, por lo tanto, cual de los dos siguiendo(_chaturbate).json
+// mira renderSesion() para saber cuando la vuelta termino.
+async function iniciarActualizarSiguiendo(boton, sitio) {
+  try {
+    // 202 {"ya_corriendo": true} = el dedupe de servidor.py:_lanzar_tarea
+    // descarto este click porque la vuelta anterior todavia corre (hasta
+    // sesion.TOPE_TOTAL_S, o el watchdog de TOPE_TAREA si quedo colgada).
+    // Antes se descartaba igual pero sin decirlo, y se veia como un
+    // boton roto.
+    const r = await enviar("/api/sesion/actualizar", { sitio });
+    if (r && r.ya_corriendo) {
+      agregarLog("linea-aviso", "ya hay una actualizacion en curso -- espera a que termine");
+    } else {
+      // El timestamp queda en el dataset para que renderSesion()
+      // (vista_modelos.js) sepa cuando la vuelta de verdad termino --
+      // ver siguiendo.generado alla. boton.disabled se cae solo desde
+      // ahi, o a los 90s por el watchdog del servidor en el peor caso.
+      boton.dataset.actualizando = String(Date.now() / 1000);
+      boton.disabled = true;
+      // Red de seguridad del lado del cliente: si siguiendo.json nunca
+      // llega a actualizarse (la tarea murio sin escribir nada, o esta
+      // pestana se quedo sola sin otro click que dispare el watchdog
+      // del servidor), el boton no tiene que quedar deshabilitado para
+      // siempre. Mismo tope que sesion.TOPE_TOTAL_S + margen.
+      setTimeout(() => {
+        if (boton.dataset.actualizando) {
+          delete boton.dataset.actualizando;
+          boton.disabled = false;
+        }
+      }, 60000);
+    }
+  } catch (err) { mostrarError(err); }
+  refrescar();
 }
 
 // -- atajos de teclado globales (SPEC 17, C13) -------------------------

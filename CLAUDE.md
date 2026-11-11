@@ -432,8 +432,10 @@ otra máquina").
 | `estado\eventos_directo.jsonl` | `lanzador_directo.py` | Nimbo (`registro.py`) |
 | `estado\eventos_chaturbate.jsonl` (SPEC 18) | `lanzador_chaturbate.py` | Nimbo (`registro.py`) |
 | `estado\siguiendo.json` | Nimbo (`sesion.py`) | Nimbo |
-| `estado\captura_sesion.json` (SPEC 15, vida corta) | Nimbo (`login_sitio.py`) | `puente.py` |
-| `estado\sesion_capturada.json` (SPEC 15, vida corta, cifrado DPAPI) | `puente.py` | Nimbo (`login_sitio.py`), que lo borra al leerlo |
+| `estado\sesion_chaturbate.json` (SPEC 21, cifrado DPAPI) | Nimbo (`sesion_chaturbate.py`) | Nimbo |
+| `estado\siguiendo_chaturbate.json` (SPEC 21) | Nimbo (`sesion_chaturbate.py`) | Nimbo |
+| `estado\captura_sesion.json` (SPEC 15, vida corta; campo `sitio` desde SPEC 21) | Nimbo (`login_sitio.py`) | `puente.py` |
+| `estado\sesion_capturada.json` (SPEC 15, vida corta, cifrado DPAPI; campo `sitio` desde SPEC 21) | `puente.py` | Nimbo (`login_sitio.py`), que lo borra al leerlo |
 | `estado\licencia.json` | Nimbo (`licencia.py`) — incluye `visto_max`, la marca de agua del reloj que solo crece (`specs\07-licencia_inviolable.md`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo — `favoritas.json` es `[{"nombre","sitio"}, ...]` desde SPEC 18 (migra en silencio un array de strings viejo) | Nimbo |
 | `datos\grabaciones\*.mp4` | el detector (stripchat) y `grabador_chaturbate.py` (chaturbate, vía `detectar_m3u8.py --unir` como subproceso) | Nimbo (lee / borra a papelera) |
@@ -752,7 +754,29 @@ donde una persona dispara esto a mano.
   degrada a texto plano con un aviso en vez de fallar. `puente.py`
   duplica `_proteger()` (solo cifrar, no descifrar) por el mismo motivo
   que duplica constantes de `mp4.py`/`vivo.py`: corre en el Python
-  empaquetado de mitmdump, no en el 3.12 de Nimbo.
+  empaquetado de mitmdump, no en el 3.12 de Nimbo. SPEC 21 agrega la misma
+  cuenta para chaturbate: `sesion.py` se partió en `SesionBase` (todo lo
+  agnóstico del sitio — el envoltorio DPAPI, la persistencia atómica, el
+  bucle de paginación, los parsers de pegado) y `Sesion(SesionBase)`, que
+  quedó con lo de stripchat y nada más — mismo criterio que SPEC 18 usó
+  con `sitio.SitioBase`. `nimbo\sesion_chaturbate.py` (nuevo) tiene
+  `SesionChaturbate(SesionBase)`: `EXIGE_AUTORIZACION = False` porque
+  chaturbate no manda ningún header de autorización (su sesión es una
+  cookie común, a diferencia del JWT de stripchat), y
+  `estado()["expira"]` sale siempre `None` porque no hay JWT del que
+  sacar un vencimiento. `nimbo\puente.py` generalizó su hook `request()`
+  a una tabla `REGLAS_LOGIN` (una fila por sitio: sufijo de host, prefijo
+  de path, header o cookie marcadora) que se evalúa recién después de
+  leer el permiso — el camino caliente del detector sale en un acceso a
+  atributo. La cookie marcadora de chaturbate en esa tabla **no está
+  confirmada contra una cuenta real** (placeholder de convención Django);
+  correr `pruebas\sonda_login_chaturbate.py` con un `--curl` de una
+  sesión real es el paso pendiente antes de confiar en el botón "Iniciar
+  sesión" de chaturbate en producción — ver el docstring de
+  `sesion_chaturbate.py`. Archivo aparte (`estado\sesion_chaturbate.json`,
+  bajo `estado\`, no en la raíz como `sesion.json`): un error en el
+  formato nuevo no puede dejar sin sesión a stripchat, que es el sitio
+  que graba 24/7.
 - **`sitio.py`** sale por el proxy de grabación (para que las `@vpn=` usen
   el túnel) y **nunca** toca `nucleo\perfil\`, que es exclusivo del
   supervisor. `estado()` reusa el `RE_ESTADO` del propio `supervisor.py` en

@@ -1,6 +1,6 @@
-"""Sesion de la cuenta real de stripchat (favoritas remotas, "Siguiendo"
-en la interfaz) -- separado a proposito de sitio.py, que habla con el
-sitio de forma anonima.
+"""Sesion de la cuenta real de un sitio (favoritas remotas, "Siguiendo" en
+la interfaz) -- separado a proposito de sitio.py, que habla con el sitio
+de forma anonima.
 
 Como se llego a este diseno (vale la pena dejarlo escrito: se probaron
 dos caminos antes y los dos fallaron en la practica):
@@ -25,6 +25,17 @@ usuario pega (cookies + headers, tal cual los mando su navegador real)
 y hace pedidos HTTP comunes con eso, igual de "manual" en espiritu que
 sitio.py -- la unica diferencia es que ESTOS pedidos llevan una sesion
 de verdad.
+
+SPEC 21 -- SesionBase/Sesion: hasta este spec este modulo solo hablaba de
+stripchat. Chaturbate tambien tiene cuenta propia (nimbo\\sesion_chaturbate.py),
+y lo que de verdad es agnostico del sitio (el envoltorio DPAPI, la
+persistencia atomica, el bucle de paginacion, los parsers de pegado) vive
+ahora en SesionBase -- mismo criterio que SPEC 18 uso con sitio.SitioBase.
+Cinco ganchos definen una subclase: SITIO, EXIGE_AUTORIZACION (si un
+pegado sin cabecera de autorizacion se rechaza o no -- stripchat la
+necesita de verdad, chaturbate no manda ninguna), _pedir_pagina(),
+_normalizar_modelos() y _url_snapshot(). Sesion(SesionBase), aca abajo,
+queda con lo de stripchat y nada mas.
 
 Dato sensible: sesion.json equivale en la practica a la contrasena de
 la cuenta mientras la sesion sea valida. Atomico (.part + os.replace,
@@ -135,7 +146,22 @@ def _desproteger(blob: bytes) -> bytes:
         raise ValueError("no se pudo descifrar (%s)" % e)
 
 
-class Sesion:
+class SesionBase:
+    """Lo que la cuenta de stripchat (Sesion) y la de chaturbate
+    (sesion_chaturbate.SesionChaturbate) comparten de verdad: el
+    envoltorio DPAPI, la persistencia atomica, el bucle de paginacion de
+    favoritas_en_linea() y los parsers de pegado (mas abajo, a nivel de
+    modulo -- son agnosticos del sitio igual que los helpers de DPAPI).
+
+    Lo que NO va aca, porque es especifico de cada sitio: SITIO,
+    EXIGE_AUTORIZACION, y los tres metodos que cada subclase tiene que
+    implementar (_pedir_pagina, _normalizar_modelos, _url_snapshot)."""
+
+    SITIO = "stripchat"            # va en las filas y en el handshake
+    EXIGE_AUTORIZACION = True      # un pegado sin header de auth se rechaza:
+                                    # stripchat guarda el JWT ahi, chaturbate
+                                    # no manda ninguno (ver sesion_chaturbate.py)
+
     def __init__(self, ruta: str):
         self.ruta = ruta
         self._lock = threading.Lock()
@@ -202,8 +228,20 @@ class Sesion:
         navegadores, como Opera, hacen mas facil copiar uno que el
         otro; se aceptan los dos) -- y lo guarda. Levanta ValueError
         con un mensaje legible si no se entiende -- servidor.py ya
-        convierte eso en un 400 para la interfaz."""
+        convierte eso en un 400 para la interfaz.
+
+        EXIGE_AUTORIZACION agrega un segundo filtro, aparte del que ya
+        hacen _parsear_curl_bash/_parsear_powershell (que solo exigen
+        cookies O autorizacion, lo que sea): si el sitio guarda la
+        sesion de verdad en el header Authorization (stripchat), un
+        pegado con cookies pero sin esa cabecera no sirve, aunque el
+        parser de mas abajo lo haya aceptado."""
         partes = _parsear_pegado(texto_curl)
+        if self.EXIGE_AUTORIZACION and _buscar_header(partes["headers"], "Authorization") is None:
+            raise ValueError(
+                "no encontre la cabecera de autorizacion -- asegurate de "
+                "copiar el pedido DESPUES de iniciar sesion, a un endpoint "
+                "de la API (no a un recurso estatico)")
         expira = _exp_de_jwt(_buscar_header(partes["headers"], "Authorization") or "")
         guardado = {
             "cookies": partes["cookies"],
@@ -220,7 +258,10 @@ class Sesion:
         """-> {"activa", "expira", "guardado"}. 'activa' es una
         estimacion LOCAL (mira el 'exp' del JWT si habia uno) -- la
         unica confirmacion real es si favoritas_en_linea() de verdad
-        funciona, que es lo que decide 'autenticado' en siguiendo.json."""
+        funciona, que es lo que decide 'autenticado' en siguiendo.json.
+        Para un sitio sin JWT (chaturbate) 'expira' sale siempre None
+        porque _exp_de_jwt("") ya devuelve None -- no hace falta que la
+        subclase toque nada."""
         datos = self.leer()
         if not datos:
             return {"activa": False, "expira": None, "guardado": None}
@@ -232,49 +273,9 @@ class Sesion:
     # -- la llamada autenticada de verdad -------------------------------
 
     def _pedir_pagina(self, datos: dict, offset: int, limite: int) -> dict:
-        """Un pedido HTTP comun a /api/front/models/favorites con 'datos'
-        (la forma que arma guardar_desde_curl/guardar_desde_captura).
-        -> {"autenticado", "error", "modelos", "total"}. Nunca lanza --
-        misma filosofia que sitio.buscar()."""
-        sitio = _origen(datos.get("url_origen") or "")
-        if not sitio:
-            return {"autenticado": False, "error": "sesion guardada sin URL valida",
-                     "modelos": [], "total": None}
-
-        cabeceras = dict(datos.get("headers") or {})
-        _quitar_header(cabeceras, "Cookie")      # las cookies van aparte, no duplicar
-        # el "Accept-Encoding" pegado (gzip/br/zstd) hace que el sitio
-        # comprima la respuesta -- urllib, a diferencia de un navegador,
-        # NO descomprime solo, asi que json.loads() se rompia sobre los
-        # bytes crudos (confirmado en vivo: el cuerpo empezaba con el
-        # magic number de gzip, \x1f\x8b). Mejor pedir sin comprimir.
-        _quitar_header(cabeceras, "Accept-Encoding")
-        cabeceras.setdefault("Accept", "*/*")
-        cookies = datos.get("cookies") or {}
-        if cookies:
-            cabeceras["Cookie"] = "; ".join(
-                "%s=%s" % (k, v) for k, v in cookies.items())
-
-        qs = urlencode({"offset": offset, "limit": limite,
-                        "sortBy": "bestMatch", "mlfv": "false"})
-        url = sitio + "/api/front/models/favorites?" + qs
-        req = urllib.request.Request(url, headers=cabeceras)
-        try:
-            with urllib.request.urlopen(req, timeout=TOPE_PAGINA_S) as r:
-                cuerpo = json.loads(r.read().decode("utf-8", errors="replace"))
-        except urllib.error.HTTPError as e:
-            if e.code in (401, 403):
-                return {"autenticado": False, "error": "sesion caducada",
-                         "modelos": [], "total": None}
-            return {"autenticado": True, "error": "http_%d" % e.code,
-                     "modelos": [], "total": None}
-        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
-            return {"autenticado": True, "error": "error:%s" % type(e).__name__,
-                     "modelos": [], "total": None}
-
-        total = cuerpo.get("totalCount") if isinstance(cuerpo, dict) else None
-        return {"autenticado": True, "error": None,
-                 "modelos": _normalizar_modelos(cuerpo), "total": total}
+        """Gancho de subclase. -> {"autenticado", "error", "modelos",
+        "total"}, nunca lanza -- misma filosofia que sitio.buscar()."""
+        raise NotImplementedError
 
     def verificar(self, datos: dict) -> dict:
         """-> {"autenticado": bool, "error": str|None}. Un solo pedido,
@@ -289,7 +290,10 @@ class Sesion:
         """Mismo dict que guardar_desde_curl, armado a partir de lo que
         puente.py capturo del trafico real (SPEC 15) en vez de lo pegado a
         mano: 'cookies', 'headers' y 'url' ya vienen en la forma que
-        necesita _pedir_pagina."""
+        necesita _pedir_pagina. Sin el chequeo de EXIGE_AUTORIZACION de
+        guardar_desde_curl: el candidato ya paso el filtro de
+        puente.REGLAS_LOGIN (SPEC 21), que es justamente el marcador de
+        cada sitio."""
         expira = _exp_de_jwt(_buscar_header(capturado["headers"], "Authorization") or "")
         guardado = {
             "cookies": capturado["cookies"],
@@ -352,12 +356,113 @@ class Sesion:
         os.replace(tmp, ruta_salida)
         return datos
 
+    # -- ganchos de subclase --------------------------------------------
+
+    def _normalizar_modelos(self, obj) -> list:
+        raise NotImplementedError
+
+    def _url_snapshot(self, modelo: dict) -> str:
+        raise NotImplementedError
+
+
+class Sesion(SesionBase):
+    """La cuenta de stripchat. Lo de siempre, y nada mas: el endpoint
+    /api/front/models/favorites, la forma models/totalCount, y el
+    snapshot de img.doppiocdn.media."""
+
+    SITIO = "stripchat"
+    EXIGE_AUTORIZACION = True
+
+    def _pedir_pagina(self, datos: dict, offset: int, limite: int) -> dict:
+        """Un pedido HTTP comun a /api/front/models/favorites con 'datos'
+        (la forma que arma guardar_desde_curl/guardar_desde_captura).
+        -> {"autenticado", "error", "modelos", "total"}. Nunca lanza --
+        misma filosofia que sitio.buscar()."""
+        sitio = _origen(datos.get("url_origen") or "")
+        if not sitio:
+            return {"autenticado": False, "error": "sesion guardada sin URL valida",
+                     "modelos": [], "total": None}
+
+        cabeceras = dict(datos.get("headers") or {})
+        _quitar_header(cabeceras, "Cookie")      # las cookies van aparte, no duplicar
+        # el "Accept-Encoding" pegado (gzip/br/zstd) hace que el sitio
+        # comprima la respuesta -- urllib, a diferencia de un navegador,
+        # NO descomprime solo, asi que json.loads() se rompia sobre los
+        # bytes crudos (confirmado en vivo: el cuerpo empezaba con el
+        # magic number de gzip, \x1f\x8b). Mejor pedir sin comprimir.
+        _quitar_header(cabeceras, "Accept-Encoding")
+        cabeceras.setdefault("Accept", "*/*")
+        cookies = datos.get("cookies") or {}
+        if cookies:
+            cabeceras["Cookie"] = "; ".join(
+                "%s=%s" % (k, v) for k, v in cookies.items())
+
+        qs = urlencode({"offset": offset, "limit": limite,
+                        "sortBy": "bestMatch", "mlfv": "false"})
+        url = sitio + "/api/front/models/favorites?" + qs
+        req = urllib.request.Request(url, headers=cabeceras)
+        try:
+            with urllib.request.urlopen(req, timeout=TOPE_PAGINA_S) as r:
+                cuerpo = json.loads(r.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                return {"autenticado": False, "error": "sesion caducada",
+                         "modelos": [], "total": None}
+            return {"autenticado": True, "error": "http_%d" % e.code,
+                     "modelos": [], "total": None}
+        except (urllib.error.URLError, OSError, TimeoutError, ValueError) as e:
+            return {"autenticado": True, "error": "error:%s" % type(e).__name__,
+                     "modelos": [], "total": None}
+
+        total = cuerpo.get("totalCount") if isinstance(cuerpo, dict) else None
+        return {"autenticado": True, "error": None,
+                 "modelos": self._normalizar_modelos(cuerpo), "total": total}
+
+    def _normalizar_modelos(self, obj) -> list:
+        """Tolera cualquier forma rara del lado del sitio: si algo no
+        calza, esa fila (o la respuesta entera) se descarta en silencio en
+        vez de romper el resto -- mismo espiritu que sitio.buscar()."""
+        if not isinstance(obj, dict):
+            return []
+        modelos = obj.get("models")
+        if not isinstance(modelos, list):
+            return []
+        salida = []
+        for m in modelos:
+            if not isinstance(m, dict):
+                continue
+            username = m.get("username")
+            if not username:
+                continue
+            salida.append({
+                "username": str(username),
+                "id": m.get("id"),
+                "avatar": self._url_snapshot(m) or m.get("previewUrlThumbSmall") or "",
+                "online": bool(m.get("isOnline") or m.get("isLive")),
+                "estado": m.get("status") or "",
+            })
+        return salida
+
+    def _url_snapshot(self, m: dict) -> str:
+        """El snapshot en vivo de verdad (lo que se ve actualizarse en el
+        sitio) no es 'previewUrlThumbSmall' -- es esta URL, confirmada a
+        mano comparando el id+snapshotTimestamp de un modelo real contra
+        la miniatura que el propio sitio muestra para el (mismo patron
+        "descubierto a mano" que el resto de sesion.py/sitio.py)."""
+        id_ = m.get("id")
+        snap = m.get("snapshotTimestamp")
+        if not id_ or not snap:
+            return ""
+        return "https://img.doppiocdn.media/snapshot/%s/%s" % (id_, snap)
+
 
 # -- parseo de lo pegado -----------------------------------------------
 # Dos formatos aceptados, los dos salen del mismo boton "Copiar" de la
 # pestana Red de las herramientas de desarrollador -- cual esta mas a
 # mano depende del navegador (en Opera, por ejemplo, "como PowerShell"
-# a veces es mas facil de encontrar que "como cURL").
+# a veces es mas facil de encontrar que "como cURL"). Agnosticos del
+# sitio (SPEC 21): los usan por igual Sesion y sesion_chaturbate.SesionChaturbate,
+# via SesionBase.guardar_desde_curl.
 
 def _parsear_pegado(texto: str) -> dict:
     t = (texto or "").strip()
@@ -524,7 +629,10 @@ def _agregar_cookies(cookies: dict, texto: str) -> None:
 def _exp_de_jwt(valor_autorizacion: str):
     """-> epoch de expiracion del JWT en 'Authorization: Bearer <jwt>',
     o None si no hay JWT o no se pudo leer. Nunca lanza: esto es solo
-    para avisarle al usuario con tiempo, no algo critico."""
+    para avisarle al usuario con tiempo, no algo critico. Para un sitio
+    que no manda Authorization (chaturbate) esto devuelve None siempre
+    con valor_autorizacion="" -- es lo que deja estado()["expira"] en
+    None sin que SesionChaturbate tenga que tocar nada (SPEC 21)."""
     try:
         # a veces viene "Bearer <jwt>", a veces el JWT pelado --
         # confirmado en vivo: stripchat lo manda sin el prefijo.
@@ -547,42 +655,3 @@ def _origen(url: str) -> str:
     except ValueError:
         pass
     return ""
-
-
-def _normalizar_modelos(obj) -> list:
-    """Tolera cualquier forma rara del lado del sitio: si algo no
-    calza, esa fila (o la respuesta entera) se descarta en silencio en
-    vez de romper el resto -- mismo espiritu que sitio.buscar()."""
-    if not isinstance(obj, dict):
-        return []
-    modelos = obj.get("models")
-    if not isinstance(modelos, list):
-        return []
-    salida = []
-    for m in modelos:
-        if not isinstance(m, dict):
-            continue
-        username = m.get("username")
-        if not username:
-            continue
-        salida.append({
-            "username": str(username),
-            "id": m.get("id"),
-            "avatar": _url_snapshot(m) or m.get("previewUrlThumbSmall") or "",
-            "online": bool(m.get("isOnline") or m.get("isLive")),
-            "estado": m.get("status") or "",
-        })
-    return salida
-
-
-def _url_snapshot(m: dict) -> str:
-    """El snapshot en vivo de verdad (lo que se ve actualizarse en el
-    sitio) no es 'previewUrlThumbSmall' -- es esta URL, confirmada a
-    mano comparando el id+snapshotTimestamp de un modelo real contra
-    la miniatura que el propio sitio muestra para el (mismo patron
-    "descubierto a mano" que el resto de sesion.py/sitio.py)."""
-    id_ = m.get("id")
-    snap = m.get("snapshotTimestamp")
-    if not id_ or not snap:
-        return ""
-    return "https://img.doppiocdn.media/snapshot/%s/%s" % (id_, snap)

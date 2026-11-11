@@ -110,6 +110,29 @@ def _proteger(datos: bytes) -> bytes:
     except OSError:
         return datos
 
+# SPEC 21 -- tabla de datos, una entrada por sitio, en vez de un segundo
+# hook: un hook aparte duplicaria el permiso, _capturado_en_esta_vuelta y
+# la escritura del candidato para cambiar tres condiciones. request()
+# evalua UNA sola de estas filas, la que diga permiso["sitio"].
+#
+#   host:   sufijo de flow.request.pretty_host
+#   path:   prefijo de la ruta (sin query)
+#   header: si no es "", el pedido tiene que traer ESE header (stripchat:
+#           el JWT viaja en Authorization, no en una cookie -- SPEC 15)
+#   cookie: si no es "", el pedido tiene que traer ESA cookie (chaturbate:
+#           su sesion es una cookie comun, sin ningun header propio)
+#
+# chaturbate.cookie: "sessionid", confirmado en vivo el 2026-11-10 con
+# una cuenta real -- el login completo (captura + verificacion contra
+# ENDPOINT_ROOM_LIST de sesion_chaturbate.py) funciono de punta a punta
+# con este marcador.
+REGLAS_LOGIN = {
+    "stripchat": {"host": "stripchat.com", "path": "/api/front/",
+                  "header": "Authorization", "cookie": ""},
+    "chaturbate": {"host": "chaturbate.com", "path": "/",
+                   "header": "", "cookie": "sessionid"},
+}
+
 # Igual que INTERVALO_VIGILANTE del detector (su linea ~198): no tiene
 # sentido mirar mas seguido que lo que el mismo cambia.
 INTERVALO_ESTADO = 2.0
@@ -386,32 +409,46 @@ class Puente:
 
     def request(self, flow):
         """Hook de mitmproxy: mientras Nimbo pidio una captura (y no vencio
-        todavia), guarda cookies+headers del primer pedido autenticado a
-        /api/front/ de stripchat.com. Nunca loguea cookies, headers ni la
-        URL con query -- ver "Dato sensible" en nimbo\\sesion.py."""
+        todavia), guarda cookies+headers del primer pedido que matchee la
+        regla del sitio pedido (REGLAS_LOGIN, SPEC 21). Nunca loguea
+        cookies, headers ni la URL con query -- ver "Dato sensible" en
+        nimbo\\sesion.py.
+
+        El permiso se lee PRIMERO -- antes de mirar host/path -- y recien
+        con su campo 'sitio' se elige la UNICA regla a evaluar. Sin
+        permiso (el 100% del tiempo: una captura pedida dura como mucho 5
+        minutos) esto sale en un acceso a atributo, mas barato que la
+        version anterior, que siempre comparaba pretty_host."""
         if self._capturado_en_esta_vuelta:
-            return
-        host = flow.request.pretty_host or ""
-        if not host.endswith("stripchat.com"):
-            return
-        ruta = flow.request.path.split("?", 1)[0]
-        if not ruta.startswith("/api/front/"):
-            return
-        autorizacion = flow.request.headers.get("Authorization")
-        if not autorizacion:
             return
         permiso = self._permiso
         if not permiso or permiso.get("vence", 0) <= time.time():
             return
+        sitio = permiso.get("sitio") or "stripchat"
+        regla = REGLAS_LOGIN.get(sitio)
+        if regla is None:
+            return
+
+        host = flow.request.pretty_host or ""
+        if not host.endswith(regla["host"]):
+            return
+        ruta = flow.request.path.split("?", 1)[0]
+        if not ruta.startswith(regla["path"]):
+            return
+        if regla["header"] and not flow.request.headers.get(regla["header"]):
+            return
+        if regla["cookie"] and regla["cookie"] not in flow.request.cookies:
+            return
 
         self._escribir_captura({
             "capturado": time.time(),
+            "sitio": sitio,
             "url": flow.request.pretty_url,
             "cookies": dict(flow.request.cookies),
             "headers": dict(flow.request.headers),
         })
         self._capturado_en_esta_vuelta = True
-        _log("[LOGIN] sesion capturada")
+        _log("[LOGIN] sesion capturada (%s)" % sitio)
 
     # -- parada ordenada por stdin -----------------------------------------
 

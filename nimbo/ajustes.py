@@ -70,9 +70,17 @@ ESTADO_CHATURBATE = os.path.join(DIR_ESTADO, "chaturbate.json")
 ESTADO_SIGUIENDO = os.path.join(DIR_ESTADO, "siguiendo.json")
 # SPEC 15: permiso (lo escribe Nimbo) y entrega (la escribe puente.py) de
 # una captura de sesion por el proxy -- los dos de vida corta, nunca mas
-# de 5 minutos (ver login_sitio.py).
+# de 5 minutos (ver login_sitio.py). Desde SPEC 21 los dos llevan un
+# campo "sitio" (stripchat/chaturbate); los nombres de archivo no
+# cambian, son compartidos por los dos sitios porque solo hay un login
+# a la vez (un perfil_login\, una tarea sesion_login).
 ESTADO_CAPTURA_SESION = os.path.join(DIR_ESTADO, "captura_sesion.json")
 ESTADO_SESION_CAPTURADA = os.path.join(DIR_ESTADO, "sesion_capturada.json")
+# SPEC 21: la cuenta de chaturbate. Archivo aparte de sesion.json (que
+# sigue en la raiz, sin tocar) -- ver CLAUDE.md / Decisiones del spec:
+# un error en el formato nuevo no puede dejar sin sesion a stripchat.
+ESTADO_SESION_CHATURBATE = os.path.join(DIR_ESTADO, "sesion_chaturbate.json")
+ESTADO_SIGUIENDO_CHATURBATE = os.path.join(DIR_ESTADO, "siguiendo_chaturbate.json")
 
 PUENTE = os.path.join(_AQUI, "puente.py")
 LANZADOR_SUPERVISOR = os.path.join(_AQUI, "lanzador_supervisor.py")
@@ -383,6 +391,14 @@ class Ajustes:
     @property
     def estado_sesion_capturada(self) -> str:
         return ESTADO_SESION_CAPTURADA
+
+    @property
+    def estado_sesion_chaturbate(self) -> str:
+        return ESTADO_SESION_CHATURBATE
+
+    @property
+    def estado_siguiendo_chaturbate(self) -> str:
+        return ESTADO_SIGUIENDO_CHATURBATE
 
     @property
     def dir_perfil_login(self) -> str:
