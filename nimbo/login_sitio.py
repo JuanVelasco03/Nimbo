@@ -33,6 +33,17 @@ CREAR_SIN_VENTANA = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 
 # tiene que caducar solo.
 SEGUNDOS_CAPTURA = 300.0
 
+# SPEC 21: de donde sale la URL de "seguidas" que abre abrir_ventana()
+# para cada sitio -- lo unico que distinguia a este modulo de un sitio en
+# particular, junto con el campo "sitio" de los dos archivos de vida
+# corta del handshake. chaturbate.com/followed-cams/ (medido anonimo,
+# sin cuenta: redirige a /auth/login/?next=/followed-cams/) es la misma
+# pagina que mide pruebas\sonda_login_chaturbate.py.
+_URL_SEGUIDAS = {
+    "stripchat": lambda a: a["sitio"].rstrip("/") + "/favorites",
+    "chaturbate": lambda a: a["sitio_chaturbate"].rstrip("/") + "/followed-cams/",
+}
+
 # Cuanto esperar a que Edge termine de cerrar antes de tocar los archivos
 # de su perfil -- las bases SQLite (History, Cookies) quedan bloqueadas
 # mientras el proceso sigue vivo, y escribir o borrar encima de eso puede
@@ -74,24 +85,27 @@ def precondiciones(ajustes, motor) -> dict:
     return {"ok": True, "motivo": None}
 
 
-def pedir(ajustes, segundos: float = SEGUNDOS_CAPTURA) -> dict:
+def pedir(ajustes, sitio: str = "stripchat", segundos: float = SEGUNDOS_CAPTURA) -> dict:
     """Escribe captura_sesion.json: el permiso que puente.py necesita ver
     para capturar algo (ver Puente._permiso_vigente). -> {"pedida",
-    "vence"}."""
+    "vence", "sitio"}. Sin "sitio" en el JSON (un archivo de antes de
+    SPEC 21) puente.py asume "stripchat" -- ver REGLAS_LOGIN."""
     ahora = time.time()
-    datos = {"pedida": ahora, "vence": ahora + segundos}
+    datos = {"pedida": ahora, "vence": ahora + segundos, "sitio": sitio}
     _escribir_atomico(ajustes.estado_captura_sesion, json.dumps(datos))
     return datos
 
 
-def abrir_ventana(ajustes) -> subprocess.Popen:
+def abrir_ventana(ajustes, sitio: str = "stripchat") -> subprocess.Popen:
     """Ventana de Edge normal (sin --remote-debugging-port), con perfil
     propio (ajustes.dir_perfil_login) y el proxy de grabacion puesto, en
-    la pagina de favoritas -- el sitio dispara el pedido autenticado que
-    puente.py necesita apenas el usuario termina de loguearse."""
+    la pagina de seguidas del sitio pedido (_URL_SEGUIDAS) -- el sitio
+    dispara el pedido autenticado (o, para chaturbate, simplemente carga
+    la pagina con la cookie de sesion puesta) que puente.py necesita
+    apenas el usuario termina de loguearse."""
     edge = ajustes_mod.localizar_edge()
     os.makedirs(ajustes.dir_perfil_login, exist_ok=True)
-    url = ajustes["sitio"].rstrip("/") + "/favorites"
+    url = _URL_SEGUIDAS.get(sitio, _URL_SEGUIDAS["stripchat"])(ajustes)
     return subprocess.Popen(
         [edge, "--proxy-server=" + ajustes["proxy"],
          "--user-data-dir=" + ajustes.dir_perfil_login,
@@ -131,11 +145,17 @@ def cerrar_ventana(ajustes, proc: subprocess.Popen) -> None:
     _borrar_historial(ajustes)
 
 
-def recoger(ajustes) -> dict:
+def recoger(ajustes, sitio: str = "stripchat") -> dict:
     """Lee y borra sesion_capturada.json, descifrando con DPAPI -- mismo
     prefijo y mismo criterio que sesion.Sesion.leer() (SPEC 09): si no
     descifra (otra maquina, DPAPI no disponible) se trata como si no
-    hubiera candidato. -> dict con 'url'/'cookies'/'headers', o None."""
+    hubiera candidato. -> dict con 'url'/'cookies'/'headers', o None.
+
+    SPEC 21: si el candidato en disco es de OTRO sitio que el pedido (un
+    archivo viejo que quedo de una vuelta anterior, o una carrera rara
+    entre dos clicks) se descarta igual que si no hubiera nada -- nunca
+    se verifica contra la cuenta equivocada. Sin "sitio" en el JSON (de
+    antes de este spec) se asume "stripchat", igual que puente.py."""
     ruta = ajustes.estado_sesion_capturada
     try:
         with open(ruta, encoding="utf-8") as f:
@@ -158,7 +178,11 @@ def recoger(ajustes) -> dict:
             datos = json.loads(crudo)
         except ValueError:
             return None
-    return datos if isinstance(datos, dict) else None
+    if not isinstance(datos, dict):
+        return None
+    if (datos.get("sitio") or "stripchat") != sitio:
+        return None
+    return datos
 
 
 def limpiar(ajustes) -> None:

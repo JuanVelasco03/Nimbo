@@ -126,10 +126,42 @@
         <div class="flex gap-2">
           <input id="nombre-nuevo-cb" autocomplete="off"
             class="flex-1 rounded-sm border border-borde bg-panel px-3 py-2 text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"
-            placeholder="nombre de la modelo (como aparece en la URL) -- sin autocompletado"
+            placeholder="nombre de la modelo (como aparece en la URL) -- con cuenta, autocompleta"
             aria-label="Nombre de la modelo en Chaturbate">
           <button class="boton-chico" id="boton-agregar-favorita-cb">+ favoritas</button>
           <button class="principal" id="boton-grabar-directo-cb">Grabar ahora</button>
+        </div>
+        <div id="sugerencias-cb" class="sugerencias oculta absolute inset-x-0 top-[calc(100%+6px)] z-10 max-h-72 overflow-y-auto rounded-sm border border-borde bg-panel shadow-xl shadow-black/40"></div>
+      </div>
+
+      <!-- SPEC 21: segunda barra de sesion, cuenta de chaturbate -- mismo
+           markup que la de Stripchat de arriba, sufijo "-cb" en todos los
+           ids (la convencion que ya usa esta seccion). Fase 0 SI confirmo
+           un buscador con cuenta (sitio_chaturbate.py:buscar(), medido en
+           vivo el 2026-11-10), de ahi #sugerencias-cb arriba. -->
+      <div id="barra-sesion-cb" class="barra-sesion">
+        <span class="punto" id="punto-sesion-cb"></span>
+        <span id="resumen-sesion-cb" class="font-mono text-xs text-atenuado">sin sesion</span>
+        <button class="principal" id="boton-login-cb">Iniciar sesion</button>
+        <span id="estado-login-cb" class="font-mono text-xs text-atenuado oculta"></span>
+        <button class="boton-chico peligro oculta" id="boton-cancelar-login-cb">Cancelar</button>
+        <button class="boton-chico ml-auto" id="boton-actualizar-siguiendo-cb">Actualizar</button>
+        <button class="boton-chico peligro" id="boton-olvidar-sesion-cb">Cerrar sesion</button>
+        <button class="boton-chico" id="boton-toggle-sesion-cb">otra forma</button>
+      </div>
+      <div id="panel-sesion-cb" class="panel-sesion oculta">
+        <p class="mb-2 text-xs text-atenuado">
+          En tu navegador (con la sesion de chaturbate ya iniciada): F12 &rarr; pestana
+          <strong>Red</strong>, filtrar por Fetch/XHR, entrar a
+          <code class="text-texto">chaturbate.com/followed-cams/</code>, click derecho
+          sobre ese pedido &rarr; <strong>Copiar</strong>, y pegar aca lo que copiaste --
+          sirve <strong>"Copiar como cURL (bash)"</strong> o
+          <strong>"Copiar como PowerShell"</strong>, el que te deje copiar.
+        </p>
+        <textarea id="campo-curl-cb" rows="4" placeholder="curl 'https://chaturbate.com/...' -H '...' ... (o el script de PowerShell)"
+          class="w-full rounded-sm border border-borde bg-panel px-3 py-2 font-mono text-xs text-texto placeholder:text-atenuado focus:border-tally-conectando focus:outline-none"></textarea>
+        <div class="mt-2 flex gap-2">
+          <button class="principal" id="boton-guardar-sesion-cb">Guardar sesion</button>
         </div>
       </div>
 

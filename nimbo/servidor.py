@@ -77,6 +77,7 @@ import registro as registro_mod
 import rutas as rutas_mod
 import salud as salud_mod
 import sesion as sesion_mod
+import sesion_chaturbate as sesion_chaturbate_mod
 import sitio as sitio_mod
 import sitio_chaturbate as sitio_chaturbate_mod
 import version as version_mod
@@ -94,8 +95,13 @@ CANALES_VALIDOS = {"estado", "motor", "sitio"}
 # la cortaria a mitad de camino.
 TOPE_TAREA = {
     "sesion_actualizar": 90.0,     # sesion.TOPE_TOTAL_S = 45.0, con margen
+    # SPEC 21: entrada propia, no comparte nombre con la de stripchat --
+    # refrescar una lista no puede quedar deduplicada contra la otra.
+    "sesion_actualizar_chaturbate": 90.0,
     "motor_arrancar": 300.0,
     "motor_parar": 1500.0,         # motor.ESPERA_CIERRE_DIRECTO = 1260s, con margen
+    # Compartida a proposito entre los dos sitios (SPEC 21): un solo
+    # perfil_login\ y un solo login a la vez.
     "sesion_login": 330.0,         # login_sitio.SEGUNDOS_CAPTURA = 300.0, con margen
 }
 TOPE_TAREA_DEFECTO = 120.0
@@ -222,6 +228,11 @@ class Aplicacion:
             os.path.join(ajustes_mod.RAIZ, "favoritas.json"))
         self.sesion = sesion_mod.Sesion(
             os.path.join(ajustes_mod.RAIZ, "sesion.json"))
+        # SPEC 21: archivo aparte bajo estado\ (no sesion.json) -- un
+        # error en el formato nuevo no puede dejar sin sesion a
+        # stripchat, que es el sitio que graba 24/7.
+        self.sesion_chaturbate = sesion_chaturbate_mod.SesionChaturbate(
+            ajustes.estado_sesion_chaturbate)
         self.sitio = sitio_mod.Sitio(ajustes)
         self.sitio_chaturbate = sitio_chaturbate_mod.Chaturbate(ajustes)
         self.token = secrets.token_urlsafe(24)
@@ -249,8 +260,10 @@ class Aplicacion:
                                       # lo pisa _bucle_cosecha
         # SPEC 15: fase de la captura de sesion en curso (o no). Mutado
         # solo por _tarea_login; _bucle_estado lo publica como cualquier
-        # otra seccion, comparando contra el delta anterior.
-        self.login = {"fase": "inactiva", "vence": None, "motivo": None}
+        # otra seccion, comparando contra el delta anterior. SPEC 21:
+        # "sitio" le dice a la interfaz cual de las dos barras muestra la
+        # cuenta regresiva (un solo login a la vez, ver TOPE_TAREA).
+        self.login = {"fase": "inactiva", "vence": None, "motivo": None, "sitio": None}
         self._login_cancelar = asyncio.Event()
         # SPEC 16: construido ya con sink=None para que _bucle_estado (que
         # arranca antes de que app.py elija bandeja o no, ver
@@ -352,6 +365,10 @@ class Aplicacion:
             "disco": self._disco(),
             "sesion": self.sesion.estado(),
             "siguiendo": _leer_json(self.ajustes.estado_siguiendo),
+            # SPEC 21: misma forma que "sesion"/"siguiendo", para la
+            # cuenta de chaturbate.
+            "sesion_chaturbate": self.sesion_chaturbate.estado(),
+            "siguiendo_chaturbate": _leer_json(self.ajustes.estado_siguiendo_chaturbate),
             "vivo": vivo_mod.sesiones_vivas(self.ajustes.streams, detector),
             "limpieza": self.ultima_limpieza,
             "login": self.login,
@@ -545,6 +562,14 @@ async def _bucle_estado(app):
             if sesion != app.estado.get("sesion"):
                 delta["sesion"] = sesion
 
+            sesion_cb = await app.a_hilo(app.sesion_chaturbate.estado)
+            if sesion_cb != app.estado.get("sesion_chaturbate"):
+                delta["sesion_chaturbate"] = sesion_cb
+
+            siguiendo_cb = await app.a_hilo(_leer_json, app.ajustes.estado_siguiendo_chaturbate)
+            if siguiendo_cb != app.estado.get("siguiendo_chaturbate"):
+                delta["siguiendo_chaturbate"] = siguiendo_cb
+
             motor = app.motor.estado()
             if motor != app.estado.get("motor"):
                 delta["motor"] = motor
@@ -708,55 +733,78 @@ async def _bucle_actualizaciones(app):
         await asyncio.sleep(INTERVALO_ACTUALIZACIONES)
 
 
-def _fijar_login(app, fase, vence, motivo):
-    app.login = {"fase": fase, "vence": vence, "motivo": motivo}
+def _fijar_login(app, fase, vence, motivo, sitio="stripchat"):
+    app.login = {"fase": fase, "vence": vence, "motivo": motivo, "sitio": sitio}
 
 
-async def _tarea_login(app):
+def _sesion_de(app, sitio: str):
+    """app.sesion_chaturbate si sitio=="chaturbate", si no app.sesion (el
+    default de siempre) -- calco de _sitio_de (SPEC 18), usado por las
+    rutas /api/sesion/* y por _tarea_login (SPEC 21)."""
+    return app.sesion_chaturbate if sitio == "chaturbate" else app.sesion
+
+
+def _ruta_siguiendo_de(app, sitio: str) -> str:
+    return (app.ajustes.estado_siguiendo_chaturbate if sitio == "chaturbate"
+            else app.ajustes.estado_siguiendo)
+
+
+def _tarea_actualizar_de(sitio: str) -> str:
+    """Nombre de tarea de _lanzar_tarea para "actualizar siguiendo" --
+    desdoblado por sitio (SPEC 21, ver TOPE_TAREA): refrescar una lista
+    no puede quedar deduplicada contra la otra."""
+    return "sesion_actualizar_chaturbate" if sitio == "chaturbate" else "sesion_actualizar"
+
+
+async def _tarea_login(app, sitio: str = "stripchat"):
     """SPEC 15: abre la ventana de Edge por el proxy, pide la captura a
     puente.py y espera hasta que venza a que entregue un candidato que
-    verifique de verdad -- recien ahi lo guarda en sesion.json y cierra
-    todo. Nunca bloquea el pool mas de un pedido por vez (cada paso
-    sincrono pasa por a_hilo, uno a la vez)."""
+    verifique de verdad -- recien ahi lo guarda en sesion.json (o
+    sesion_chaturbate.json, SPEC 21) y cierra todo. Nunca bloquea el pool
+    mas de un pedido por vez (cada paso sincrono pasa por a_hilo, uno a
+    la vez). Un solo login a la vez para los dos sitios: el dedupe de
+    "sesion_login" en _lanzar_tarea_coro ya lo garantiza (ver
+    servidor.py:_despachar_post)."""
     pre = await app.a_hilo(login_sitio_mod.precondiciones, app.ajustes, app.motor)
     if not pre["ok"]:
-        _fijar_login(app, "imposible", None, pre["motivo"])
+        _fijar_login(app, "imposible", None, pre["motivo"], sitio)
         return
 
-    permiso = await app.a_hilo(login_sitio_mod.pedir, app.ajustes,
+    permiso = await app.a_hilo(login_sitio_mod.pedir, app.ajustes, sitio,
                                 login_sitio_mod.SEGUNDOS_CAPTURA)
-    proc = await app.a_hilo(login_sitio_mod.abrir_ventana, app.ajustes)
-    _fijar_login(app, "esperando", permiso["vence"], None)
+    proc = await app.a_hilo(login_sitio_mod.abrir_ventana, app.ajustes, sitio)
+    _fijar_login(app, "esperando", permiso["vence"], None, sitio)
 
+    sesion_obj = _sesion_de(app, sitio)
     cancelar = app._login_cancelar
     cancelar.clear()
     try:
         while time.time() < permiso["vence"]:
             if cancelar.is_set():
-                _fijar_login(app, "cancelada", None, None)
+                _fijar_login(app, "cancelada", None, None, sitio)
                 return
             await asyncio.sleep(1.0)
 
-            candidato = await app.a_hilo(login_sitio_mod.recoger, app.ajustes)
+            candidato = await app.a_hilo(login_sitio_mod.recoger, app.ajustes, sitio)
             if candidato is None:
                 continue
 
-            _fijar_login(app, "verificando", permiso["vence"], None)
-            r = await app.a_hilo(app.sesion.verificar, {
+            _fijar_login(app, "verificando", permiso["vence"], None, sitio)
+            r = await app.a_hilo(sesion_obj.verificar, {
                 "headers": candidato["headers"], "cookies": candidato["cookies"],
                 "url_origen": candidato["url"]})
             if r["autenticado"]:
-                await app.a_hilo(app.sesion.guardar_desde_captura, candidato)
-                _fijar_login(app, "ok", None, None)
-                _lanzar_tarea(app, "sesion_actualizar", app.sesion.actualizar_siguiendo,
-                              app.ajustes.estado_siguiendo)
+                await app.a_hilo(sesion_obj.guardar_desde_captura, candidato)
+                _fijar_login(app, "ok", None, None, sitio)
+                _lanzar_tarea(app, _tarea_actualizar_de(sitio), sesion_obj.actualizar_siguiendo,
+                              _ruta_siguiendo_de(app, sitio))
                 return
             # Candidato que no verifico (401, red): se descarta y el
-            # bucle sigue esperando -- no pisa una sesion.json que andaba.
-            _fijar_login(app, "esperando", permiso["vence"], None)
+            # bucle sigue esperando -- no pisa una sesion que andaba.
+            _fijar_login(app, "esperando", permiso["vence"], None, sitio)
 
         _fijar_login(app, "vencida", None,
-                     "pasaron 5 minutos sin completar el login -- proba de nuevo")
+                     "pasaron 5 minutos sin completar el login -- proba de nuevo", sitio)
     finally:
         await app.a_hilo(login_sitio_mod.cerrar_ventana, app.ajustes, proc)
         await app.a_hilo(login_sitio_mod.limpiar, app.ajustes)
@@ -774,27 +822,33 @@ def _nombres_sin_estado(estado):
     unicas que de verdad necesitan golpear /api/sitio/estado.
 
     SPEC 18: favoritas.json ahora es [{"nombre","sitio"}, ...], y "sitio"
-    de cada entrada va en la clave de salida. con_dato solo cubre
-    stripchat ("Siguiendo"/supervisor no existen para chaturbate, fuera de
-    alcance): una favorita de chaturbate SIEMPRE pide su propio estado.
-    -> [(nombre, sitio), ...].
+    de cada entrada va en la clave de salida. SPEC 21: con_dato ya cubre
+    los dos sitios -- siguiendo_chaturbate.json le da a una favorita de
+    chaturbate el mismo ahorro de pedido que siguiendo.json ya le daba a
+    una de stripchat (antes de este spec, chaturbate no tenia
+    "Siguiendo"/supervisor, asi que SIEMPRE pedia su propio estado; ver
+    CLAUDE.md). -> [(nombre, sitio), ...].
     """
     con_dato = set()
     for m in (estado.get("siguiendo") or {}).get("modelos") or []:
         u = m.get("username")
         if u:
-            con_dato.add(u.lower())
+            con_dato.add(("stripchat", u.lower()))
+    for m in (estado.get("siguiendo_chaturbate") or {}).get("modelos") or []:
+        u = m.get("username")
+        if u:
+            con_dato.add(("chaturbate", u.lower()))
     for e in (estado.get("supervisor") or {}).get("emisiones") or []:
         n = e.get("nombre")
         if n and e.get("estado"):
-            con_dato.add(n.lower())
+            con_dato.add(("stripchat", n.lower()))
     salida = []
     for f in (estado.get("favoritas") or []):
         nombre = f.get("nombre") or ""
         if not nombre:
             continue
         sitio = f.get("sitio") or "stripchat"
-        if sitio == "stripchat" and nombre.lower() in con_dato:
+        if (sitio, nombre.lower()) in con_dato:
             continue
         salida.append((nombre, sitio))
     return salida
@@ -1527,19 +1581,29 @@ async def _despachar_post(app, ruta, cuerpo):
         await app.a_hilo(app.favoritas.quitar, cuerpo["nombre"], cuerpo.get("sitio") or "stripchat")
         return 200, {"favoritas": await app.a_hilo(app.favoritas.leer)}
     elif ruta == "/api/sesion/guardar":
-        resultado = await app.a_hilo(app.sesion.guardar_desde_curl, cuerpo["curl"])
+        # SPEC 21: "sitio" en el cuerpo, default "stripchat" -- misma
+        # convencion que /api/lista/* y /api/favoritas/* para que un
+        # cliente viejo siga funcionando idéntico.
+        sesion_obj = _sesion_de(app, cuerpo.get("sitio") or "stripchat")
+        resultado = await app.a_hilo(sesion_obj.guardar_desde_curl, cuerpo["curl"])
         return 200, {"sesion": resultado}
     elif ruta == "/api/sesion/olvidar":
-        await app.a_hilo(app.sesion.borrar)
+        sitio = cuerpo.get("sitio") or "stripchat"
+        sesion_obj = _sesion_de(app, sitio)
+        await app.a_hilo(sesion_obj.borrar)
 
         def _quitar_siguiendo():
             with contextlib.suppress(OSError):
-                os.remove(app.ajustes.estado_siguiendo)
+                os.remove(_ruta_siguiendo_de(app, sitio))
 
         await app.a_hilo(_quitar_siguiendo)
-        return 200, {"sesion": await app.a_hilo(app.sesion.estado)}
+        return 200, {"sesion": await app.a_hilo(sesion_obj.estado)}
     elif ruta == "/api/sesion/login/iniciar":
-        lanzada = _lanzar_tarea_coro(app, "sesion_login", _tarea_login(app))
+        sitio = cuerpo.get("sitio") or "stripchat"
+        # Nombre de tarea COMPARTIDO a proposito (ver TOPE_TAREA): un solo
+        # perfil_login\ y un solo login a la vez, para los dos sitios --
+        # el segundo POST mientras el primero corre contesta ya_corriendo.
+        lanzada = _lanzar_tarea_coro(app, "sesion_login", _tarea_login(app, sitio))
         return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     elif ruta == "/api/sesion/login/cancelar":
         app._login_cancelar.set()
@@ -1548,9 +1612,11 @@ async def _despachar_post(app, ruta, cuerpo):
         # 202 y no 409 aunque se descarte: un 409 hace que api.js:enviar()
         # tire excepcion y el footer lo muestre como "error: ...", que es la
         # lectura equivocada para un doble click.
-        lanzada = _lanzar_tarea(app, "sesion_actualizar",
-                                 app.sesion.actualizar_siguiendo,
-                                 app.ajustes.estado_siguiendo)
+        sitio = cuerpo.get("sitio") or "stripchat"
+        sesion_obj = _sesion_de(app, sitio)
+        lanzada = _lanzar_tarea(app, _tarea_actualizar_de(sitio),
+                                 sesion_obj.actualizar_siguiendo,
+                                 _ruta_siguiendo_de(app, sitio))
         return 202, {"aceptado": lanzada, "ya_corriendo": not lanzada}
     elif ruta == "/api/vivo/abrir":
         if not app.motor.estado()["supervisor_vivo"]:

@@ -126,15 +126,18 @@ export function fusionarFavoritas(estado) {
   return filas;
 }
 
-// SPEC 18: la contraparte de fusionarFavoritas() para chaturbate --
-// sin "Siguiendo" (sin cuenta, fuera de alcance) ni VPN (chaturbate no
-// pasa por el proxy de grabacion). Una favorita de sitio=="chaturbate" +
-// lo que estado.detector.streams reporte para sitio=="chaturbate".
+// SPEC 18 + SPEC 21: la contraparte de fusionarFavoritas() para
+// chaturbate -- sin VPN (chaturbate no pasa por el proxy de grabacion),
+// pero desde SPEC 21 SI con "Siguiendo" (estado.siguiendo_chaturbate,
+// ver sesion_chaturbate.py). Una favorita de sitio=="chaturbate" +
+// lo que estado.detector.streams reporte para sitio=="chaturbate" +
+// las seguidas en linea de la cuenta de chaturbate.
 export function fusionarChaturbate(estado) {
   const enLista = new Set((estado.lista.seleccion || []).map(n => n.toLowerCase()));
   const sitios = estado.lista.sitios || {};
   const streams = ((estado.detector && estado.detector.streams) || [])
     .filter(s => (s.sitio || "stripchat") === "chaturbate");
+  const siguiendo = (estado.siguiendo_chaturbate && estado.siguiendo_chaturbate.modelos) || [];
   const generado = (estado.detector && estado.detector.generado) || 0;
   const streamPorNombre = new Map(streams.map(s => [(s.modelo || "").toLowerCase(), s]));
 
@@ -150,7 +153,8 @@ export function fusionarChaturbate(estado) {
     };
   }
 
-  function estadoSitioDe(clave) {
+  function estadoSitioDe(clave, deSiguiendo) {
+    if (deSiguiendo) return deSiguiendo;
     const cache = cacheSitio[claveCache("chaturbate", clave)];
     return (cache && cache.estado) || "";
   }
@@ -163,7 +167,7 @@ export function fusionarChaturbate(estado) {
     const clave = nombre.toLowerCase();
     if (porClave.has(clave)) continue;
     const det = datosDeteccion(clave);
-    const estadoSitio = estadoSitioDe(clave);
+    const estadoSitio = estadoSitioDe(clave, "");
     const cache = cacheSitio[claveCache("chaturbate", clave)];
     const fila = {
       nombre, sitio: "chaturbate", local: true, siguiendo: false,
@@ -176,6 +180,34 @@ export function fusionarChaturbate(estado) {
     porClave.set(clave, fila);
     filas.push(fila);
   }
+
+  for (const m of siguiendo) {
+    if (!m.online || !m.username) continue;
+    const clave = m.username.toLowerCase();
+    if (m.avatar) {
+      const cc = claveCache("chaturbate", clave);
+      cacheSitio[cc] = { ...cacheSitio[cc], avatar: m.avatar, online: true };
+    }
+    const det = datosDeteccion(clave);
+    const existente = porClave.get(clave);
+    if (existente) {
+      existente.siguiendo = true;
+      existente.online = true;
+      existente.estadoSitio = m.estado || existente.estadoSitio;
+      Object.assign(existente, det);
+      continue;
+    }
+    const fila = {
+      nombre: m.username, sitio: "chaturbate", local: false, siguiendo: true,
+      enLista: enLista.has(clave) && sitios[clave] === "chaturbate",
+      enVpn: false,
+      estadoSitio: m.estado || "", online: true,
+      ...det,
+    };
+    porClave.set(clave, fila);
+    filas.push(fila);
+  }
+
   return filas;
 }
 
@@ -291,9 +323,10 @@ const FILTROS = [
   { clave: "siguiendo", etiqueta: "Siguiendo", test: f => f.siguiendo },
 ];
 
-// SPEC 18: chaturbate no tiene ni VPN ni "Siguiendo" (sin cuenta, fuera de
-// alcance) -- esos dos chips no tendrian sentido en su barra de filtros.
-const FILTROS_CHATURBATE = FILTROS.filter(f => f.clave !== "vpn" && f.clave !== "siguiendo");
+// SPEC 18: chaturbate no tiene VPN (no pasa por el proxy de grabacion) --
+// ese chip no tendria sentido en su barra de filtros. SPEC 21: "Siguiendo"
+// SI aplica ahora que chaturbate tiene cuenta propia (ver fusionarChaturbate).
+const FILTROS_CHATURBATE = FILTROS.filter(f => f.clave !== "vpn");
 
 // Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
 // se mezclan en la lista -- primero las que graban de verdad, despues las
@@ -691,17 +724,29 @@ export function renderFavoritas(estado) {
 
 // -- estado de la sesion de la cuenta real ----------------------------------
 
+// SPEC 21: tabla de ids por sitio -- lo unico que distinguia a
+// pintarLogin/renderSesion/iniciarPanelSesion de un sitio en particular.
+// sufijo "" es Stripchat (ids de siempre, sin tocar); "-cb" es la barra
+// nueva de Chaturbate (ver index.html).
+const SITIOS_SESION = [
+  { sitio: "stripchat", sufijo: "", claveSesion: "sesion", claveSiguiendo: "siguiendo" },
+  { sitio: "chaturbate", sufijo: "-cb", claveSesion: "sesion_chaturbate", claveSiguiendo: "siguiendo_chaturbate" },
+];
+
 // SPEC 15: ultimo estado.login conocido, para que el intervalo de abajo
 // pueda repintar la cuenta regresiva sin esperar al proximo delta del
 // WebSocket (el backend solo vuelve a publicar "login" cuando cambia de
-// fase, no una vez por segundo).
-let ultimoLogin = { fase: "inactiva", vence: null, motivo: null };
+// fase, no una vez por segundo). SPEC 21: login.sitio dice cual de las
+// dos barras es la que esta en curso -- la otra se pinta como "inactiva".
+let ultimoLogin = { fase: "inactiva", vence: null, motivo: null, sitio: null };
 
-function pintarLogin() {
-  const boton = document.getElementById("boton-login");
-  const estadoEl = document.getElementById("estado-login");
-  const cancelar = document.getElementById("boton-cancelar-login");
-  const login = ultimoLogin;
+function pintarLoginSitio(sitio, sufijo) {
+  const boton = document.getElementById("boton-login" + sufijo);
+  const estadoEl = document.getElementById("estado-login" + sufijo);
+  const cancelar = document.getElementById("boton-cancelar-login" + sufijo);
+  const login = ultimoLogin.sitio === sitio
+    ? ultimoLogin
+    : { fase: "inactiva", vence: null, motivo: null };
   const enCurso = login.fase === "esperando" || login.fase === "verificando";
 
   cancelar.classList.toggle("oculta", !enCurso);
@@ -729,6 +774,10 @@ function pintarLogin() {
   }
 }
 
+function pintarLogin() {
+  for (const { sitio, sufijo } of SITIOS_SESION) pintarLoginSitio(sitio, sufijo);
+}
+
 // El intervalo (no el delta del WS) es lo que mueve la cuenta regresiva
 // segundo a segundo -- mismo criterio que vista_registro.js, que tambien
 // usa setInterval normal en vez del worker de temporizador_previa.
@@ -736,24 +785,21 @@ export function iniciarLogin() {
   setInterval(pintarLogin, 1000);
 }
 
-export function renderSesion(estado) {
-  if (estado.login) ultimoLogin = estado.login;
-  pintarLogin();
-
-  const punto = document.getElementById("punto-sesion");
-  const resumen = document.getElementById("resumen-sesion");
-  const sesion = estado.sesion || { activa: false, guardado: null };
-  const siguiendo = estado.siguiendo;
+function renderSesionSitio(estado, sufijo, claveSesion, claveSiguiendo) {
+  const punto = document.getElementById("punto-sesion" + sufijo);
+  const resumen = document.getElementById("resumen-sesion" + sufijo);
+  const sesion = estado[claveSesion] || { activa: false, guardado: null };
+  const siguiendo = estado[claveSiguiendo];
 
   // El click en "Actualizar" (main.js) deja un timestamp en el dataset
-  // del boton y lo deshabilita. En cuanto siguiendo.json tiene un
-  // "generado" mas nuevo que ESE click, la vuelta de verdad termino --
-  // recien ahi se rehabilita y se avisa. Antes no habia ningun momento
-  // en que el usuario supiera que la actualizacion ya estaba lista (ni
-  // que habia fallado): el boton se podia apretar de nuevo en cualquier
-  // momento y el unico rastro era la linea "ya hay una actualizacion en
-  // curso" si llegabas a pisar la vuelta anterior.
-  const botonAct = document.getElementById("boton-actualizar-siguiendo");
+  // del boton y lo deshabilita. En cuanto siguiendo(_chaturbate).json
+  // tiene un "generado" mas nuevo que ESE click, la vuelta de verdad
+  // termino -- recien ahi se rehabilita y se avisa. Antes no habia
+  // ningun momento en que el usuario supiera que la actualizacion ya
+  // estaba lista (ni que habia fallado): el boton se podia apretar de
+  // nuevo en cualquier momento y el unico rastro era la linea "ya hay
+  // una actualizacion en curso" si llegabas a pisar la vuelta anterior.
+  const botonAct = document.getElementById("boton-actualizar-siguiendo" + sufijo);
   if (botonAct && botonAct.dataset.actualizando) {
     const desde = Number(botonAct.dataset.actualizando);
     if (siguiendo && (siguiendo.generado || 0) > desde) {
@@ -782,13 +828,23 @@ export function renderSesion(estado) {
   }
 }
 
+export function renderSesion(estado) {
+  if (estado.login) ultimoLogin = estado.login;
+  pintarLogin();
+  for (const { sufijo, claveSesion, claveSiguiendo } of SITIOS_SESION) {
+    renderSesionSitio(estado, sufijo, claveSesion, claveSiguiendo);
+  }
+}
+
 // Solo el mostrar/ocultar el panel de pegado: guardar/olvidar/actualizar
 // mutan el estado y terminan en un refrescar(), asi que se conectan en
 // main.js (mismo criterio que boton-agregar-favorita).
 export function iniciarPanelSesion() {
-  document.getElementById("boton-toggle-sesion").addEventListener("click", () => {
-    document.getElementById("panel-sesion").classList.toggle("oculta");
-  });
+  for (const { sufijo } of SITIOS_SESION) {
+    document.getElementById("boton-toggle-sesion" + sufijo).addEventListener("click", () => {
+      document.getElementById("panel-sesion" + sufijo).classList.toggle("oculta");
+    });
+  }
 }
 
 // SPEC 18: abierto/cerrado de cada seccion de sitio ("Modelos") persiste
@@ -811,18 +867,30 @@ export function iniciarSeccionesSitio() {
 }
 
 // -- buscador con autocompletado -------------------------------------------
+// SPEC 21: chaturbate con cuenta SI tiene buscador (sitio_chaturbate.py,
+// medido en vivo) -- mismo mecanismo que stripchat, tabla de ids por
+// sitio como el resto de esta seccion (ver SITIOS_SESION mas arriba).
+const SITIOS_BUSCADOR = [
+  { sitio: "stripchat", campo: "nombre-nuevo", sugerencias: "sugerencias", botonGrabar: "boton-grabar-directo" },
+  { sitio: "chaturbate", campo: "nombre-nuevo-cb", sugerencias: "sugerencias-cb", botonGrabar: "boton-grabar-directo-cb" },
+];
 
 let temporizadorBusqueda = null;
 
-function ocultarSugerencias() {
-  document.getElementById("sugerencias").classList.add("oculta");
+function ocultarSugerencias(idSugerencias) {
+  document.getElementById(idSugerencias).classList.add("oculta");
+}
+
+function ocultarTodasLasSugerencias() {
+  for (const { sugerencias } of SITIOS_BUSCADOR) ocultarSugerencias(sugerencias);
 }
 
 // Sin innerHTML: m.username viene del endpoint no oficial del sitio
-// (sitio.py), no de RE_NOMBRE -- un username con HTML adentro no tiene
-// que poder ejecutar nada en una ventana que lleva el token en la URL.
-function renderSugerencias(resultados) {
-  const cont = document.getElementById("sugerencias");
+// (sitio.py / sitio_chaturbate.py), no de RE_NOMBRE -- un username con
+// HTML adentro no tiene que poder ejecutar nada en una ventana que lleva
+// el token en la URL.
+function renderSugerencias(idSugerencias, resultados) {
+  const cont = document.getElementById(idSugerencias);
   cont.replaceChildren();
   if (!resultados.length) {
     const vacio = document.createElement("div");
@@ -863,43 +931,45 @@ function renderSugerencias(resultados) {
   cont.classList.remove("oculta");
 }
 
-// Conecta el campo "nombre-nuevo" con el buscador. Las acciones que de
+// Conecta el campo de cada sitio con su buscador. Las acciones que de
 // verdad mutan algo (+favoritas, Grabar ahora) se conectan aparte, en
 // main.js, porque terminan en un refrescar() del estado global.
 export function iniciarBuscador() {
-  const campo = document.getElementById("nombre-nuevo");
+  for (const { sitio, campo: idCampo, sugerencias: idSugerencias, botonGrabar } of SITIOS_BUSCADOR) {
+    const campo = document.getElementById(idCampo);
 
-  campo.addEventListener("input", (ev) => {
-    const valor = ev.target.value.trim();
-    clearTimeout(temporizadorBusqueda);
-    if (valor.length < 2) { ocultarSugerencias(); return; }
-    temporizadorBusqueda = setTimeout(async () => {
-      try {
-        const r = await obtener("/api/sitio/buscar?q=" + encodeURIComponent(valor));
-        // los resultados de esta misma busqueda alimentan tambien la
-        // cache de miniaturas, para no pedirlas dos veces
-        for (const m of r.resultados) {
-          const cc = claveCache("stripchat", m.username);
-          cacheSitio[cc] = { ...cacheSitio[cc], avatar: m.avatar, online: m.online };
-        }
-        renderSugerencias(r.resultados);
-      } catch (err) { ocultarSugerencias(); }
-    }, 300);
-  });
+    campo.addEventListener("input", (ev) => {
+      const valor = ev.target.value.trim();
+      clearTimeout(temporizadorBusqueda);
+      if (valor.length < 2) { ocultarSugerencias(idSugerencias); return; }
+      temporizadorBusqueda = setTimeout(async () => {
+        try {
+          const r = await obtener("/api/sitio/buscar?sitio=" + sitio + "&q=" + encodeURIComponent(valor));
+          // los resultados de esta misma busqueda alimentan tambien la
+          // cache de miniaturas, para no pedirlas dos veces
+          for (const m of r.resultados) {
+            const cc = claveCache(sitio, m.username);
+            cacheSitio[cc] = { ...cacheSitio[cc], avatar: m.avatar, online: m.online };
+          }
+          renderSugerencias(idSugerencias, r.resultados);
+        } catch (err) { ocultarSugerencias(idSugerencias); }
+      }, 300);
+    });
 
-  campo.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter") document.getElementById("boton-grabar-directo").click();
-    if (ev.key === "Escape") ocultarSugerencias();
-  });
+    campo.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") document.getElementById(botonGrabar).click();
+      if (ev.key === "Escape") ocultarSugerencias(idSugerencias);
+    });
 
-  document.getElementById("sugerencias").addEventListener("click", (ev) => {
-    const fila = ev.target.closest(".sugerencia");
-    if (!fila) return;
-    campo.value = fila.dataset.nombre;
-    ocultarSugerencias();
-  });
+    document.getElementById(idSugerencias).addEventListener("click", (ev) => {
+      const fila = ev.target.closest(".sugerencia");
+      if (!fila) return;
+      campo.value = fila.dataset.nombre;
+      ocultarSugerencias(idSugerencias);
+    });
+  }
 
   document.addEventListener("click", (ev) => {
-    if (!ev.target.closest(".agregar-rapido-cont")) ocultarSugerencias();
+    if (!ev.target.closest(".agregar-rapido-cont")) ocultarTodasLasSugerencias();
   });
 }

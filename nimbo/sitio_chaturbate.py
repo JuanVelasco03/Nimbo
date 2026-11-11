@@ -1,26 +1,37 @@
-"""Consultas al sitio chaturbate: estado online, miniatura. SPEC 18 --
-subclase de sitio.SitioBase, que es donde vive lo que de verdad se
-comparte con stripchat (transporte, las dos caches con TTL, la LRU de
-miniaturas). Ver sitio.py para esas piezas; aca solo lo especifico del
-sitio nuevo.
+"""Consultas al sitio chaturbate: estado online, miniatura y (desde
+SPEC 21, con cuenta) busqueda. Subclase de sitio.SitioBase, que es donde
+vive lo que de verdad se comparte con stripchat (transporte, las dos
+caches con TTL, la LRU de miniaturas). Ver sitio.py para esas piezas;
+aca solo lo especifico del sitio nuevo.
 
-Sin busqueda con autocompletado: a diferencia de
-"/api/front/v4/models/search/suggestion" de stripchat, chaturbate no
-expone (medido: no se encontro ninguno sin cuenta) un endpoint de
-busqueda en vivo que junte nombre + estado online. buscar() devuelve
-siempre [] -- Decisiones de SPEC 18: "si no lo expone, 'agregar modelo'
-es un campo de texto simple, sin autocompletado". No es un error, es el
-mismo "se degrada a nada" que ya usa Sitio.buscar() si stripchat rotara
-su endpoint.
+Busqueda con autocompletado (SPEC 21): sin cuenta (medido en SPEC 18)
+chaturbate no expone nada parecido a
+"/api/front/v4/models/search/suggestion" de stripchat. CON cuenta SI --
+medido en vivo el 2026-11-10 (ver sesion_chaturbate.py): el mismo
+endpoint que da las seguidas (ENDPOINT_ROOM_LIST) acepta "keywords=" y
+busca por nombre/tema en el CATALOGO ENTERO, no solo en las seguidas
+(confirmado: una busqueda devolvio resultados con "is_following": false
+mezclados con los propios seguidos). buscar() reusa
+SesionChaturbate._normalizar_modelos -- misma forma de fila que las
+seguidas. Sin sesion guardada sigue devolviendo [] -- el mismo "se
+degrada a nada" de siempre (Decisiones de SPEC 18: "si no lo expone,
+'agregar modelo' es un campo de texto simple, sin autocompletado"; acá
+la salvedad es "sin cuenta", no "nunca").
 
 Sin VPN: chaturbate no pasa por el proxy de grabacion (fuera de alcance,
 SPEC 18), asi que estado()/imagen() de aca nunca reciben vpn=True -- a
 diferencia de Sitio, que sí lo necesita para las modelos marcadas @vpn=.
 """
+import json
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
-from sitio import SitioBase
+from sitio import SitioBase, CACHE_BUSQUEDA_SEGUNDOS, MIN_CONSULTA
+from sesion import _quitar_header
+import sesion_chaturbate as sesion_chaturbate_mod
 
 _chaturbate_cache = {}
 
@@ -74,8 +85,56 @@ class Chaturbate(SitioBase):
     # -- busqueda ------------------------------------------------------------
 
     def buscar(self, consulta: str, limite: int = 8) -> list:
-        """-> [] siempre -- ver el docstring del modulo."""
-        return []
+        """-> [] si no hay sesion de chaturbate guardada, la consulta es
+        muy corta, o el pedido fallo -- nunca lanza, misma filosofia que
+        Sitio.buscar(). Mismo endpoint y misma forma de fila que las
+        seguidas (ver sesion_chaturbate.py), con "keywords=" en vez de
+        "follow=true": busca en el catalogo entero, no solo en lo
+        seguido."""
+        consulta = (consulta or "").strip()
+        if len(consulta) < MIN_CONSULTA:
+            return []
+        sesion_obj = sesion_chaturbate_mod.SesionChaturbate(self.ajustes.estado_sesion_chaturbate)
+        datos = sesion_obj.leer()
+        cookies = (datos or {}).get("cookies") or {}
+        if not cookies:
+            return []   # sin sesion guardada: se degrada a nada, como siempre
+
+        clave = (consulta.lower(), limite)
+        ahora = time.time()
+        with self._lock:
+            visto = self._cache_busqueda.get(clave)
+        if visto and ahora - visto[0] < CACHE_BUSQUEDA_SEGUNDOS:
+            return visto[1]
+
+        cabeceras = dict(datos.get("headers") or {})
+        # Sin esto el pedido sale con el "Cookie" viejo (el que habia AL
+        # MOMENTO de loguearse) duplicado junto al nuevo, y con el
+        # "Accept-Encoding" pegado (gzip/br) el sitio comprime la
+        # respuesta -- urllib no descomprime solo, asi que json.loads()
+        # se rompia en silencio sobre los bytes crudos (mismo bug que
+        # describe sesion.py:_pedir_pagina).
+        _quitar_header(cabeceras, "Cookie")
+        _quitar_header(cabeceras, "Accept-Encoding")
+        cabeceras["Cookie"] = "; ".join("%s=%s" % (k, v) for k, v in cookies.items())
+        cabeceras["X-Requested-With"] = "XMLHttpRequest"
+        cabeceras.setdefault("Accept", "application/json, text/*;q=0.8, */*;q=0.5")
+
+        resultados = []
+        qs = urllib.parse.urlencode({"keywords": consulta, "offset": 0, "limit": limite})
+        url = sesion_chaturbate_mod.ENDPOINT_ROOM_LIST + "?" + qs
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, headers=cabeceras), timeout=10.0) as r:
+                obj = json.loads(r.read())
+            resultados = sesion_obj._normalizar_modelos(obj)[:limite]
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError,
+                TimeoutError, ValueError):
+            pass   # el endpoint no es oficial: si falla, se degrada a []
+
+        with self._lock:
+            self._cache_busqueda[clave] = (ahora, resultados)
+        return resultados
 
     # -- miniaturas ------------------------------------------------------
 

@@ -107,6 +107,11 @@ _ARBOL = [
 #                          nada, y supervisor.py queda abierto igual)
 #   __init__.py            inofensivo, y evita sorpresas si algo trata a
 #                          nimbo\ como paquete
+#
+# SPEC 21: nimbo\sesion_chaturbate.py es un modulo de nimbo\ como
+# cualquier otro (lo importa servidor.py) -- a proposito NO esta en esta
+# lista, asi que se compila igual que sesion.py y no queda en disco con
+# --compilado.
 _PY_EN_DISCO_COMPILADO = ("puente.py", "lanzador_supervisor.py",
                           "__init__.py")
 

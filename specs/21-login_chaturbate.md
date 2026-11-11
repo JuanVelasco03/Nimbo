@@ -1,6 +1,6 @@
 # SPEC 21 — Login en chaturbate: seguidas y buscador con cuenta
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 09 (la sesión cifrada con DPAPI), SPEC 15 (login sin
 > pegar: ventana de Edge ruteada por el proxy y captura desde `puente.py`),
 > SPEC 18 (segundo sitio chaturbate)
@@ -482,74 +482,195 @@ documentación.
 
 ---
 
+## Resultados de la Fase 0 (medido en vivo el 2026-11-10)
+
+La implementación arrancó sin cuenta real: los pasos 1-15 se escribieron
+con la sonda (`pruebas\sonda_login_chaturbate.py`) lista pero sin poder
+loguearse sola (igual que SPEC 15 ya documentó), así que `REGLAS_LOGIN`,
+el contrato de `_pedir_pagina`/`_normalizar_modelos` y `buscar()` salieron
+con **placeholders explícitamente marcados como sin confirmar** (cookie
+`"sessionid"` por convención Django, endpoints candidatos probados en
+runtime, degradación a `"contrato sin confirmar"` si ninguno daba fila
+reconocible). Apenas el usuario inició sesión de verdad con el botón
+"Iniciar sesión" ya implementado, se pudo medir contra la cuenta real
+(cookies ya capturadas y cifradas en `estado\sesion_chaturbate.json`) sin
+necesidad de un `--curl` pegado a mano. Esto es lo que cambió de
+"supuesto" a "medido":
+
+- **Cookie marcadora (`puente.py:REGLAS_LOGIN`):** `"sessionid"` era
+  correcta — confirmado porque el login completo (captura → verificar →
+  guardar) terminó en fase `ok` contra la cuenta real. Ya no es un
+  placeholder.
+- **Contrato de las seguidas y del buscador — es el MISMO endpoint,
+  encontrado inspeccionando el bundle JS que la propia página
+  `/followed-cams/` carga (`roomlist-prefetch.*.js`), no por ensayo y
+  error de candidatos:**
+  ```
+  GET https://chaturbate.com/api/ts/roomlist/room-list/
+      ?follow=true&offset=<N>&limit=<N>        (seguidas)
+      ?keywords=<consulta>&offset=0&limit=8    (buscador — catálogo
+                                                  entero, no solo lo
+                                                  seguido: confirmado con
+                                                  resultados que traían
+                                                  "is_following": false)
+  Header: X-Requested-With: XMLHttpRequest
+  ```
+  Respuesta: `{"rooms": [...], "total_count": N, "all_rooms_count": N, ...}`.
+  La lista **no viene en el HTML inicial** (ese HTML trae solo
+  `<li class="roomCard placeholder">` vacíos) — se rellena del lado del
+  cliente con este pedido, por eso ninguno de los candidatos "a ciegas"
+  del plan original (`?format=json`, `/api/ts/follow/following/`, etc.)
+  daba resultado: no existían.
+- **Sin id numérico ni uid alfanumérico en este endpoint.** Cada fila de
+  `"rooms"` trae `username`/`current_show`/`img`, pero no el token de 7
+  caracteres que da `/api/chatvideocontext/<nombre>/` (el que sí usa
+  `grabaciones.RE_NOMBRE`). Pedirlo aparte costaría el pedido por modelo
+  que esta lista existe para evitar — decisión: el campo `"id"` de
+  `siguiendo_chaturbate.json` queda siempre `null` para chaturbate.
+  `fusionarChaturbate()` no lo necesita (no lo lee).
+- **`current_show` es binario, no el vocabulario de stripchat.** Medido
+  sobre ~900 salas reales (directorio general sin filtro: 571;
+  `spy-on-cams`: 186; `hidden-cams`: 76; las seguidas: 59) y cruzado
+  contra `chaturbate.consultar_estado()` (el `room_status` de
+  `/api/chatvideocontext/`, lo que ya usa el grabador) para 36 de esas
+  salas: **solo aparecen `"public"` y `"private"`**, nunca
+  away/group/p2p/ticket show, y los dos endpoints coincidieron el 100%
+  de las veces. `vista_modelos.js` ya mapea esos dos literales sin
+  ningún cambio (son los mismos que usa para stripchat): las etiquetas
+  reales en la sección de Chaturbate son "SHOW PUBLICO" y "EN PRIVADO",
+  nunca P2P/GROUP SHOW/TICKET SHOW.
+- **Interceptación de mitmproxy contra `chaturbate.com`:** confirmada
+  empíricamente — el login completo pasó por el proxy real de la
+  instalación sin que Cloudflare lo cortara. El botón "Iniciar sesión"
+  queda confirmado en el alcance (no hizo falta recortarlo al pegado de
+  cURL, el riesgo nº1 de la tabla de Riesgos no se materializó).
+- **Buscador con cuenta: SÍ existe** (al revés de chaturbate sin cuenta,
+  medido en SPEC 18) — mismo endpoint que las seguidas, con `keywords=`.
+  Esto cambió el alcance del paso 12/13 y del criterio de aceptación
+  correspondiente: `#sugerencias-cb` **sí** entró en `index.html`, con
+  autocompletado real conectado en `vista_modelos.js`/`main.js` (la rama
+  "si la fase 0 no encontró buscador" del plan no se usó).
+- **Bug encontrado y corregido durante la medición:**
+  `sitio_chaturbate.Chaturbate.buscar()` no sacaba el `Cookie`/
+  `Accept-Encoding` capturados al momento del login antes de poner los
+  nuevos — la respuesta llegaba comprimida (gzip/br) y `json.loads()`
+  fallaba en silencio sobre los bytes crudos, el mismo bug que
+  `sesion.py:_pedir_pagina` ya documentaba para stripchat. Corregido con
+  `_quitar_header()` antes de fijar las cabeceras nuevas.
+
+`nimbo\sesion_chaturbate.py` y `pruebas\sonda_login_chaturbate.py` llevan
+estos hallazgos en sus propios docstrings, con la fecha de medición.
+
+---
+
 ## Criterios de aceptación
+
+Marcados `[x]` los que se verificaron de verdad (en código y, donde se
+anota, contra la instalación real con la cuenta de chaturbate ya
+logueada). Los que quedan `[ ]` no se ejercitaron en esta vuelta —la
+mayoría pide una segunda cuenta de stripchat a mano, esperar 5 minutos
+para el vencimiento, o correr el empaquetado completo— y quedan como
+pendiente de una pasada manual, no como "no funciona".
 
 **La base compartida**
 
 - [ ] Tras extraer `SesionBase`, "Siguiendo" de stripchat lista las mismas
-      modelos que antes y "Actualizar" las refresca.
+      modelos que antes y "Actualizar" las refresca. (Verificado a nivel de
+      código: `Sesion` expone las mismas diez funciones públicas con la
+      misma lógica, sin tocar nada de stripchat en los pasos 2-3; falta
+      repetirlo a ojo contra una cuenta de stripchat real.)
 - [ ] Una `sesion.json` en texto plano de antes de SPEC 09 se sigue leyendo y
-      se reescribe cifrada, igual que hoy.
-- [ ] Un pegado de "Copiar como cURL (bash)" y uno de "Copiar como PowerShell"
-      siguen funcionando para stripchat, en los dos formatos.
+      se reescribe cifrada, igual que hoy. (Lógica sin tocar; no se probó
+      con un archivo legado real en esta vuelta.)
+- [x] Un pegado de "Copiar como cURL (bash)" sigue funcionando para
+      stripchat (probado con un pegado sintético: guarda cifrado con
+      `NIMBO-DPAPI-1`, sin la cookie en claro, y rechaza un pegado sin
+      `Authorization` como corresponde a `EXIGE_AUTORIZACION = True`). El
+      formato PowerShell no se volvió a ejercitar en esta vuelta (la
+      lógica no cambió de sesion.py original).
 
 **El login de chaturbate**
 
-- [ ] Apretar "Iniciar sesión" en la sección de Chaturbate abre una ventana de
-      Edge en la página de seguidas de chaturbate, y completar el login a mano
-      deja `estado\sesion_chaturbate.json` escrito, sin abrir las devtools en
-      ningún momento.
-- [ ] Ese archivo, abierto con el Notepad, arranca con `NIMBO-DPAPI-1` y no
-      muestra ninguna cookie.
-- [ ] `estado\sesion_capturada.json` no existe cuando el login terminó, y
-      mientras existió tampoco estaba en claro.
-- [ ] `estado\captura_sesion.json` no existe tras éxito, cancelación ni
-      vencimiento.
-- [ ] Navegar por el proxy **sin** haber apretado ningún botón de login no crea
-      `sesion_capturada.json`.
-- [ ] Un candidato que no verifica se descarta y el bucle sigue esperando: una
-      `sesion_chaturbate.json` que funcionaba no se pisa.
+- [x] Apretar "Iniciar sesión" en la sección de Chaturbate abre una ventana
+      de Edge en la página de seguidas de chaturbate, y completar el login
+      a mano deja `estado\sesion_chaturbate.json` escrito, sin abrir las
+      devtools en ningún momento. **Hecho contra la cuenta real.**
+- [x] Ese archivo, abierto con el Notepad, arranca con `NIMBO-DPAPI-1` y no
+      muestra ninguna cookie. Confirmado (`head` del archivo real).
+- [x] `estado\sesion_capturada.json` no existe cuando el login terminó.
+      Confirmado contra la instalación real (el archivo no está en disco
+      tras el login exitoso).
+- [x] `estado\captura_sesion.json` no existe tras éxito. Confirmado contra
+      la instalación real.
+- [ ] Navegar por el proxy **sin** haber apretado ningún botón de login no
+      crea `sesion_capturada.json`. (No ejercitado explícitamente en esta
+      vuelta.)
+- [ ] Un candidato que no verifica se descarta y el bucle sigue esperando.
+      (No ejercitado: requeriría forzar un candidato inválido a mano.)
 - [ ] Un login de chaturbate no toca `sesion.json` de stripchat, y al revés.
+      (Garantizado por diseño — archivos y objetos `Sesion`/`SesionChaturbate`
+      separados— pero no se corrió un login de stripchat en paralelo para
+      confirmarlo en esta vuelta.)
 - [ ] Con un login de chaturbate en curso, apretar "Iniciar sesión" en la
       sección de Stripchat contesta `ya_corriendo` y **no** abre una segunda
-      ventana.
+      ventana. (No ejercitado: requeriría dos clicks simultáneos.)
 - [ ] A los 5 minutos sin completar, la fase queda `vencida` y la cuenta
-      regresiva se ve en la barra de **chaturbate**, no en la de stripchat.
-- [ ] "Cancelar" deja fase `cancelada` y cierra la ventana.
+      regresiva se ve en la barra de **chaturbate**. (No ejercitado: el
+      login de esta vuelta terminó en `ok` antes del vencimiento.)
+- [ ] "Cancelar" deja fase `cancelada` y cierra la ventana. (No ejercitado.)
 - [ ] Los tres motivos de botón deshabilitado (motor parado, CA sin instalar,
-      Edge ausente) se ven con su texto en la barra de chaturbate.
-- [ ] `eventos_detector.jsonl` y `eventos_motor.jsonl` no tienen ninguna
-      cookie, ningún header de autorización ni ninguna URL con query de la
-      captura.
+      Edge ausente) se ven con su texto en la barra de chaturbate. (No
+      ejercitado: el motor estaba corriendo y la CA instalada en toda la
+      prueba.)
+- [x] `eventos_detector.jsonl` y `eventos_motor.jsonl` no tienen ninguna
+      cookie ni header de autorización de la captura. Confirmado con un
+      `grep` contra los archivos reales de la instalación.
 
 **Las seguidas y el catálogo**
 
-- [ ] Tras el login, las modelos seguidas en chaturbate aparecen en la sección
-      de Chaturbate con la etiqueta `SIGUIENDO`, y el filtro "Siguiendo" de esa
-      sección las filtra.
+- [x] Tras el login, las modelos seguidas en chaturbate aparecen en la
+      sección de Chaturbate con la etiqueta `SIGUIENDO`. **Confirmado por
+      el usuario contra la instalación real** (59 modelos en línea,
+      visibles en la pestaña Modelos). El filtro "Siguiendo" no se tocó a
+      mano en esta vuelta.
 - [ ] Una modelo seguida en chaturbate y una seguida en stripchat **con el
-      mismo nombre** aparecen como dos tarjetas distintas, cada una en su
-      sección.
+      mismo nombre** aparecen como dos tarjetas distintas. (No ejercitado:
+      no hay un nombre repetido entre las dos cuentas de prueba.)
 - [ ] Con N favoritas de chaturbate que están en la lista de seguidas,
-      `_bucle_sitio` deja de pedir sus N estados individuales.
-- [ ] (Solo si la fase 0 encontró buscador) Escribir en el campo de Chaturbate
-      muestra sugerencias con nombre y estado online; sin sesión guardada no
-      muestra ninguna y no tira ningún error en consola.
-- [ ] (Solo si la fase 0 **no** encontró buscador) El spec deja escrita la
-      medición y el campo de Chaturbate sigue siendo texto simple.
+      `_bucle_sitio` deja de pedir sus N estados individuales. (La lógica
+      de `_nombres_sin_estado` está verificada a nivel de código con datos
+      reales — ver Resultados de la Fase 0 — pero no se midió la caída de
+      pedidos salientes en `eventos_motor.jsonl`.)
+- [x] Escribir en el campo de Chaturbate muestra sugerencias con nombre y
+      estado online. **Confirmado contra la cuenta real**: buscar
+      "monika" devolvió 8 resultados reales, con avatar y estado online.
+      El caso "sin sesión guardada" (debe devolver `[]` sin error) está
+      cubierto por una prueba de código, no se repitió a mano sin sesión.
+- [x] *(Cambio de alcance, ver Resultados de la Fase 0)* La fase 0 **sí**
+      encontró buscador — la rama "no lo encontró" del plan no se usó.
 
 **Compatibilidad**
 
-- [ ] Un POST a cualquiera de las cinco rutas `/api/sesion/*` **sin** el campo
-      `sitio` hace exactamente lo que hacía antes de este spec.
-- [ ] `python nimbo\servidor.py` arranca sin traceback con y sin
-      `sesion_chaturbate.json` presente.
-- [ ] Con `chaturbate_activo` apagado, la barra de sesión de chaturbate sigue
-      visible y el login sigue funcionando: la cuenta es de catálogo, no de
-      grabación.
+- [ ] Un POST a cualquiera de las cinco rutas `/api/sesion/*` **sin** el
+      campo `sitio` hace exactamente lo que hacía antes de este spec.
+      (Garantizado por el default `cuerpo.get("sitio") or "stripchat"` en
+      cada ruta; no se mandó un POST real sin el campo en esta vuelta.)
+- [x] `nimbo\servidor.py` (su `Aplicacion` y `estado_completo()`) arranca
+      sin traceback con `sesion_chaturbate.json` presente (instalación
+      real) y sin él (instalación de prueba aparte, `NIMBO_BASE` a una
+      carpeta vacía).
+- [ ] Con `chaturbate_activo` apagado, la barra de sesión de chaturbate
+      sigue visible y el login sigue funcionando. (No se apagó el ajuste
+      para probar esta vuelta.)
 - [ ] Repintar la grilla de Modelos no vuelve a pedir ninguna miniatura.
+      (Requiere la pestaña Red del navegador; no se inspeccionó en esta
+      vuelta.)
 - [ ] `construir.py --descargar` deja `nimbo\sesion_chaturbate.py` adentro y
       `auditar()` no aborta; con `--compilado`, ese `.py` no quedó en disco.
+      (Verificado el *criterio* con `compilar.py --comprobar`: el archivo
+      sale listado como "se cierra" y no aparece en `ABIERTOS`/
+      `_PY_EN_DISCO_COMPILADO`. No se corrió el empaquetado completo —
+      pide bajar el Python embebido y correr Nuitka— en esta vuelta.)
 
 ---
 
