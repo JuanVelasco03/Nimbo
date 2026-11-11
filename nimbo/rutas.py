@@ -114,6 +114,14 @@ def elegir_carpeta(titulo: str, inicial: str = "") -> str:
         return ""
     ole32 = ctypes.windll.ole32
     shell32 = ctypes.windll.shell32
+    # Sin esto ctypes asume que las dos devuelven c_int (32 bits): en
+    # Windows de 64 bits el PIDL -- un puntero -- queda truncado, y
+    # SHGetPathFromIDListW revienta con access violation (atrapado mas
+    # abajo como OSError) con la carpeta elegida perdida en silencio.
+    shell32.SHBrowseForFolderW.restype = ctypes.c_void_p
+    shell32.SHBrowseForFolderW.argtypes = [ctypes.POINTER(_BROWSEINFO)]
+    shell32.SHGetPathFromIDListW.argtypes = [ctypes.c_void_p, wintypes.LPWSTR]
+    ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
     ole32.CoInitialize(None)
     try:
         buf = ctypes.create_unicode_buffer(_MAX_PATH)
