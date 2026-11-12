@@ -301,8 +301,16 @@
      Grabando (vista_grabando.js), antes esta ultima tenia su miniatura
      chica al costado (.tarjeta, ya quitada) -- */
 
+  /* isolation: la tarjeta tiene hijos con z-index propio (.riel z-10, los
+     badges de .tarjeta-grabacion z-10/z-20) y `relative` sola NO abre un
+     contexto de apilado -- esos z-index se escapaban al contexto raiz y
+     competian de igual a igual con el desplegable del buscador
+     (#sugerencias, tambien z-10): empate, gana el que viene despues en el
+     DOM, y los rieles de las tarjetas se dibujaban ATRAVESANDO la lista de
+     sugerencias de Chaturbate. Con isolate, el z-index de adentro se
+     queda adentro. */
   .tarjeta-modelo {
-    @apply relative flex cursor-pointer flex-col overflow-hidden rounded-sm border border-borde
+    @apply relative isolate flex cursor-pointer flex-col overflow-hidden rounded-sm border border-borde
            bg-panel transition-colors;
   }
   .tarjeta-modelo:hover, .tarjeta-modelo:focus-within { @apply border-borde-fuerte; }
@@ -703,8 +711,10 @@
      Grilla de tarjetas, mismo cuerpo que .tarjeta-modelo (Modelos/Grabando)
      -- la portada ES el boton de reproducir, no un hover escondido. */
 
+  /* isolate por el mismo motivo que .tarjeta-modelo (ver alla): badges y
+     barra de union llevan z-10/z-20 propios. */
   .tarjeta-grabacion {
-    @apply relative flex flex-col overflow-hidden rounded-sm border border-borde
+    @apply relative isolate flex flex-col overflow-hidden rounded-sm border border-borde
            bg-panel transition-colors;
   }
   .tarjeta-grabacion:hover, .tarjeta-grabacion:focus-within {
