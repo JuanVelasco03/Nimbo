@@ -29,13 +29,16 @@ export const ESTADOS = {
   idle:           { clase: "online",  texto: "EN LINEA",     filtro: null },
   off:            { clase: "offline", texto: "OFFLINE",      filtro: "offline" },
   // -- chaturbate (room_status) --
-  // "public"/"private"/"offline" vistos en vivo (pruebas\RESULTADOS.md,
-  // seccion 8); el resto es el vocabulario conocido del sitio, todavia
-  // sin muestra propia. Para el grabador de chaturbate todo lo que no es
-  // "public" es "nada que grabar" (SPEC 18) -- esto es solo interfaz.
+  // "public"/"private"/"offline"/"hidden" vistos en vivo
+  // (pruebas\RESULTADOS.md, seccion 8); el resto es el vocabulario
+  // conocido del sitio, todavia sin muestra propia. "hidden" es la camara
+  // oculta de chaturbate (app CrazyTicket: "La camara esta oculta"), asi
+  // que comparte badge y chip con la de stripchat. Para el grabador de
+  // chaturbate todo lo que no es "public" es "nada que grabar" (SPEC 18)
+  // -- esto es solo interfaz.
   offline:              { clase: "offline", texto: "OFFLINE",     filtro: "offline" },
   group:                { clase: "privado", texto: "GROUP SHOW",  filtro: "group-show" },
-  hidden:               { clase: "privado", texto: "SHOW OCULTO", filtro: "privado" },
+  hidden:               { clase: "privado", texto: "CAM OCULTA",  filtro: "cam-oculta" },
   away:                 { clase: "privado", texto: "AUSENTE",     filtro: null },
   "password protected": { clase: "privado", texto: "CON CLAVE",   filtro: null },
 };
@@ -53,7 +56,7 @@ export const FILTROS_ESTADO = [
   { clave: "p2p-voice",   etiqueta: "P2P voice" },
   { clave: "group-show",  etiqueta: "Group show" },
   { clave: "ticket-show", etiqueta: "Ticket show" },
-  { clave: "cam-oculta",  etiqueta: "Cam oculta", soloStripchat: true },
+  { clave: "cam-oculta",  etiqueta: "Cam oculta" },
 ];
 
 function normal(estadoSitio) {

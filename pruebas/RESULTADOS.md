@@ -401,11 +401,23 @@ antes (intentar grabar). **Pendiente:** dejar
 | `public` | 901 de 901 salas del listado `/api/ts/roomlist/room-list/` |
 | `private` | 30 de 30 salas de `room-list/?private=true` |
 | `offline` | salas de la lista propia fuera de línea |
+| `hidden` | `couple_of_fire_` con la app **CrazyTicket** ("La cámara está oculta") |
 
-- Los "Secret Show" / "Spy show" de chaturbate (el equivalente a la cámara
-  oculta) vienen como `room_status: "private"` con el texto en
-  `hidden_message` ("🕵️ Secret Show in progress…"). No apareció `hidden`.
-- `group`, `hidden`, `away`, `password protected` **no se vieron**: quedan en
+- **La cámara oculta del reporte original era de chaturbate, no de
+  stripchat**: CrazyTicket es una app de chaturbate. `chatvideocontext` da
+  `room_status: "hidden"` con `hidden_message: "CrazyTicket
+
+Ticket show
+  in progress…"`. El grabador de chaturbate ya no lo graba (solo `public`).
+- **`room-list` (la lista de seguidas, `current_show`) dice `public` en ese
+  mismo momento**: es binaria y mete `hidden` dentro de `public`. Por eso la
+  tarjeta decía SHOW PÚBLICO. Fix: en la sección de chaturbate el
+  `estado_cam` del grabador (`chaturbate.json`, sale de `chatvideocontext`)
+  manda sobre "siguiendo" (`vista_modelos.js:fusionarChaturbate`).
+  Una seguida que **no** está en la lista sigue sin poder distinguirlo.
+- Los "Secret Show" / "Spy show" vienen como `room_status: "private"` con el
+  texto en `hidden_message` ("🕵️ Secret Show in progress…").
+- `group`, `away`, `password protected` **no se vieron**: quedan en
   `estados.js` por el vocabulario conocido del sitio, sin muestra propia.
 - Otras claves útiles de la respuesta: `private_show_id`,
   `premium_show_running`, `f2f_private_show_running`, `active_password`.

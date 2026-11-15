@@ -157,7 +157,24 @@ export function fusionarChaturbate(estado) {
     };
   }
 
+  // El room_status que consulta el propio grabador de chaturbate
+  // (/api/chatvideocontext/, publicado como estado_cam en chaturbate.json)
+  // manda sobre la lista de seguidas: esa (room-list, current_show) es
+  // binaria y mete "hidden" -- el CrazyTicket / camara oculta -- dentro
+  // de "public" (medido 2026-11-15, couple_of_fire_: room-list "public",
+  // chatvideocontext "hidden"; pruebas\RESULTADOS.md 8.3). Solo si la
+  // fila esta fresca y la consulta contesto de verdad.
+  function estadoGrabador(clave) {
+    const s = streamPorNombre.get(clave);
+    if (!s || s.estado === "sin_dato") return "";
+    const e = s.estado_cam || "";
+    if (!e || e === "?" || e.startsWith("error:") || e.startsWith("http_")) return "";
+    return e;
+  }
+
   function estadoSitioDe(clave, deSiguiendo) {
+    const grabador = estadoGrabador(clave);
+    if (grabador) return grabador;
     if (deSiguiendo) return deSiguiendo;
     const cache = cacheSitio[claveCache("chaturbate", clave)];
     return (cache && cache.estado) || "";
@@ -197,7 +214,7 @@ export function fusionarChaturbate(estado) {
     if (existente) {
       existente.siguiendo = true;
       existente.online = true;
-      existente.estadoSitio = m.estado || existente.estadoSitio;
+      existente.estadoSitio = estadoSitioDe(clave, m.estado) || existente.estadoSitio;
       Object.assign(existente, det);
       continue;
     }
@@ -205,7 +222,7 @@ export function fusionarChaturbate(estado) {
       nombre: m.username, sitio: "chaturbate", local: false, siguiendo: true,
       enLista: enLista.has(clave) && sitios[clave] === "chaturbate",
       enVpn: false,
-      estadoSitio: m.estado || "", online: true,
+      estadoSitio: estadoSitioDe(clave, m.estado), online: true,
       ...det,
     };
     porClave.set(clave, fila);
@@ -317,7 +334,6 @@ const FILTROS = [
 // SPEC 18: chaturbate no tiene VPN (no pasa por el proxy de grabacion) --
 // ese chip no tendria sentido en su barra de filtros. SPEC 21: "Siguiendo"
 // SI aplica ahora que chaturbate tiene cuenta propia (ver fusionarChaturbate).
-// SPEC 24: tampoco "Cam oculta" (es un show de stripchat).
 const FILTROS_CHATURBATE = FILTROS.filter(f => f.clave !== "vpn" && !f.soloStripchat);
 
 // Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
