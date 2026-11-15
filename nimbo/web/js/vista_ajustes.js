@@ -121,8 +121,6 @@ export function renderDirectivas(valores) {
 const PREFERENCIAS = [
   { clave: "arrancar_al_abrir", etiqueta: "Arrancar la grabacion al abrir Nimbo",
     ayuda: "Si esta apagado, Nimbo abre pero no arranca nada hasta que lo pidas." },
-  { clave: "ver_navegador", etiqueta: "Mostrar el navegador que graba",
-    ayuda: "Util para ver que esta pasando. Normalmente conviene dejarlo apagado." },
   { clave: "bandeja", etiqueta: "Icono en la bandeja del sistema",
     ayuda: "Permite reabrir Nimbo o pararlo sin dejar la ventana abierta. Hace falta reiniciar Nimbo para que el cambio tome efecto." },
   { clave: "inicio_automatico", etiqueta: "Arrancar Nimbo con Windows",

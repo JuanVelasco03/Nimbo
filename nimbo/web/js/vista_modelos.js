@@ -750,7 +750,12 @@ function pintarLoginSitio(sitio, sufijo) {
   const enCurso = login.fase === "esperando" || login.fase === "verificando";
 
   cancelar.classList.toggle("oculta", !enCurso);
-  boton.disabled = enCurso || login.fase === "imposible";
+  // "imposible" NO deshabilita: las tres precondiciones (detector vivo,
+  // CA instalada, Edge) se pueden resolver con Nimbo abierto, y el backend
+  // solo sale de esa fase cuando se lo vuelve a intentar -- deshabilitado,
+  // el boton quedaba muerto tras "Arrancar" hasta reiniciar la app. Cada
+  // click re-evalua login_sitio.precondiciones() en _tarea_login.
+  boton.disabled = enCurso;
   boton.title = login.fase === "imposible" ? (login.motivo || "") : "";
 
   if (login.fase === "inactiva") {

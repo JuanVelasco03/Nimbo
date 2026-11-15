@@ -127,9 +127,8 @@ con `setdefault`, así que un valor propio del entorno no se pisa.
    MOUFLON: el master trae un JWT de corta vida, la chunklist las URLs en
    claro) vive en `nucleo\scripts\chaturbate.py`, igual de seguro de
    importar que `mouflon.py` (sin `addons = [...]`, sin estado de módulo
-   mutable). Apagado por defecto (`chaturbate_activo` en `config.json`):
-   el quinto proceso no arranca solo en una instalación que no pidió el
-   sitio nuevo. Solo corre para los nombres marcados `@chaturbate=` en
+   mutable). Prendido por defecto (`chaturbate_activo` en `config.json`,
+   apagable desde Ajustes; era `False` en SPEC 18). Solo corre para los nombres marcados `@chaturbate=` en
    `grabar.txt` (calco de `@vpn=`, ver `lista.marcar_sitio`); el
    supervisor nunca les abre pestaña (parcheado desde
    `lanzador_supervisor.py`, sin tocar `supervisor.py`) y el detector

@@ -130,12 +130,13 @@ DEFECTOS = {
     # Aviso de actualizacion (SPEC 17, C12): prendido por defecto pero
     # visible y apagable. Ver nimbo\actualizaciones.py.
     "buscar_actualizaciones": True,
-    # Segundo sitio (SPEC 18): chaturbate_activo apagado por defecto -- el
-    # quinto proceso (nimbo\lanzador_chaturbate.py) no arranca solo en una
-    # instalacion que no pidio el sitio nuevo. sitio_chaturbate es la URL
-    # base, analoga a "sitio".
+    # Segundo sitio (SPEC 18): chaturbate_activo prendido por defecto (era
+    # False en SPEC 18; se cambio a pedido del usuario) -- el quinto proceso
+    # (nimbo\lanzador_chaturbate.py) arranca con el motor salvo que se lo
+    # apague desde Ajustes. sitio_chaturbate es la URL base, analoga a
+    # "sitio".
     "sitio_chaturbate": "https://chaturbate.com",
-    "chaturbate_activo": False,
+    "chaturbate_activo": True,
 }
 
 # Los archivos que tienen que estar en nucleo\scripts\ para poder arrancar
