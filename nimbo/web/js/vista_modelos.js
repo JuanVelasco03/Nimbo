@@ -5,6 +5,7 @@ import { obtener, bandera } from "./api.js";
 import { inicialDe } from "./formato.js";
 import { cacheSitio, claveCache, sincronizarMiniatura, urlImagenProxy } from "./sitio.js";
 import { agregarLog } from "./registro.js";
+import { infoEstado, esNoPublico, estaVivo, FILTROS_ESTADO } from "./estados.js";
 
 // Favoritas locales (favoritas.json) + las que vienen de la cuenta real
 // del sitio y estan en linea ahora (estado.siguiendo, ver sesion.py) --
@@ -50,6 +51,9 @@ export function fusionarFavoritas(estado) {
       // sin esto "grabando" no distingue de "grabando pero sin bytes".
       ultimoSegmento: s && s.ultimo_segmento,
       esperando: !!(s && s.esperando),
+      // SPEC 24: user.status dice "public" durante un show con la camara
+      // oculta (CrazyTicket); grabador_directo.py lo publica aparte.
+      camOculta: (s && s.cam_oculta) || null,
       generado,
     };
   }
@@ -211,36 +215,22 @@ export function fusionarChaturbate(estado) {
   return filas;
 }
 
-// "status" que trae el sitio -> mismo vocabulario de la pestana Grabando
-// (ESTADOS_VIVOS de supervisor.py: public/live/groupShow/p2p/private/
-// ticketShow, camelCase -- se compara en minuscula). "p2pVoice" no esta
-// en ESTADOS_VIVOS del grabador (asi que el supervisor no abre pagina
-// para ese estado -- eso es decision del grabador, no se toca desde
-// aca), pero del lado de Nimbo igual hay que mostrarlo como privado y
-// no como "EN LINEA" generico: es el mismo show p2p, solo sin video.
-const ESTADOS_PUBLICOS = new Set(["public", "live"]);
-const ESTADOS_PRIVADOS = new Set(["private", "virtualprivate", "p2p", "p2pvoice", "groupshow", "ticketshow"]);
-const TEXTO_PRIVADO = {
-  private: "EN PRIVADO", virtualprivate: "EN PRIVADO",
-  p2p: "P2P", p2pvoice: "P2P VOICE", groupshow: "GROUP SHOW", ticketshow: "TICKET SHOW",
-};
-const TEXTO_PUBLICO = { public: "SHOW PUBLICO", live: "EN VIVO" };
-
+// El status del sitio se interpreta con la tabla unica de estados.js
+// (SPEC 24) -- ver ahi el porque de una sola fuente.
 export function estadoVivo(estadoSitio) {
-  const s = (estadoSitio || "").toLowerCase();
-  return ESTADOS_PUBLICOS.has(s) || ESTADOS_PRIVADOS.has(s);
+  return estaVivo(estadoSitio);
 }
 
 // Unicamente el status real del sitio -- nunca "GRABANDO" aca, eso es
 // grabacionDeFila(). Asi una modelo puede estar EN PRIVADO y grabando a
-// la vez, y se ven las dos cosas en vez de que una tape a la otra.
+// la vez, y se ven las dos cosas en vez de que una tape a la otra. Un
+// estado que no esta en la tabla sigue cayendo en EN LINEA / SIN DATO.
 export function estadoDeFila(fila) {
-  const s = (fila.estadoSitio || "").toLowerCase();
-  if (ESTADOS_PUBLICOS.has(s)) return { clase: "publico", texto: TEXTO_PUBLICO[s], clave: s };
-  if (ESTADOS_PRIVADOS.has(s)) return { clase: "privado", texto: TEXTO_PRIVADO[s], clave: s };
-  if (fila.online) return { clase: "online", texto: "EN LINEA", clave: "online" };
-  if (s) return { clase: "offline", texto: "SIN DATO", clave: "offline" };
-  return { clase: "offline", texto: "OFFLINE", clave: "offline" };
+  const info = infoEstado(fila.estadoSitio, fila.camOculta);
+  if (info) return info;
+  if (fila.online) return { clase: "online", texto: "EN LINEA", clave: "online", filtro: null };
+  if (fila.estadoSitio) return { clase: "offline", texto: "SIN DATO", clave: "offline", filtro: "offline" };
+  return { clase: "offline", texto: "OFFLINE", clave: "offline", filtro: "offline" };
 }
 
 // Cuanto hace que llego el ultimo segmento real, medido contra el reloj
@@ -271,8 +261,9 @@ export function edadSegmento(ultimoSegmento, generado) {
 // show/ticket show). Compartido por el badge, el filtro "Grabando" y el
 // orden de la lista -- los tres necesitan el mismo criterio de "esto no
 // cuenta como grabando de verdad", no cada uno el suyo.
+// SPEC 24: la camara oculta cuenta como no publico (nada de REC).
 export function sitioEsNoPublico(fila) {
-  return ESTADOS_PRIVADOS.has((fila.estadoSitio || "").toLowerCase());
+  return esNoPublico(fila.estadoSitio, fila.camOculta);
 }
 
 export function grabacionDeFila(fila) {
@@ -313,11 +304,11 @@ const FILTROS = [
   // fila (ver mas abajo) -- fallback a estadoDeFila(f) si algun llamador
   // externo corre este test sin pasar por ahi.
   { clave: "publico", etiqueta: "Show publico", test: f => (f._infoSitio || estadoDeFila(f)).clase === "publico" },
-  { clave: "privado", etiqueta: "Privado", test: f => (f.estadoSitio || "").toLowerCase() === "private" || (f.estadoSitio || "").toLowerCase() === "virtualprivate" },
-  { clave: "p2p", etiqueta: "P2P", test: f => (f.estadoSitio || "").toLowerCase() === "p2p" },
-  { clave: "p2p-voice", etiqueta: "P2P voice", test: f => (f.estadoSitio || "").toLowerCase() === "p2pvoice" },
-  { clave: "group-show", etiqueta: "Group show", test: f => (f.estadoSitio || "").toLowerCase() === "groupshow" },
-  { clave: "ticket-show", etiqueta: "Ticket show", test: f => (f.estadoSitio || "").toLowerCase() === "ticketshow" },
+  // chips de estado: salen de la tabla de estados.js (campo "filtro").
+  ...FILTROS_ESTADO.map(e => ({
+    clave: e.clave, etiqueta: e.etiqueta, soloStripchat: !!e.soloStripchat,
+    test: f => (f._infoSitio || estadoDeFila(f)).filtro === e.clave,
+  })),
   { clave: "offline", etiqueta: "Offline", test: f => (f._infoSitio || estadoDeFila(f)).clase === "offline" },
   { clave: "vpn", etiqueta: "VPN", test: f => f.enVpn },
   { clave: "siguiendo", etiqueta: "Siguiendo", test: f => f.siguiendo },
@@ -326,7 +317,8 @@ const FILTROS = [
 // SPEC 18: chaturbate no tiene VPN (no pasa por el proxy de grabacion) --
 // ese chip no tendria sentido en su barra de filtros. SPEC 21: "Siguiendo"
 // SI aplica ahora que chaturbate tiene cuenta propia (ver fusionarChaturbate).
-const FILTROS_CHATURBATE = FILTROS.filter(f => f.clave !== "vpn");
+// SPEC 24: tampoco "Cam oculta" (es un show de stripchat).
+const FILTROS_CHATURBATE = FILTROS.filter(f => f.clave !== "vpn" && !f.soloStripchat);
 
 // Orden fijo cuando varios de estos filtros estan prendidos a la vez: no
 // se mezclan en la lista -- primero las que graban de verdad, despues las
@@ -672,6 +664,9 @@ function pintarBadge(badge, info) {
   // de color es parte de la identidad del badge, no un modificador.
   if (badge.className !== clase) badge.className = clase;
   ponerTexto(badge.querySelector(".texto"), info.texto);
+  // SPEC 24: CAM OCULTA lleva el nombre del show (p. ej. "CrazyTicket").
+  const titulo = info.titulo ? "show con la camara oculta: " + info.titulo : "";
+  if (badge.title !== titulo) badge.title = titulo;
 }
 
 function actualizarTarjetaModelo(el, fila) {

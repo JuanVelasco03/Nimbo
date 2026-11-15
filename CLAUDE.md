@@ -385,7 +385,15 @@ construye ni arranca nada. Por eso lo importan por igual `detectar_m3u8.py`
 (que antes tenía `leer_master`/`Rendicion`/`mejor_rendicion`/`puntaje`
 duplicados ahí mismo, y ahora los reexporta desde `mouflon.py`) y
 `grabador_directo.py` (que además usa `descifrar_playlist`/
-`extraer_segmentos`/`pedir`/`resolver_id`/`consultar_cam`). El canario
+`extraer_segmentos`/`pedir`/`resolver_id`/`consultar_cam`). Desde SPEC 24
+es también la **única tabla de estados** del lado Python
+(`ESTADOS_PUBLICOS`/`ESTADOS_NO_PUBLICOS`/`ESTADOS_VIVOS`, con
+`virtualPrivate` y `p2pVoice`): `grabador_directo.py` la importa y
+`lanzador_supervisor.py` le pisa `supervisor.ESTADOS_VIVOS` antes de
+`supervisar()`, mismo patrón que `Emision`. Su contraparte del frontend es
+`nimbo\web\js\estados.js`; un estado nuevo va en las dos. Y trae
+`show_oculto()` (pura, sin red), que `consultar_cam()` devuelve como
+`"oculto"` — ver "Detalles con historia". El canario
 sin red (`mouflon.verificar_canario()`) es la señal de que la tabla de
 claves (`KEY_MAP`) sigue vigente; si deja de dar `True`, seguir
 `pruebas\RESULTADOS.md` sección 1 para derivar una nueva sin esperar a
@@ -450,7 +458,7 @@ otra máquina").
 | `nucleo\scripts\activos.txt` | solo el detector | supervisor y camino directo (traducen ID→nombre); nadie en Nimbo; chaturbate no lo usa (no tiene id numérico) |
 | `estado\detector.json` | `puente.py` | Nimbo |
 | `estado\supervisor.json` | `lanzador_supervisor.py` | Nimbo |
-| `estado\directo.json` | `grabador_directo.py` | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json` + `chaturbate.json`) |
+| `estado\directo.json` | `grabador_directo.py` — por modelo, `estado_cam` es `user.status` tal cual y `cam_oculta` (SPEC 24) el nombre del show con la cámara oculta o `null`; `esperando` es `true` también durante ese show | Nimbo (`estado_captura.fusionar()` lo junta con `detector.json` + `chaturbate.json`) |
 | `estado\chaturbate.json` (SPEC 18) | `grabador_chaturbate.py` | Nimbo (`estado_captura.fusionar()`) |
 | `estado\union.json` (SPEC 20) | quien corre `unir_sesion()`: el detector en proceso, o el subproceso `--unir` del directo o de chaturbate. **Un solo escritor por unión** desde SPEC 22 (antes el de chaturbate eran dos: el subproceso para los remux y el grabador para la fase `mezcla`), y **nunca dos a la vez**: el turno de `cerrojo_union.py` (SPEC 19) lo garantiza | `nimbo\grabaciones.py` (cruza el listado con la unión en curso) |
 | `estado\ids.json` | `grabador_directo.py` | `grabador_directo.py` (cache propia id↔nombre, valores `int`) |
@@ -837,6 +845,23 @@ nuevo nunca se borra). El turno global lo toma el propio subproceso.
   bajo `estado\`, no en la raíz como `sesion.json`): un error en el
   formato nuevo no puede dejar sin sesión a stripchat, que es el sitio
   que graba 24/7.
+- **`user.status` miente durante una cámara oculta** (SPEC 24). Con un
+  show CrazyTicket / "Hidden Cam" el sitio sigue diciendo `public`; el
+  directo pedía master y playlist, no llegaba video real y la interfaz
+  pintaba SHOW PÚBLICO + SIN SEÑAL. `mouflon.show_oculto()` lo detecta
+  con el resto del JSON de `/cam` (`isCamAvailable is False` + `cam.show`
+  activo, sin `endedAt` — `cam.show` queda viejo después de terminar el
+  show, así que solo no sirve) y el directo lo trata **igual que un
+  privado**: `_publico()` da `False`, se congela la sesión y
+  `@inactividad` la cierra si no vuelve. El criterio es **provisorio**: no
+  hay todavía una muestra real del caso (`pruebas\RESULTADOS.md` §8,
+  `pruebas\sonda_estados.py --vigilar` para cazarla). Ante cualquier clave
+  faltante devuelve `None` → vuelve a lo de antes (intentar grabar), nunca
+  a dejar de grabar. El estado se publica aparte (`cam_oculta`), nunca
+  inyectado en `estado_cam`, y la interfaz lo muestra como CAM OCULTA
+  (clase `privado`, sin REC, con su chip de filtro). No cubre al
+  supervisor ni a modelos fuera de la lista (`sitio.py:estado()` sigue con
+  `RE_ESTADO`).
 - **`sitio.py`** sale por el proxy de grabación (para que las `@vpn=` usen
   el túnel) y **nunca** toca `nucleo\perfil\`, que es exclusivo del
   supervisor. `estado()` reusa el `RE_ESTADO` del propio `supervisor.py` en

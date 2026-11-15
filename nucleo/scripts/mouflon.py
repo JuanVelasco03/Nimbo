@@ -59,9 +59,22 @@ CABECERAS = {
     ),
 }
 
-# Mismo criterio que supervisor.py:134,137-148 -- usado por grabador_directo
-# para decidir si una modelo sigue en vivo sin abrir ninguna pagina.
-ESTADOS_VIVOS = {"public", "live", "groupShow", "p2p", "private", "ticketShow"}
+# Tabla UNICA de estados de stripchat (user.status) del lado Python
+# (SPEC 24). Antes estaba copiada en supervisor.py, grabador_directo.py y
+# aca, y a las tres les faltaba virtualPrivate/p2pVoice: para el directo
+# eso era "no esta en vivo" -> cerraba y unia la sesion en vez de
+# congelarla, y una ida y vuelta por virtualPrivate partia el .mp4. El
+# supervisor la recibe parcheada desde nimbo\lanzador_supervisor.py; la
+# contraparte del frontend es nimbo\web\js\estados.js -- un estado nuevo
+# va en las dos.
+#
+# ESTADOS_PUBLICOS: hay algo publico que grabar (se pide la playlist).
+# ESTADOS_NO_PUBLICOS: hay alguien en vivo pero nada publico -- el
+# directo congela la sesion y espera (ESPERA_NO_PUBLICO, @inactividad).
+ESTADOS_PUBLICOS = {"public", "live"}
+ESTADOS_NO_PUBLICOS = {"private", "virtualPrivate", "p2p", "p2pVoice",
+                       "groupShow", "ticketShow"}
+ESTADOS_VIVOS = ESTADOS_PUBLICOS | ESTADOS_NO_PUBLICOS
 
 
 def estado_incierto(estado: str) -> bool:
@@ -152,9 +165,53 @@ def resolver_id(nombre: str, por_tunel: bool = False,
     return int(id_modelo)
 
 
+def show_oculto(crudo: dict):
+    """Con user.status publico: nombre del show que oculta la camara
+    (CrazyTicket / "Hidden Cam"), o None si la camara se ve.
+
+    user.status dice "public" durante ese show, asi que no alcanza con el
+    status. Criterio (pruebas\\RESULTADOS.md seccion 8) -- PROVISORIO hasta
+    tener una muestra real del caso; es a proposito el mas estrecho que
+    deja ver lo medido:
+      - status publico (ESTADOS_PUBLICOS), y
+      - cam.isCamAvailable es False explicito (en 821 de 821 publicos
+        medidos el 2026-11-15 fue True; en todo show no publico activo fue
+        False), y
+      - cam.show es un show ACTIVO: dict sin endedAt ni isDeleted (cam.show
+        queda viejo despues de que el show termina, con endedAt puesto --
+        visto en un publico normal).
+    Cualquier clave faltante o de otro tipo da None: si el sitio cambia
+    el JSON se vuelve al comportamiento de antes (grabar o intentarlo),
+    nunca a dejar de grabar. Funcion pura, sin red ni estado.
+    """
+    if not isinstance(crudo, dict):
+        return None
+    user = (crudo.get("user") or {})
+    user = user.get("user") if isinstance(user, dict) else None
+    cam = crudo.get("cam")
+    if not isinstance(user, dict) or not isinstance(cam, dict):
+        return None
+    if user.get("status") not in ESTADOS_PUBLICOS:
+        return None
+    if cam.get("isCamAvailable") is not False:
+        return None
+    show = cam.get("show")
+    if not isinstance(show, dict) or show.get("endedAt") or show.get("isDeleted"):
+        return None
+    detalles = show.get("details") if isinstance(show.get("details"), dict) else {}
+    for clave in ("name", "showName", "title", "type"):
+        if isinstance(detalles.get(clave), str) and detalles[clave]:
+            return detalles[clave]
+    modo = show.get("mode")
+    return modo if isinstance(modo, str) and modo else "oculto"
+
+
 def consultar_cam(id_modelo, por_tunel: bool = False,
                    tunel: str = TUNEL_DEFECTO, timeout: float = 15.0) -> dict:
-    """-> {"estado","disponible","show","geobaneada","crudo"}.
+    """-> {"estado","disponible","show","oculto","geobaneada","crudo"}.
+
+    "oculto" es show_oculto(): el nombre del show con la camara oculta, o
+    None (SPEC 24).
 
     "estado" es el mismo valor que supervisor.RE_ESTADO sacaba del HTML
     (ESTADOS_VIVOS de arriba lo interpreta). Lanza ErrorRed si la API no
@@ -176,6 +233,7 @@ def consultar_cam(id_modelo, por_tunel: bool = False,
         "estado": user.get("status") or "?",
         "disponible": bool(cam.get("isCamAvailable")),
         "show": cam.get("show"),
+        "oculto": show_oculto(datos),
         "geobaneada": bool(user.get("isGeoBanned")),
         "crudo": datos,
     }

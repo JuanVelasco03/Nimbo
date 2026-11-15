@@ -44,3 +44,7 @@ nimbo/licencia_publica.json
 nimbo/licencia_clave.py
 # claves de la licencia: la privada firma los tokens. Nunca a git.
 empaquetado/licencia/*.local.json
+
+# muestras crudas de pruebas\sonda_estados.py (SPEC 24): datos de terceros.
+# Lo que se aprende va a pruebas\RESULTADOS.md.
+pruebas/muestras_estados/

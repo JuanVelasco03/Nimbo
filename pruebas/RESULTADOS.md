@@ -342,3 +342,70 @@ ls <salida> | grep -v -E "init|pegado|salida|sesion" \
 La sonda **nunca** escribe dentro de `F:\Nimbo`: solo bajo `--salida`
 (por defecto `%TEMP%\nimbo_sonda\`). Después de correrla, `git status` tiene que
 seguir limpio.
+
+---
+
+## 8. Estados de las modelos y cámara oculta (SPEC 24)
+
+Herramienta: `pruebas\sonda_estados.py` (`--una` / `--vigilar`). Muestras
+crudas en `pruebas\muestras_estados\` (en `.gitignore`: datos de terceros).
+Medido el **15/11/2026**.
+
+### 8.1 Stripchat: qué trae `/api/front/v2/models/<id>/cam`
+
+Barrido de 834 modelos del listado público (`/api/front/models`, primeras 14
+páginas de `girls`), un `/cam` por cada una que el listado daba como `public`:
+
+| `user.status` | `cam.isCamAvailable` | `cam.show` activo (`endedAt` nulo) | casos |
+|---|---|---|---|
+| `public` | `true` | no | 821 |
+| `public` | `true` | no, pero **viejo** (show p2p del 07/11 con `endedAt` puesto) | 1 |
+| `p2p` | `false` | sí, `mode: "p2p"` | 3 |
+| `private` | `false` | sí, `mode: "private"` | 4 |
+| `off` / `idle` | `false` | no | 2 |
+
+Lo que se aprende:
+
+- En **todo** show no público activo: `isCamAvailable: false` + `cam.show`
+  con `endedAt: null` y `mode` = el tipo de show.
+- `cam.show` **no se limpia** al terminar el show: queda con `endedAt`. Usar
+  `cam.show` a secas como señal da falsos positivos.
+- Los ticket/group shows del listado reportan `status: "groupShow"` y
+  `groupShowType: "ticket"` / `"perMinute"`, no `public`. El "CrazyTicket" que
+  disparó el spec es otra cosa: el sitio dice `public` durante el show.
+- Otras claves de `cam` vistas en un público normal: `isCamActive`
+  (`true` incluso en privado — no sirve), `privateMode` (vacío),
+  `streamStatus` (`null`), `isOwnShow`, `groupShowAnnouncement`.
+
+### 8.2 Cámara oculta: **todavía sin muestra real**
+
+En los 822 públicos medidos no apareció ningún caso con la cámara oculta.
+El criterio de `mouflon.show_oculto()` es **provisorio** y es el más estrecho
+compatible con lo medido:
+
+> `status` en `ESTADOS_PUBLICOS` **y** `isCamAvailable is False` **y**
+> `cam.show` activo (dict sin `endedAt` ni `isDeleted`). Nombre devuelto:
+> `show.details.name|showName|title|type`, si no `show.mode`.
+
+Ningún público normal medido lo cumple (821/821 tienen `isCamAvailable: true`),
+así que no puede congelar un show público real de los observados. Si el caso
+real trae otra forma, `show_oculto()` devuelve `None` y el directo hace lo de
+antes (intentar grabar). **Pendiente:** dejar
+`python pruebas\sonda_estados.py --vigilar` corriendo con la modelo afectada en
+`grabar.txt` hasta cazar la muestra, y ajustar el criterio + esta sección.
+
+### 8.3 Chaturbate: `room_status` de `/api/chatvideocontext/<nombre>/`
+
+| `room_status` | dónde |
+|---|---|
+| `public` | 901 de 901 salas del listado `/api/ts/roomlist/room-list/` |
+| `private` | 30 de 30 salas de `room-list/?private=true` |
+| `offline` | salas de la lista propia fuera de línea |
+
+- Los "Secret Show" / "Spy show" de chaturbate (el equivalente a la cámara
+  oculta) vienen como `room_status: "private"` con el texto en
+  `hidden_message` ("🕵️ Secret Show in progress…"). No apareció `hidden`.
+- `group`, `hidden`, `away`, `password protected` **no se vieron**: quedan en
+  `estados.js` por el vocabulario conocido del sitio, sin muestra propia.
+- Otras claves útiles de la respuesta: `private_show_id`,
+  `premium_show_running`, `f2f_private_show_running`, `active_password`.

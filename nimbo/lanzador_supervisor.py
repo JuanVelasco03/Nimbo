@@ -161,6 +161,17 @@ class _EmisionVigilada(supervisor.Emision):
 
 supervisor.Emision = _EmisionVigilada
 
+# SPEC 24: la tabla de estados vivos sale de mouflon.py, la unica fuente
+# del nucleo -- la copia de supervisor.py no tenia virtualPrivate ni
+# p2pVoice, asi que el supervisor cerraba la pestana en esos shows en vez
+# de esperar. Mismo patron que Emision: parchear desde afuera sin tocar
+# supervisor.py, que lee ESTADOS_VIVOS como global en cada consulta
+# (Emision.revisar, linea ~628). mouflon es seguro de importar (sin
+# addons, sin estado de modulo mutable).
+import mouflon  # noqa: E402
+
+supervisor.ESTADOS_VIVOS = mouflon.ESTADOS_VIVOS
+
 
 class _ListaConChaturbate(supervisor.Lista):
     """SPEC 18: @chaturbate= marca nombres que graba

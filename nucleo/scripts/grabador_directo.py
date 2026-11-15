@@ -151,7 +151,11 @@ MAX_REGISTRO = 20 * 1024 * 1024       # mismo tope que detectar_m3u8.py/motor.py
 # y las une si no vuelven a tiempo -- asi una modelo que entra y sale de
 # privado en segundos reusa la MISMA sesion en vez de fragmentar un .mp4
 # por cada ida y vuelta.
-ESTADOS_PUBLICOS = {"public", "live"}
+#
+# Que estados son "publicos" lo dice mouflon.ESTADOS_PUBLICOS (tabla unica
+# desde SPEC 24). Y no alcanza con el status: durante un show con la
+# camara oculta (CrazyTicket) el sitio dice "public" igual -- _publico()
+# mira ademas cam_oculta (mouflon.show_oculto) y lo trata como privado.
 ESPERA_NO_PUBLICO = 30.0
 # Solo para @inactividad=0 ("no cortes por falta de bytes" -- una señal
 # distinta de "el sitio dice que no es publico"): sin esto una modelo que
@@ -680,8 +684,11 @@ class _ModeloDirecto(threading.Thread):
         self._lock = threading.Lock()
         # timestamp de cuando se dejo de ver show publico (0.0 = no esta
         # esperando). Las sesiones quedan abiertas y congeladas mientras
-        # tanto -- ver ESTADOS_PUBLICOS mas arriba.
+        # tanto -- ver ESPERA_NO_PUBLICO mas arriba.
         self.esperando_publico = 0.0
+        # SPEC 24: nombre del show con la camara oculta (status "public"
+        # pero sin nada publico que grabar), o None. Ver _chequear_estado.
+        self.cam_oculta = None
 
     # -- ciclo de vida -------------------------------------------------
 
@@ -713,11 +720,15 @@ class _ModeloDirecto(threading.Thread):
         return mouflon.estado_incierto(self.estado_cam)
 
     def _publico(self) -> bool:
-        """Solo "public"/"live" son show publico de verdad. privado/p2p/
-        groupShow/ticketShow siguen contando para _en_vivo() (no hay que
-        soltar el id ni dejar de consultar el estado) pero no se les pide
-        mas la media playlist -- ver el comentario de ESTADOS_PUBLICOS."""
-        return self.estado_cam in ESTADOS_PUBLICOS
+        """Solo mouflon.ESTADOS_PUBLICOS ("public"/"live") con la camara a
+        la vista son show publico de verdad. Los de
+        mouflon.ESTADOS_NO_PUBLICOS (privados, p2p, shows de grupo y de
+        ticket) y la camara oculta
+        siguen contando para _en_vivo() (no hay que soltar el id ni dejar
+        de consultar el estado) pero no se les pide mas la media playlist
+        -- ver el comentario de ESPERA_NO_PUBLICO."""
+        return (self.estado_cam in mouflon.ESTADOS_PUBLICOS
+                and not self.cam_oculta)
 
     def _carpeta_stream(self) -> str:
         sufijo = str(self.id_modelo) if self.id_modelo else "sinid"
@@ -769,8 +780,11 @@ class _ModeloDirecto(threading.Thread):
         if not self._publico():
             if not self.esperando_publico:
                 self.esperando_publico = ahora
+                motivo = self.estado_cam
+                if self.cam_oculta:
+                    motivo += ", camara oculta: %s" % self.cam_oculta
                 log.info("[%s] no esta en show publico (%s) -- congelo y "
-                         "reintento cada %ds", self.nombre, self.estado_cam,
+                         "reintento cada %ds", self.nombre, motivo,
                          int(ESPERA_NO_PUBLICO))
             # ni se pide la media playlist ni se reconcilian variantes:
             # las sesiones quedan como estan, congeladas, hasta que vuelva
@@ -844,7 +858,16 @@ class _ModeloDirecto(threading.Thread):
             if nuevo != self.estado_cam:
                 log.info("[%s] estado: %s -> %s", self.nombre, self.estado_cam, nuevo)
             self.estado_cam = nuevo
+            # cam_oculta conserva el ultimo valor: un error de consulta no
+            # dice nada de la camara (mismo criterio que estado_incierto).
             return
+        oculto = cam.get("oculto")
+        if oculto != self.cam_oculta:
+            if oculto:
+                log.info("[%s] camara oculta (%s)", self.nombre, oculto)
+            else:
+                log.info("[%s] camara visible otra vez", self.nombre)
+            self.cam_oculta = oculto
         nuevo = cam["estado"]
         if nuevo != self.estado_cam:
             log.info("[%s] estado: %s -> %s", self.nombre, self.estado_cam, nuevo)
@@ -1176,6 +1199,7 @@ class _ModeloDirecto(threading.Thread):
             "ultimo_segmento": max(ultimos) if ultimos else None,
             "estado_cam": self.estado_cam,
             "esperando": bool(self.esperando_publico),
+            "cam_oculta": self.cam_oculta,
             "segmentos": sum(s.segmentos for s in self.sesiones.values()),
             "bytes": sum(s.bytes for s in self.sesiones.values()),
             "sesiones": sesiones_info,

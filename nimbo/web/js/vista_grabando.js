@@ -6,16 +6,12 @@ import { bandera } from "./api.js";
 import { formatoMB, formatoDuracion, formatoGB } from "./formato.js";
 import { sincronizarMiniatura } from "./sitio.js";
 import { edadSegmento, SIN_SENAL_S } from "./vista_modelos.js";
+import { estaVivo } from "./estados.js";
 
+// SPEC 24: el vocabulario de estados sale de la tabla unica de estados.js
+// (antes era una copia a mano que no tenia virtualPrivate).
 function estadoVivoSitio(estado) {
-  // mismo vocabulario que ESTADOS_PUBLICOS+ESTADOS_PRIVADOS de
-  // vista_modelos.js -- "p2pvoice" se agrega aca tambien para que esta
-  // pestana no la muestre como "OFFLINE"/"SIN SENAL" (el supervisor no
-  // le abre pagina -- no esta en ESTADOS_VIVOS de supervisor.py -- pero
-  // el status igual llega por "sup.estado" y hoy caia a una rama que no
-  // le correspondia).
-  return ["public", "live", "groupshow", "p2p", "p2pvoice", "private", "ticketshow"]
-    .includes((estado || "").toLowerCase());
+  return estaVivo(estado);
 }
 
 // -- el estado que muestra una tarjeta (puro: ni DOM ni efectos) --------
@@ -39,7 +35,15 @@ function estadoDeTarjeta(det, sup, generado) {
   }
 
   const edad = det && det.grabando ? edadSegmento(det.ultimo_segmento, generado) : null;
-  if (det && det.grabando && edad !== null && edad > SIN_SENAL_S) {
+  if (det && det.cam_oculta) {
+    // SPEC 24: status "public" pero con la camara oculta (CrazyTicket): el
+    // directo la congela igual que un privado. Va antes de SIN SENAL y de
+    // GRABANDO: con la sesion todavia abierta (margen de @inactividad) no
+    // entra nada, y decir cualquiera de las dos seria mentira.
+    clase = "privado";
+    texto = "CAM OCULTA";
+    detalle = det.cam_oculta + ", reintento cada 30s";
+  } else if (det && det.grabando && edad !== null && edad > SIN_SENAL_S) {
     clase = "mal";
     texto = "SIN SENAL";
     detalle = "sin segmentos hace " + Math.round(edad) + "s";
