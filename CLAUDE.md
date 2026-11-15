@@ -466,7 +466,8 @@ otra máquina").
 | `estado\licencia.json` | Nimbo (`licencia.py`) — incluye `visto_max`, la marca de agua del reloj que solo crece (`specs\07-licencia_inviolable.md`) | Nimbo |
 | `config.json`, `favoritas.json`, `sesion.json`, `estado\vivo_temporal.json` | solo Nimbo — `favoritas.json` es `[{"nombre","sitio"}, ...]` desde SPEC 18 (migra en silencio un array de strings viejo) | Nimbo |
 | `datos\grabaciones\*.mp4` | el detector (stripchat) y `grabador_chaturbate.py` (chaturbate, vía `detectar_m3u8.py --unir` como subproceso) | Nimbo (lee / borra a papelera) |
-| `datos\streams\` | el detector y `grabador_chaturbate.py` escriben y marcan con `unido.json`; Nimbo (`cosecha_streams.py`) borra lo ya unido con `shutil.rmtree`, **no** a la papelera (SPEC 14) | Nimbo |
+| `datos\streams\` | el detector y `grabador_chaturbate.py` escriben y marcan con `unido.json`; Nimbo (`cosecha_streams.py`) borra lo ya unido con `shutil.rmtree`, **no** a la papelera (SPEC 14); Nimbo (`union_pendiente.py`, SPEC 23) reescribe el campo `salida` de `unido.json` cuando una re-unión manual renombra el `.mp4` | Nimbo |
+| `datos\streams\<stream>\<sesion>\union_fallida.json` (SPEC 23) | solo Nimbo (`union_pendiente.py`), atómico, al fallar un intento manual de "Unir" (`intentos` suma 1); se borra al primer intento exitoso. Solo en la carpeta de video, nunca en la `_audio`; se va con la carpeta cuando la cosecha la borra | Nimbo (`union_pendiente.listar()`) |
 | `datos\miniaturas\*.jpg`, `estado\miniaturas.json` | Nimbo (`miniaturas.py`, cache regenerable — borra con `os.remove`, no papelera) | Nimbo |
 | `M3U8_STREAMS` / `M3U8_GRABACIONES` / `M3U8_ESCENARIO` (variables de entorno, no archivos) | `motor.py`, según "Carpetas y discos" en `config.json` (SPEC 12) — compartidas entre los dos sitios | `detectar_m3u8.py`, `grabador_directo.py`, `grabador_chaturbate.py` |
 
@@ -725,7 +726,7 @@ distintos: el detector solo sabe "¿esta sesión ya está unida?"
 (`unido.json`), y solo Nimbo sabe "¿alguien la está mirando en vivo ahora
 mismo?" (`vivo.sesiones_vivas()`, que a su vez lee el dict fusionado de
 `estado\detector.json` + `estado\directo.json`, no el disco). Una sesión
-se borra solo si pasa las tres
+se borra solo si pasa las cuatro
 compuertas: tiene `unido.json` (si no, es una grabación pendiente que
 `recuperar_pendientes()` todavía puede rehacer, y es la única copia que
 existe); no aparece en `vivo.sesiones_vivas()`; y pasaron tanto
@@ -734,7 +735,14 @@ y acepta decimales porque `_borrables()` hace `dias * 86400` y nadie
 coerciona el tipo) desde que se unió como
 `GRACIA_MTIME_S` (5 min) desde el último archivo escrito en la carpeta —
 ese margen por encima del `OLVIDAR_STREAM` del detector es la defensa
-extra contra un escritor todavía activo. Corre sola cada 10 minutos desde
+extra contra un escritor todavía activo; y (SPEC 23) su segmento más
+nuevo **no** es más de `MARGEN_MARCADOR_S` (60 s) posterior a su
+`unido.json` — un marcador prematuro (el bug del 2026-11-08:
+`recuperar_pendientes()` unía sesiones vivas) deja todo lo grabado
+después fuera de cualquier `.mp4`, `--unir` lo saltea como "ya unida", y
+sin esta compuerta la cosecha borraba la única copia. Si la vieja es una
+`_audio`, se protege también su hermana de video, sin la cual la
+re-unión ya no se puede hacer. Corre sola cada 10 minutos desde
 `servidor.py:_bucle_cosecha` y también a pedido (`POST
 /api/streams/limpiar`, botón "Limpiar segmentos" en la pestaña
 Grabaciones). No importa `detectar_m3u8.py` por el mismo motivo que
@@ -744,7 +752,7 @@ copias de `MARCADOR`/`CARPETA_SEGS`/`CARPETA_PLAYLISTS`.
 Ese borrado **no va a la papelera** (`_borrar_definitivo`, SPEC 14), a
 diferencia de todo lo que toca `grabaciones.py`. Un `.mp4` son horas de
 grabación y la papelera es la red contra un click de más; un segmento ya
-unido es regenerable mientras ese `.mp4` exista, y ya pasó las tres
+unido es regenerable mientras ese `.mp4` exista, y ya pasó las cuatro
 compuertas. Con los segmentos en el SSD de sistema (`dir_segmentos` en
 `C:`, SPEC 12) la papelera era además el problema entero: el espacio no
 volvía hasta que Windows purgara por tope, así que `barrer()` informaba
@@ -755,6 +763,31 @@ quedaría huérfana ocupando disco para siempre — mientras el marcador siga
 ahí, la sesión queda en `errores` y el barrido siguiente la reintenta. El
 botón "Limpiar segmentos" pide confirmación justo porque es el único lugar
 donde una persona dispara esto a mano.
+
+**Uniones pendientes (SPEC 23).** Una unión fallida (timeout, salida 0
+sin `unido.json`, excepción) solo se loguea en los grabadores, y el único
+reintento automático es `recuperar_pendientes()`, que corre solo al
+construirse un `Detector`. `nimbo\union_pendiente.py` es quien las hace
+visibles: `listar()` devuelve las `sin_unir` (segmentos sin `unido.json`)
+y las `marcador_viejo` (la cuarta compuerta de arriba), excluyendo las
+vivas (`vivo.sesiones_vivas()`) y las de último segmento con menos de
+`GRACIA_PENDIENTE_S` (10 min). Una `_audio` con hermana de video nunca es
+fila propia (se evalúa con su video), y las huérfanas quedan afuera.
+`servidor.py:_bucle_cosecha` lo recalcula al arrancar y antes de cada
+barrido, y lo publica como sección `pendientes` del delta (más
+`union_manual`, la ref en curso). De ahí salen la alerta de salud
+`uniones_pendientes` (`aviso`, o `error` si alguna ya falló un intento) y
+la sección "Sin unir" de Grabaciones. **`POST /api/streams/unir`**
+(`{"sesion": "<ref>"}` o `"todas"`; 202, 409 si ya corre una, 400 si la
+ref no salió de `listar()`) es **el único lugar de `nimbo\` que lanza
+`detectar_m3u8.py --unir`**, siempre como subproceso, con el entorno de
+`motor.entorno_union()` (el mismo del directo) y nunca con un filtro
+libre. Nada es automático: lo dispara el usuario. Éxito = cambió el mtime
+de `unido.json`, igual que el directo. Una `marcador_viejo` se rehace
+entera con `--forzar`; como `unir_sesion` no pisa un `.mp4` existente
+(elige `base_2.mp4`), al terminar bien el viejo va a la Papelera y el
+nuevo toma su nombre (si el renombre falla, queda `_N` y se avisa; el
+nuevo nunca se borra). El turno global lo toma el propio subproceso.
 
 ### Detalles con historia
 

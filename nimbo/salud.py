@@ -82,6 +82,29 @@ def _alerta_degradado(estado: dict) -> dict | None:
     }
 
 
+def _alerta_pendientes(estado: dict) -> dict | None:
+    """SPEC 23: sesiones con segmentos que no estan en ningun .mp4
+    (union_pendiente.listar, publicado por servidor.py como
+    estado["pendientes"]). "error" si alguna ya fallo un intento manual."""
+    pendientes = estado.get("pendientes") or []
+    if not pendientes:
+        return None
+    n = len(pendientes)
+    fallidas = sum(1 for p in pendientes if (p.get("intentos") or 0) > 0)
+    texto = "unilas desde la pestana Grabaciones, seccion Sin unir"
+    if fallidas:
+        texto = ("%d ya fallo al unir; revisa el motivo en Grabaciones"
+                 % fallidas if fallidas == 1 else
+                 "%d ya fallaron al unir; revisa el motivo en Grabaciones"
+                 % fallidas)
+    return {
+        "clave": "uniones_pendientes", "tipo": "union",
+        "nivel": "error" if fallidas else "aviso",
+        "titulo": "%d grabacion%s sin unir" % (n, "es" if n != 1 else ""),
+        "texto": texto,
+    }
+
+
 def evaluar(estado: dict, ajustes) -> list:
     """-> lista de alertas vigentes (ver estado["salud"] en el spec)."""
     alertas = _alertas_disco(estado, ajustes)
@@ -91,6 +114,9 @@ def evaluar(estado: dict, ajustes) -> list:
     rendido = _alerta_rendido(estado)
     if rendido:
         alertas.append(rendido)
+    pendientes = _alerta_pendientes(estado)
+    if pendientes:
+        alertas.append(pendientes)
     return alertas
 
 

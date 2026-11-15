@@ -5,7 +5,7 @@ vivo").
 
 A diferencia de grabaciones.py, esto NO va a la Papelera (SPEC 14). Un .mp4
 son horas de grabacion y la papelera es la red para un click de mas; un
-segmento ya unido es regenerable mientras exista ese .mp4, y ya paso las tres
+segmento ya unido es regenerable mientras exista ese .mp4, y ya paso las cuatro
 compuertas de _borrables(). Y con los segmentos en el SSD de sistema la
 papelera era el problema entero: el espacio no volvia hasta que Windows
 purgara por tope, asi que barrer() informaba bytes liberados que seguian
@@ -23,6 +23,7 @@ import os
 import shutil
 import time
 
+import union_pendiente as union_pendiente_mod
 import vivo as vivo_mod
 
 MARCADOR = "unido.json"              # detectar_m3u8.py:194
@@ -35,6 +36,11 @@ CARPETA_PLAYLISTS = "playlists"      # detectar_m3u8.py:196 (= vivo.CARPETA_PLAY
 # es solo para el badge "en vivo" del frontend, este es defensa en
 # profundidad contra un escritor todavia activo.
 GRACIA_MTIME_S = 300.0
+
+# SPEC 23: una sesion con segmentos mas de esto posteriores a su unido.json
+# tiene material que no esta en ningun .mp4 (marcador prematuro). Mismo
+# valor que union_pendiente, que es quien la lista como "marcador_viejo".
+MARGEN_MARCADOR_S = union_pendiente_mod.MARGEN_MARCADOR_S
 
 
 def _mtime(ruta):
@@ -97,9 +103,19 @@ def sesiones_unidas(dir_streams):
     return salida
 
 
+def _marcador_viejo(s):
+    return s["ultimo_mtime"] > s["unido_mtime"] + MARGEN_MARCADOR_S
+
+
 def _borrables(sesiones, nombres_vivas, dias):
     ahora = time.time()
     limite_edad = dias * 86400
+    # SPEC 23: refs cuyo marcador quedo viejo. Se protege tambien la
+    # hermana de video de una "_audio" vieja: sin el video, la re-union
+    # que rescata ese audio ya no se puede hacer.
+    viejas = {s["sesion"] for s in sesiones if _marcador_viejo(s)}
+    viejas |= {r[:-len(union_pendiente_mod.SUFIJO_AUDIO)] for r in viejas
+               if r.endswith(union_pendiente_mod.SUFIJO_AUDIO)}
     salida = []
     for s in sesiones:
         if s["sesion"] in nombres_vivas:
@@ -107,6 +123,12 @@ def _borrables(sesiones, nombres_vivas, dias):
         if ahora - s["unido_mtime"] < limite_edad:
             continue
         if ahora - s["ultimo_mtime"] < GRACIA_MTIME_S:
+            continue
+        # SPEC 23, cuarta compuerta: marcador viejo + segmentos posteriores
+        # = esos segmentos son la UNICA copia (--unir los salteo como "ya
+        # unida"). No se borran hasta que el usuario la reuna desde "Sin
+        # unir" (union_pendiente la lista como "marcador_viejo").
+        if s["sesion"] in viejas:
             continue
         salida.append(s)
     return salida

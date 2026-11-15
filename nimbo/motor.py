@@ -149,6 +149,50 @@ def _cmd_chaturbate(ajustes):
 LOOPBACK_PROXY = {"127.0.0.1", "localhost", "::1", ""}
 
 
+def entorno_union(a, grabar=False):
+    """El entorno con el que corre un "detectar_m3u8.py --unir" hijo.
+
+    Factorizado de _arrancar_directo (SPEC 23): el --unir que
+    grabador_directo.py lanza como subproceso hereda el entorno del
+    directo (env=dict(os.environ) en _unir_en_fondo), y la union manual de
+    union_pendiente.py lo necesita igual. grabar=True agrega M3U8_GRABAR
+    compilado, que solo le hace falta al proceso del directo; va en el
+    mismo orden de antes para que _arrancar_directo pase el mismo entorno
+    byte a byte."""
+    env = dict(os.environ)
+    env["NIMBO_SCRIPTS"] = a.scripts
+    env["NIMBO_ESTADO"] = a.dir_estado
+    # mismo mecanismo que usa el detector (ver _arrancar_detector):
+    # redirige streams\ a datos\ sin tocar M3U8_GRABAR (grabar.txt
+    # sigue junto al script, resuelto solo por grabador_directo.py).
+    env.setdefault("M3U8_BASE", a.dir_datos)
+    # Mismas tres que el detector (ver _arrancar_detector): el --unir
+    # que grabador_directo.py lanza como subproceso hereda este mismo
+    # entorno (env=dict(os.environ) en _unir_en_fondo), asi que
+    # fijarlas aca alcanza para las dos puntas.
+    env["M3U8_STREAMS"] = a.streams
+    env["M3U8_GRABACIONES"] = a.grabaciones
+    env["M3U8_ESCENARIO"] = a.dir_union or "apagado"
+    if ajustes_mod.compilado():
+        if grabar:
+            # ...pero compilado no hay "junto al script": grabador_directo
+            # esta adentro del binario y su __file__ nocional cae en
+            # nimbo\, asi que _al_lado("grabar.txt") busca
+            # <paquete>\nimbo\grabar.txt y <paquete>\datos\grabar.txt, no
+            # encuentra ninguno y el hilo se queda sin lista para siempre
+            # (sin un solo error en el log: lee un archivo que no existe
+            # cada 2s). M3U8_GRABAR existe justo para esto, y de ahi sale
+            # tambien activos.txt (ACTIVOS = dirname(SELECCION)).
+            env.setdefault("M3U8_GRABAR",
+                           os.path.join(a.scripts, "grabar.txt"))
+        # Y el interprete para la union ("detectar_m3u8.py --unir"
+        # como subproceso): el mismo que usan el supervisor y el
+        # detector. grabador_directo.PYTHON_EXE es sys.executable, y
+        # compilado eso no existe -- ver lanzador_directo.
+        env["NIMBO_PYTHON"] = a["python"]
+    return env
+
+
 def _parsear_proxy(proxy: str):
     """-> (host, puerto, era_loopback). 'host' es el que se pidio, tal
     cual -- quien llama decide si lo reemplaza por 127.0.0.1 cuando
@@ -545,36 +589,7 @@ class Motor:
 
     def _arrancar_directo(self):
         a = self.ajustes
-        env = dict(os.environ)
-        env["NIMBO_SCRIPTS"] = a.scripts
-        env["NIMBO_ESTADO"] = a.dir_estado
-        # mismo mecanismo que usa el detector (ver _arrancar_detector):
-        # redirige streams\ a datos\ sin tocar M3U8_GRABAR (grabar.txt
-        # sigue junto al script, resuelto solo por grabador_directo.py).
-        env.setdefault("M3U8_BASE", a.dir_datos)
-        # Mismas tres que el detector (ver _arrancar_detector): el --unir
-        # que grabador_directo.py lanza como subproceso hereda este mismo
-        # entorno (env=dict(os.environ) en _unir_en_fondo), asi que
-        # fijarlas aca alcanza para las dos puntas.
-        env["M3U8_STREAMS"] = a.streams
-        env["M3U8_GRABACIONES"] = a.grabaciones
-        env["M3U8_ESCENARIO"] = a.dir_union or "apagado"
-        if ajustes_mod.compilado():
-            # ...pero compilado no hay "junto al script": grabador_directo
-            # esta adentro del binario y su __file__ nocional cae en
-            # nimbo\, asi que _al_lado("grabar.txt") busca
-            # <paquete>\nimbo\grabar.txt y <paquete>\datos\grabar.txt, no
-            # encuentra ninguno y el hilo se queda sin lista para siempre
-            # (sin un solo error en el log: lee un archivo que no existe
-            # cada 2s). M3U8_GRABAR existe justo para esto, y de ahi sale
-            # tambien activos.txt (ACTIVOS = dirname(SELECCION)).
-            env.setdefault("M3U8_GRABAR",
-                           os.path.join(a.scripts, "grabar.txt"))
-            # Y el interprete para la union ("detectar_m3u8.py --unir"
-            # como subproceso): el mismo que usan el supervisor y el
-            # detector. grabador_directo.PYTHON_EXE es sys.executable, y
-            # compilado eso no existe -- ver lanzador_directo.
-            env["NIMBO_PYTHON"] = a["python"]
+        env = entorno_union(a, grabar=True)
         cmd = _cmd_directo(a)
         self._aviso("arrancando el camino directo (sin navegador)...")
         self.directo = subprocess.Popen(

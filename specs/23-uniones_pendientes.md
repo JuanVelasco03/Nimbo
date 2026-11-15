@@ -1,6 +1,6 @@
 # SPEC 23 — Uniones pendientes: verlas, protegerlas y reunirlas a mano
 
-> **Estado:** Aprobado
+> **Estado:** Implementado
 > **Depende de:** SPEC 14 (borrado definitivo de segmentos, la cosecha), SPEC 16 (avisos
 > de salud), SPEC 19 (turno único de unión), SPEC 20 (progreso de la unión), SPEC 22
 > (unión con audio acompañante en chaturbate)

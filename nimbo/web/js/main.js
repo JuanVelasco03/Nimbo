@@ -13,7 +13,7 @@ import { revisarPreflight } from "./preflight.js";
 import { renderSalud } from "./salud.js";
 import { renderPrevia, iniciarPrevia, abrirPreviaEnVivo } from "./vista_previa.js";
 import { iniciarRegistro, entrarARegistro, salirDeRegistro } from "./vista_registro.js";
-import { iniciarGrabaciones, entrarAGrabaciones, salirDeGrabaciones } from "./vista_grabaciones.js";
+import { iniciarGrabaciones, entrarAGrabaciones, salirDeGrabaciones, renderPendientes } from "./vista_grabaciones.js";
 import { iniciarPaletaYAyuda } from "./paleta.js";
 
 let ultimoEstado = null;
@@ -82,6 +82,7 @@ const DEPENDE = [
   [(estado) => renderDirectivas(estado.lista.directivas || {}), ["lista"]],
   [renderRutas, ["motor", "disco"]],
   [renderSalud, ["salud"]],
+  [renderPendientes, ["pendientes", "union_manual"]],   // SPEC 23
 ];
 
 // secciones = null -> pintar todo (primera pintada, estado_inicial, y

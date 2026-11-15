@@ -80,6 +80,7 @@ import sesion as sesion_mod
 import sesion_chaturbate as sesion_chaturbate_mod
 import sitio as sitio_mod
 import sitio_chaturbate as sitio_chaturbate_mod
+import union_pendiente as union_pendiente_mod
 import version as version_mod
 import vivo as vivo_mod
 import vivo_temporal as vivo_temporal_mod
@@ -103,6 +104,11 @@ TOPE_TAREA = {
     # Compartida a proposito entre los dos sitios (SPEC 21): un solo
     # perfil_login\ y un solo login a la vez.
     "sesion_login": 330.0,         # login_sitio.SEGUNDOS_CAPTURA = 300.0, con margen
+    # SPEC 23: "Unir todas" encadena uniones en serie, cada una de hasta
+    # union_pendiente.ESPERA_UNION (1 h) mas lo que espere el turno global.
+    # Un dia entero: el watchdog es para un cuelgue, no para cortar una
+    # cola legitima a mitad de camino.
+    "unir_pendientes": 86400.0,
 }
 TOPE_TAREA_DEFECTO = 120.0
 
@@ -258,6 +264,13 @@ class Aplicacion:
                                      # mitad de camino
         self.ultima_limpieza = None  # ultimo barrido de datos\streams\,
                                       # lo pisa _bucle_cosecha
+        # SPEC 23: sesiones con segmentos sin unir (union_pendiente.listar),
+        # recalculado por _bucle_cosecha y por la tarea de "Unir". Viaja
+        # como seccion "pendientes" del delta, y salud.py la lee de ahi.
+        self.pendientes = []
+        # Ref de la union manual en curso, o "" -- la UI deshabilita los
+        # botones mientras no este vacio (seccion "union_manual").
+        self.union_manual = ""
         # SPEC 15: fase de la captura de sesion en curso (o no). Mutado
         # solo por _tarea_login; _bucle_estado lo publica como cualquier
         # otra seccion, comparando contra el delta anterior. SPEC 21:
@@ -577,6 +590,12 @@ async def _bucle_estado(app):
             if app.ultima_limpieza != app.estado.get("limpieza"):
                 delta["limpieza"] = app.ultima_limpieza
 
+            if app.pendientes != app.estado.get("pendientes"):
+                delta["pendientes"] = app.pendientes
+
+            if app.union_manual != app.estado.get("union_manual"):
+                delta["union_manual"] = app.union_manual
+
             if app.login != app.estado.get("login"):
                 delta["login"] = app.login
 
@@ -638,6 +657,10 @@ async def _bucle_cosecha(app):
     INTERVALO_LIMPIEZA, barre datos\\streams\\ con cosecha_streams -- el
     listdir de dos niveles no es gratis, por eso no corre cada tick."""
     reloj_limpieza = 0.0
+    # SPEC 23: las pendientes se calculan tambien al arrancar (sin esperar
+    # los 10 min del primer barrido); el barrido no, igual que antes.
+    with contextlib.suppress(Exception):
+        await _recalcular_pendientes(app)
     while True:
         await asyncio.sleep(INTERVALO_COSECHA)
         with contextlib.suppress(Exception):
@@ -647,6 +670,11 @@ async def _bucle_cosecha(app):
         if reloj_limpieza < INTERVALO_LIMPIEZA:
             continue
         reloj_limpieza = 0.0
+        with contextlib.suppress(Exception):
+            # Antes de barrer, como pide SPEC 23. Una pendiente nunca es
+            # borrable (sin_unir no tiene marcador; a marcador_viejo la
+            # saltea la cuarta compuerta), esto solo mantiene la lista al dia.
+            await _recalcular_pendientes(app)
         with contextlib.suppress(Exception):
             detector = await _leer_detector_fusionado(app)
             resultado = await app.a_hilo(
@@ -658,6 +686,48 @@ async def _bucle_cosecha(app):
                     "sesiones": len(resultado["borradas"]),
                     "bytes": resultado["bytes"],
                 }
+
+
+async def _recalcular_pendientes(app):
+    """SPEC 23: app.pendientes = union_pendiente.listar(), cruzado con las
+    sesiones vivas del detector fusionado. _bucle_estado lo publica."""
+    detector = await _leer_detector_fusionado(app)
+    vivas = await app.a_hilo(vivo_mod.sesiones_vivas, app.ajustes.streams, detector)
+    app.pendientes = await app.a_hilo(
+        union_pendiente_mod.listar, app.ajustes.streams, vivas)
+    return app.pendientes
+
+
+def _tarea_unir_pendientes(app, refs):
+    """Corre en el pool (via _lanzar_tarea). Une en serie las refs pedidas
+    y recalcula app.pendientes despues de cada una, para que la fila
+    desaparezca sin esperar los 10 min de _bucle_cosecha. Las refs ya se
+    validaron contra listar() en el POST; antes de cada union se mira de
+    nuevo la lista recien calculada, por si una dejo de estar pendiente
+    mientras esperaba (la unio su grabador, o volvio a estar viva)."""
+    def _recalcular():
+        fut = asyncio.run_coroutine_threadsafe(_recalcular_pendientes(app), app.loop)
+        with contextlib.suppress(Exception):
+            fut.result(timeout=120)
+
+    def _avisar(texto, nivel="info"):
+        app.motor._aviso(texto, nivel=nivel)
+
+    try:
+        for ref in refs:
+            item = next((p for p in app.pendientes if p["sesion"] == ref), None)
+            if item is None:
+                continue
+            app.union_manual = ref
+            _avisar("union manual: %s (%s)..." % (ref, item["tipo"]))
+            ok, motivo = union_pendiente_mod.unir(app.ajustes, ref, item["tipo"], _avisar)
+            if ok:
+                _avisar("union manual: %s lista" % ref)
+            else:
+                _avisar("union manual: %s fallo: %s" % (ref, motivo), nivel="error")
+            _recalcular()
+    finally:
+        app.union_manual = ""
 
 
 async def _bucle_miniaturas(app):
@@ -1432,6 +1502,8 @@ async def _manejar_get(app, ruta, qs, cabeceras, writer):
         detector = await _leer_detector_fusionado(app)
         resultado = await app.a_hilo(
             cosecha_streams_mod.resumen, a.streams, detector, a["dias_segmentos"])
+        # SPEC 23: la foto que ya tiene _bucle_cosecha, sin re-escanear.
+        resultado["pendientes"] = app.pendientes
         await _json(writer, 200, resultado)
     elif ruta == "/api/lan/estado":
         await _json(writer, 200, {
@@ -1717,6 +1789,29 @@ async def _despachar_post(app, ruta, cuerpo):
                 "bytes": resultado["bytes"],
             }
         return 200, resultado
+    elif ruta == "/api/streams/unir":
+        # SPEC 23. Nunca un filtro libre: --unir con un filtro sin "/" es
+        # substring y se puede llevar sesiones VIVAS de otras modelos
+        # (CLAUDE.md, "Los dos puentes"). Solo refs que salieron de
+        # union_pendiente.listar(), recalculada aca mismo.
+        pedido = cuerpo.get("sesion")
+        if not isinstance(pedido, str) or not pedido:
+            return 400, {"error": "falta 'sesion'"}
+        if _tarea_duplicada(app, "unir_pendientes"):
+            return 409, {"error": "ya hay una union manual en curso"}
+        pendientes = await _recalcular_pendientes(app)
+        conocidas = [p["sesion"] for p in pendientes]
+        if pedido == "todas":
+            refs = conocidas
+            if not refs:
+                return 400, {"error": "no hay sesiones sin unir"}
+        elif pedido in conocidas:
+            refs = [pedido]
+        else:
+            return 400, {"error": "esa sesion no esta entre las pendientes"}
+        if not _lanzar_tarea(app, "unir_pendientes", _tarea_unir_pendientes, app, refs):
+            return 409, {"error": "ya hay una union manual en curso"}
+        return 202, {"aceptado": True, "sesiones": refs}
     elif ruta == "/api/lan/configurar":
         # Primera vez (o cambio de contrasena) desde el panel de Ajustes --
         # autenticado con el token normal, a diferencia de /api/lan/login

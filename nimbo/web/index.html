@@ -72,6 +72,18 @@
       </div>
       <div class="barra-union"><div class="relleno"></div></div>
     </div>
+    <!-- SPEC 23: sesiones con segmentos que no estan en ningun .mp4. Llega
+         por el delta de /ws (secciones "pendientes" y "union_manual"); las
+         filas las reconcilia vista_grabaciones.js por clave, sin innerHTML
+         en el camino del delta. -->
+    <div id="pendientes-union" class="pendientes-union oculta" role="region" aria-label="Grabaciones sin unir">
+      <div class="cabecera">
+        <span class="titulo">Sin unir</span>
+        <span class="explicacion"></span>
+        <button class="boton-chico" id="pendientes-unir-todas" type="button">Unir todas</button>
+      </div>
+      <div class="filas"></div>
+    </div>
     <div id="grabaciones-lista" class="grid grid-cols-[repeat(auto-fill,minmax(190px,1fr))] gap-3"></div>
   </section>
 

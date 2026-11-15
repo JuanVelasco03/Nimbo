@@ -400,6 +400,130 @@ async function limpiarStreams() {
   await cargarStreams();
 }
 
+// -- SPEC 23: "Sin unir" ----------------------------------------------------
+// Sesiones de datos\streams\ con segmentos que no estan en ningun .mp4
+// (union_pendiente.py). A diferencia del resto de esta pestana, el dato
+// llega por el delta del WebSocket (secciones "pendientes" y
+// "union_manual"), asi que una fila desaparece sola apenas la union manual
+// termina, sin esperar al refresco de 4s ni a recargar. Reconciliacion por
+// clave, igual que las tarjetas: la fila se crea una vez y despues solo se
+// le escribe texto y clases.
+
+const TIPOS_PENDIENTE = { sin_unir: "sin unir", marcador_viejo: "incompleta" };
+const filasPendientes = new Map();   // ref "<stream>/<sesion>" -> elemento
+let pendientesActuales = [];
+let unionManual = "";
+let unirPedido = false;   // entre el click y que el servidor confirme la tarea
+
+function modeloDeRef(ref) {
+  // "<modelo>_<id>/<variante>_<fecha>": el modelo puede tener _ adentro,
+  // asi que se corta solo el ultimo campo del stream (el id).
+  const stream = (ref || "").split("/")[0];
+  const i = stream.lastIndexOf("_");
+  return i > 0 ? stream.slice(0, i) : stream;
+}
+
+function crearFilaPendiente(ref) {
+  const div = document.createElement("div");
+  div.className = "fila-pendiente";
+  div.dataset.ref = ref;
+  div.innerHTML = `
+    <span class="modelo"></span>
+    <span class="sesion-pend"></span>
+    <span class="tipo-pend"></span>
+    <span class="tamano-pend"></span>
+    <button class="boton-chico" data-accion="unir-pendiente" type="button">Unir</button>
+    <span class="fallo-pend oculta"></span>`;
+  div._nodos = {
+    modelo: div.querySelector(".modelo"),
+    sesion: div.querySelector(".sesion-pend"),
+    tipo: div.querySelector(".tipo-pend"),
+    tamano: div.querySelector(".tamano-pend"),
+    boton: div.querySelector("[data-accion='unir-pendiente']"),
+    fallo: div.querySelector(".fallo-pend"),
+  };
+  div._nodos.boton.dataset.ref = ref;
+  return div;
+}
+
+function actualizarFilaPendiente(el, p, ocupado) {
+  const n = el._nodos;
+  poner(n.modelo, modeloDeRef(p.sesion));
+  poner(n.sesion, p.sesion.split("/")[1] || p.sesion);
+  n.sesion.title = p.sesion;
+  poner(n.tipo, TIPOS_PENDIENTE[p.tipo] || p.tipo);
+  n.tipo.title = p.tipo === "marcador_viejo"
+    ? "tiene segmentos posteriores a su .mp4: se rearma entera y el .mp4 viejo va a la Papelera"
+    : "los segmentos nunca se unieron";
+  poner(n.tamano, formatoMB(p.bytes) + " · " + p.archivos + " seg.");
+  const fallo = p.intentos > 0;
+  n.fallo.classList.toggle("oculta", !fallo);
+  if (fallo) {
+    poner(n.fallo, "fallo " + p.intentos + (p.intentos === 1 ? " vez" : " veces")
+      + (p.motivo ? ": " + p.motivo : ""));
+  }
+  const esta = unionManual === p.sesion;
+  poner(n.boton, esta ? "uniendo..." : (fallo ? "Reintentar" : "Unir"));
+  if (n.boton.disabled !== ocupado) n.boton.disabled = ocupado;
+}
+
+export function renderPendientes(estado) {
+  const cont = document.getElementById("pendientes-union");
+  if (!cont || !estado) return;
+  pendientesActuales = estado.pendientes || [];
+  unionManual = estado.union_manual || "";
+  if (unionManual) unirPedido = false;   // el servidor ya la tomo
+  const ocupado = !!unionManual || unirPedido;
+
+  cont.classList.toggle("oculta", pendientesActuales.length === 0);
+  const n = pendientesActuales.length;
+  const bytes = pendientesActuales.reduce((s, p) => s + (p.bytes || 0), 0);
+  poner(cont.querySelector(".explicacion"),
+    n + " sesion" + (n === 1 ? "" : "es") + " con segmentos fuera de todo .mp4 ("
+    + formatoGB(bytes) + ")" + (unionManual ? " · uniendo " + modeloDeRef(unionManual) : ""));
+  const todas = document.getElementById("pendientes-unir-todas");
+  todas.classList.toggle("oculta", n < 2);
+  if (todas.disabled !== ocupado) todas.disabled = ocupado;
+
+  const filas = cont.querySelector(".filas");
+  const vistos = new Set();
+  for (const p of pendientesActuales) {
+    vistos.add(p.sesion);
+    let el = filasPendientes.get(p.sesion);
+    if (!el) {
+      el = crearFilaPendiente(p.sesion);
+      filasPendientes.set(p.sesion, el);
+    }
+    actualizarFilaPendiente(el, p, ocupado);
+    filas.appendChild(el);
+  }
+  for (const [ref, el] of filasPendientes) {
+    if (vistos.has(ref)) continue;
+    el.remove();
+    filasPendientes.delete(ref);
+  }
+}
+
+async function unirPendiente(sesion) {
+  unirPedido = true;
+  renderPendientes({ pendientes: pendientesActuales, union_manual: unionManual });
+  try {
+    await enviar("/api/streams/unir", { sesion });
+  } catch (err) {
+    unirPedido = false;
+    mostrarError(err);
+    renderPendientes({ pendientes: pendientesActuales, union_manual: unionManual });
+  }
+  // Si salio bien, unirPedido se apaga cuando llega union_manual por el
+  // delta; por si la tarea termina antes de que un tick lo vea (una ref
+  // que dejo de estar pendiente), se suelta solo a los pocos segundos.
+  setTimeout(() => {
+    if (!unirPedido) return;
+    unirPedido = false;
+    renderPendientes({ pendientes: pendientesActuales, union_manual: unionManual });
+  }, 5000);
+}
+
 // -- modal de reproduccion -----------------------------------------------
 // Un <video> nativo no puede concatenar varios .mp4 en una sola
 // reproduccion continua sin MediaSource (fuera de alcance para "basico")
@@ -492,6 +616,23 @@ export function iniciarGrabaciones() {
   });
 
   document.getElementById("streams-limpiar").addEventListener("click", limpiarStreams);
+
+  document.getElementById("pendientes-unir-todas").addEventListener("click", () => {
+    const n = pendientesActuales.length;
+    if (!n) return;
+    if (!confirm("Unir las " + n + " sesiones pendientes, una por vez?"
+        + "\n\nCada union lee mucho del disco de grabacion (va frenada si hay"
+        + " algo grabando). Las incompletas se rearman enteras y su .mp4 viejo"
+        + " va a la Papelera."))
+      return;
+    unirPendiente("todas");
+  });
+
+  document.getElementById("pendientes-union").addEventListener("click", (ev) => {
+    const boton = ev.target.closest("[data-accion='unir-pendiente']");
+    if (!boton || boton.disabled) return;
+    unirPendiente(boton.dataset.ref);
+  });
 
   document.getElementById("grabaciones-lista").addEventListener("click", async (ev) => {
     const boton = ev.target.closest("[data-accion]");

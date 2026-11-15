@@ -802,6 +802,42 @@
     background: var(--color-tally-conectando);
   }
 
+  /* SPEC 23: "Sin unir". Ambar de "ojo con esto" (mismo que .union-notas),
+     no el rojo de error: lo que falta es apretar un boton. Una fila que ya
+     fallo un intento si pasa al naranja de aviso. */
+  .pendientes-union {
+    @apply mb-3 rounded-sm border px-3 py-sm;
+    background: color-mix(in srgb, var(--color-tally-privado) 8%, transparent);
+    border-color: color-mix(in srgb, var(--color-tally-privado) 35%, transparent);
+  }
+  .pendientes-union .cabecera {
+    @apply flex flex-wrap items-center gap-3 font-mono text-xs;
+  }
+  .pendientes-union .titulo {
+    @apply font-semibold tracking-wide;
+    color: var(--color-tally-privado);
+  }
+  .pendientes-union .explicacion { @apply text-atenuado; }
+  .pendientes-union .cabecera .boton-chico { @apply ml-auto; }
+  .pendientes-union .filas { @apply mt-2 flex flex-col gap-1; }
+  .fila-pendiente {
+    @apply flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-borde pt-1
+           font-mono text-xs;
+  }
+  .fila-pendiente .modelo { @apply font-semibold text-texto; }
+  .fila-pendiente .sesion-pend { @apply truncate text-atenuado; }
+  .fila-pendiente .tipo-pend {
+    @apply rounded-[3px] border px-1 text-2xs tracking-wide;
+    border-color: var(--color-tally-privado);
+    color: var(--color-tally-privado);
+  }
+  .fila-pendiente .tamano-pend { @apply tabular-nums text-atenuado; }
+  .fila-pendiente .boton-chico { @apply ml-auto; }
+  .fila-pendiente .fallo-pend {
+    @apply basis-full break-words;
+    color: var(--color-tally-aviso);
+  }
+
   /* En la tarjeta: badge arriba a la izquierda (el de partes ya ocupa la
      derecha) y la barra en el borde de abajo de la portada, encima del
      degradado de .marca-tiempo -- z-20 porque .marca-tiempo es z-10. */
